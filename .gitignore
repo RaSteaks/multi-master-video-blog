@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+
+# Next.js / frontend build output
+.next/
+out/
+dist/
+build/
+.turbo/
+.vercel/
+
+# Astro or other optional frontend caches
+.astro/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!*.env.example
+
+# Directus local state
+apps/cms/directus/database/
+apps/cms/directus/uploads/
+apps/cms/directus/extensions/.cache/
+
+# Upload API local state
+apps/api/tmp/
+
+# Local media storage
+media/*
+!media/.gitkeep
+
+# Local source exports for upload/transcode tests
+exports/
+
+# SSL certificates and private keys
+*.pem
+*.key
+*.crt
+*.pfx
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor local state
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+.claude

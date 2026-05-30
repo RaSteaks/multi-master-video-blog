@@ -1,0 +1,31 @@
+{
+  "name": "multi-master-video-blog",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted media blog with HLS playback and multi-master video switching.",
+  "workspaces": [
+    "apps/api",
+    "apps/web",
+    "apps/cms/directus"
+  ],
+  "scripts": {
+    "dev": "npm run dev:web",
+    "dev:api": "npm --workspace @multi-master-video-blog/api run dev",
+    "start:api": "npm --workspace @multi-master-video-blog/api run start",
+    "test:api": "npm --workspace @multi-master-video-blog/api run test",
+    "dev:web": "npm --workspace @multi-master-video-blog/web run dev",
+    "build:web": "npm --workspace @multi-master-video-blog/web run build",
+    "start:web": "npm --workspace @multi-master-video-blog/web run start",
+    "bootstrap:cms": "npm --workspace @multi-master-video-blog/cms run bootstrap",
+    "setup:cms-schema": "node scripts/setup-directus-schema.cjs",
+    "dev:cms": "npm --workspace @multi-master-video-blog/cms run dev",
+    "start:cms": "npm --workspace @multi-master-video-blog/cms run start",
+    "health": "node scripts/health-check.cjs",
+    "test:db": "node scripts/test-directus-db.cjs",
+    "test:cms-schema": "node scripts/test-directus-schema.cjs",
+    "test:cms-crud": "node scripts/test-directus-crud.cjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

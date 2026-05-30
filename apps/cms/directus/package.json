@@ -1,0 +1,13 @@
+{
+  "name": "@multi-master-video-blog/cms",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "bootstrap": "directus bootstrap",
+    "dev": "directus start",
+    "start": "directus start"
+  },
+  "dependencies": {
+    "directus": "^11.17.4"
+  }
+}
