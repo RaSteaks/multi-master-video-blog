@@ -5,6 +5,7 @@ const fsp = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { Readable } = require("node:stream");
 
 const ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(ROOT, "..", "..");
@@ -144,6 +145,25 @@ function safeFileName(filename) {
   return `${name}${ext}`;
 }
 
+function safePathSegment(value, fallback = "item") {
+  return (
+    String(value || fallback)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || fallback
+  );
+}
+
+function safeRelativePath(filename) {
+  const rawParts = String(filename || "upload.bin").split(/[\\/]+/);
+  const parts = rawParts
+    .map((part) => safeFileName(part))
+    .filter((part) => part && part !== "." && part !== "..");
+
+  return parts.length ? path.join(...parts) : "upload.bin";
+}
+
 function assertInside(parent, target) {
   const relative = path.relative(parent, target);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -216,7 +236,7 @@ async function parseMultipart(req) {
     const busboy = Busboy({
       headers: req.headers,
       limits: {
-        files: 3,
+        files: 500,
         fields: 64,
         fileSize: MAX_UPLOAD_BYTES
       }
@@ -238,13 +258,15 @@ async function parseMultipart(req) {
     });
 
     busboy.on("file", (name, file, info) => {
-      if (!["video", "cover", "poster"].includes(name)) {
+      if (!["video", "cover", "poster", "masterPackage"].includes(name)) {
         file.resume();
         return;
       }
 
-      const filename = safeFileName(info.filename);
-      const tempPath = path.join(tempDir, filename);
+      const filename = name === "masterPackage" ? safeRelativePath(info.filename) : safeFileName(info.filename);
+      const tempPath = path.join(tempDir, name === "masterPackage" ? filename : safeFileName(filename));
+      assertInside(tempDir, tempPath);
+      fs.mkdirSync(path.dirname(tempPath), { recursive: true });
       const writeStream = fs.createWriteStream(tempPath);
 
       const currentFile = {
@@ -254,7 +276,13 @@ async function parseMultipart(req) {
         tempPath,
         tempDir
       };
-      files[name] = currentFile;
+
+      if (name === "masterPackage") {
+        files.masterPackage = files.masterPackage || [];
+        files.masterPackage.push(currentFile);
+      } else {
+        files[name] = currentFile;
+      }
 
       if (name === "video") {
         fileInfo = currentFile;
@@ -290,18 +318,16 @@ async function parseMultipart(req) {
       try {
         await Promise.all(pendingWrites);
 
-        if (!fileInfo) {
-          throw httpError(400, "Missing video file field named `video`.");
-        }
-
         resolve({
           fields,
           files,
           tempDir,
-          file: {
-            ...fileInfo,
-            size: uploadBytes
-          }
+          file: fileInfo
+            ? {
+                ...fileInfo,
+                size: uploadBytes
+              }
+            : null
         });
       } catch (error) {
         rejectOnce(error);
@@ -316,6 +342,7 @@ function normalizeUpload(fields) {
   const title = String(fields.title || "").trim();
   const slug = String(fields.slug || "").trim();
   const masterType = String(fields.masterType || fields.type || "sdr").trim();
+  const sourceKind = String(fields.sourceKind || fields.source_kind || "embedded").trim();
 
   if (!title) {
     throw httpError(400, "title is required.");
@@ -331,6 +358,10 @@ function normalizeUpload(fields) {
     throw httpError(400, `masterType must be one of: ${Array.from(MASTER_TYPES).join(", ")}.`);
   }
 
+  if (!["embedded", "master_package"].includes(sourceKind)) {
+    throw httpError(400, "sourceKind must be embedded or master_package.");
+  }
+
   const mode =
     fields.mode === "copy" || masterType === "dolby_vision"
       ? "copy"
@@ -343,16 +374,17 @@ function normalizeUpload(fields) {
     category: fields.category || null,
     tags: parseTags(fields.tags),
     published: parseBoolean(fields.published, false),
+    sourceKind,
     masterType,
     label: fields.label || defaultLabel(masterType),
     isDefault: parseBoolean(fields.isDefault, masterType === "sdr"),
     overwrite: parseBoolean(fields.overwrite, false),
     mode,
-    codec: fields.codec || defaultCodec(masterType, mode),
-    colorSpace: fields.colorSpace || fields.color_space || defaultColorSpace(masterType),
+    codec: fields.codec || null,
+    colorSpace: fields.colorSpace || fields.color_space || null,
     transferFunction:
-      fields.transferFunction || fields.transfer_function || defaultTransferFunction(masterType),
-    bitDepth: parseInteger(fields.bitDepth || fields.bit_depth) || defaultBitDepth(masterType),
+      fields.transferFunction || fields.transfer_function || null,
+    bitDepth: parseInteger(fields.bitDepth || fields.bit_depth),
     resolutionWidth: parseInteger(fields.resolutionWidth || fields.resolution_width),
     resolutionHeight: parseInteger(fields.resolutionHeight || fields.resolution_height),
     bitrateMbps: parseDecimal(fields.bitrateMbps || fields.bitrate_mbps),
@@ -395,6 +427,10 @@ function defaultBitDepth(masterType) {
 }
 
 async function moveSourceFile(file, metadata) {
+  if (!file) {
+    throw httpError(400, "Missing source video file.");
+  }
+
   const sourceDir = path.join(MEDIA_ROOT, metadata.slug, "source");
   const sourcePath = path.join(sourceDir, `${Date.now()}-${file.filename}`);
 
@@ -407,8 +443,103 @@ async function moveSourceFile(file, metadata) {
   return sourcePath;
 }
 
+async function moveMasterPackageFiles(files, metadata) {
+  if (!files?.length) {
+    throw httpError(400, "Missing Dolby Vision master package files.");
+  }
+
+  const packageDir = path.join(MEDIA_ROOT, metadata.slug, "source-package");
+  assertInside(MEDIA_ROOT, packageDir);
+
+  if (fs.existsSync(packageDir) && metadata.overwrite) {
+    await fsp.rm(packageDir, { recursive: true, force: true });
+  }
+
+  await fsp.mkdir(packageDir, { recursive: true });
+
+  const movedFiles = [];
+  for (const file of files) {
+    const relative = safeRelativePath(file.filename);
+    const targetPath = path.join(packageDir, relative);
+    assertInside(packageDir, targetPath);
+    await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+    await fsp.rename(file.tempPath, targetPath);
+    movedFiles.push({
+      ...file,
+      packagePath: targetPath,
+      packageRelativePath: relative
+    });
+  }
+
+  const primary = selectMasterPackagePrimary(movedFiles);
+  if (!primary) {
+    throw httpError(
+      400,
+      "No primary video essence was found in the master package. Include MP4, MOV, MXF, MKV, HEVC, H265, or 265 files."
+    );
+  }
+
+  return {
+    sourcePath: primary.packagePath,
+    packageDir,
+    files: movedFiles,
+    sidecars: movedFiles.filter((file) => isDolbySidecar(file.packagePath))
+  };
+}
+
+function selectMasterPackagePrimary(files) {
+  const priorities = [".mp4", ".mov", ".mkv", ".hevc", ".h265", ".265", ".mxf"];
+  return [...files]
+    .filter((file) => priorities.includes(path.extname(file.packagePath).toLowerCase()))
+    .sort((a, b) => {
+      const scoreA = masterPackagePrimaryScore(a, priorities);
+      const scoreB = masterPackagePrimaryScore(b, priorities);
+      if (scoreA !== scoreB) {
+        return scoreA - scoreB;
+      }
+
+      return a.packageRelativePath.localeCompare(b.packageRelativePath);
+    })[0];
+}
+
+function masterPackagePrimaryScore(file, priorities) {
+  const ext = path.extname(file.packagePath).toLowerCase();
+  const basename = path.basename(file.packagePath).toLowerCase();
+  let score = priorities.indexOf(ext) * 100;
+
+  if (ext === ".mxf") {
+    if (basename.startsWith("video_") || basename.includes("mainimage")) {
+      score -= 40;
+    }
+
+    if (basename.startsWith("audio_") || basename.includes("audio")) {
+      score += 80;
+    }
+
+    if (basename.startsWith("dolby_") || basename.includes("isxd")) {
+      score += 120;
+    }
+  }
+
+  return score;
+}
+
+function isDolbySidecar(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const basename = path.basename(filePath).toLowerCase();
+  return (
+    [".xml", ".json", ".txt", ".rpu", ".bin"].includes(ext) ||
+    (ext === ".mxf" && (basename.startsWith("dolby_") || basename.includes("isxd")))
+  );
+}
+
 async function prepareOutputDir(metadata) {
-  const outputDir = path.join(MEDIA_ROOT, metadata.slug, metadata.masterType.replace("_", "-"));
+  const typeSegment = metadata.masterType.replace("_", "-");
+  const labelSegment = safePathSegment(metadata.label || defaultLabel(metadata.masterType), "master");
+  const versionSegment = metadata.overwrite
+    ? labelSegment
+    : `${Date.now()}-${labelSegment}`;
+  const outputDir = path.join(MEDIA_ROOT, metadata.slug, typeSegment, versionSegment);
   assertInside(MEDIA_ROOT, outputDir);
 
   if (fs.existsSync(outputDir)) {
@@ -432,8 +563,7 @@ async function probeVideo(sourcePath) {
     "error",
     "-select_streams",
     "v:0",
-    "-show_entries",
-    "stream=codec_name,width,height,pix_fmt,color_space,color_transfer,color_primaries,bits_per_raw_sample",
+    "-show_streams",
     "-of",
     "json",
     sourcePath
@@ -443,11 +573,16 @@ async function probeVideo(sourcePath) {
   return parsed.streams?.[0] || {};
 }
 
-async function generateHls(sourcePath, outputDir, metadata) {
+async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
   const playlistPath = path.join(outputDir, "master.m3u8");
 
+  if (shouldCreatePreviewHls(metadata, probe)) {
+    await generatePreviewHls(sourcePath, outputDir, playlistPath);
+    return playlistPath;
+  }
+
   if (metadata.mode === "copy") {
-    await runProcess(FFMPEG_PATH, [
+    const args = [
       "-y",
       "-i",
       sourcePath,
@@ -456,9 +591,14 @@ async function generateHls(sourcePath, outputDir, metadata) {
       "-map",
       "0:a?",
       "-c:v",
-      "copy",
-      "-tag:v",
-      "hvc1",
+      "copy"
+    ];
+
+    if (isHevcCodec(probe.codec_name)) {
+      args.push("-tag:v", "hvc1");
+    }
+
+    args.push(
       "-c:a",
       "aac",
       "-b:a",
@@ -478,7 +618,10 @@ async function generateHls(sourcePath, outputDir, metadata) {
       "-hls_segment_filename",
       path.join(outputDir, "segment_%03d.m4s"),
       playlistPath
-    ]);
+    );
+
+    await runProcess(FFMPEG_PATH, args, { cwd: outputDir });
+    await stampHlsPlaylist(playlistPath);
     return playlistPath;
   }
 
@@ -492,6 +635,12 @@ async function generateHls(sourcePath, outputDir, metadata) {
     "medium",
     "-crf",
     "20",
+    "-pix_fmt",
+    "yuv420p",
+    "-force_key_frames",
+    "expr:gte(t,n_forced*4)",
+    "-sc_threshold",
+    "0",
     "-c:a",
     "aac",
     "-b:a",
@@ -509,16 +658,355 @@ async function generateHls(sourcePath, outputDir, metadata) {
 
   if (TRANSCODE_TYPES.has(metadata.masterType)) {
     await runProcess(FFMPEG_PATH, args);
+    await stampHlsPlaylist(playlistPath);
     return playlistPath;
   }
 
   throw httpError(400, `Unsupported transcode masterType: ${metadata.masterType}`);
 }
 
+function shouldCreatePreviewHls(metadata, probe) {
+  return (
+    metadata.sourceKind === "master_package" &&
+    metadata.masterType === "dolby_vision" &&
+    !isHevcCodec(probe.codec_name)
+  );
+}
+
+function isHevcCodec(codecName) {
+  const value = String(codecName || "").toLowerCase();
+  return value === "hevc" || value === "h265";
+}
+
+async function generatePreviewHls(sourcePath, outputDir, playlistPath) {
+  await runProcess(FFMPEG_PATH, [
+    "-y",
+    "-i",
+    sourcePath,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a?",
+    "-vf",
+    "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-pix_fmt",
+    "yuv420p",
+    "-force_key_frames",
+    "expr:gte(t,n_forced*4)",
+    "-sc_threshold",
+    "0",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-hls_time",
+    "4",
+    "-hls_playlist_type",
+    "vod",
+    "-hls_flags",
+    "independent_segments",
+    "-hls_segment_filename",
+    path.join(outputDir, "segment_%03d.ts"),
+    playlistPath
+  ]);
+  await stampHlsPlaylist(playlistPath);
+}
+
+async function stampHlsPlaylist(playlistPath) {
+  const version = Date.now();
+  const text = await fsp.readFile(playlistPath, "utf8");
+  const stamped = text
+    .split(/\r?\n/)
+    .map((line) => {
+      if (line.startsWith("#EXT-X-MAP:")) {
+        return line.replace(/URI="([^"?]+)"/, `URI="$1?v=${version}"`);
+      }
+
+      if (!line.startsWith("#") && /\.(?:ts|m4s)$/.test(line)) {
+        return `${line}?v=${version}`;
+      }
+
+      return line;
+    })
+    .join("\n");
+
+  await fsp.writeFile(playlistPath, stamped);
+}
+
 function mediaUrlFromPath(filePath) {
   assertInside(MEDIA_ROOT, filePath);
   const relative = path.relative(MEDIA_ROOT, filePath).replace(/\\/g, "/");
   return `/media/${relative}`;
+}
+
+function extractDolbyVisionMetadata(probe) {
+  const sideDataList = Array.isArray(probe.side_data_list) ? probe.side_data_list : [];
+  const dovi = sideDataList.find((item) =>
+    String(item.side_data_type || "").toLowerCase().includes("dovi")
+  );
+
+  if (!dovi) {
+    return {};
+  }
+
+  return {
+    profile: firstDefined(dovi.dv_profile, dovi.profile),
+    level: firstDefined(dovi.dv_level, dovi.level),
+    compatibilityId: firstDefined(
+      dovi.dv_bl_signal_compatibility_id,
+      dovi.bl_signal_compatibility_id,
+      dovi.compatibility_id
+    ),
+    rpuPresent: firstDefined(dovi.rpu_present_flag, dovi.rpu_present),
+    elPresent: firstDefined(dovi.el_present_flag, dovi.el_present),
+    blPresent: firstDefined(dovi.bl_present_flag, dovi.bl_present)
+  };
+}
+
+async function parseDolbyProfileFile(file, clipName = "") {
+  if (!file) {
+    return {};
+  }
+
+  const buffer = await fsp.readFile(file.packagePath || file.tempPath);
+  const text = decodeTextBuffer(buffer);
+  const normalized = text.replace(/\u0000/g, " ");
+  const lowerName = file.filename.toLowerCase();
+  const targetText = clipName ? extractDolbyXmlClipBlock(normalized, clipName) || normalized : normalized;
+
+  return {
+    profile: matchFirst(targetText, [
+      /dolby\s*vision\s*profile\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)/i,
+      /\bdv[_-]?profile\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)/i,
+      /\bdovi[_-]?profile\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)/i,
+      /dvmd-fw\/([0-9]+)_([0-9]+)(?:_[0-9]+)?/i,
+      /\bprofile(?:number|id|version)?\s*[:=]\s*["']?\s*([0-9]+(?:\.[0-9]+)?)/i,
+      /\bprofile(?:number|id|version)?\s*=\s*["']\s*([0-9]+(?:\.[0-9]+)?)/i,
+      /<[^>]*profile[^>]*>\s*([0-9]+(?:\.[0-9]+)?)\s*<\/[^>]*profile[^>]*>/i,
+      /<[^>]*(?:profileversion|profilenumber|profileid)[^>]*>\s*([0-9]+(?:\.[0-9]+)?)\s*<\/[^>]*>/i,
+      /\bprofile\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)/i,
+      /dvhe\.([0-9]{2})\./i,
+      /dvh[ei]\.([0-9]{2})\./i,
+      /\bp([0-9]+(?:\.[0-9]+)?)\b/i
+    ]),
+    level: matchFirst(targetText, [
+      /\bdv[_-]?level\s*[:=]\s*([0-9]+)/i,
+      /\bdovi[_-]?level\s*[:=]\s*([0-9]+)/i,
+      /\blevel(?:id|number)?\s*[:=]\s*["']?\s*([0-9]+)/i,
+      /\blevel(?:id|number)?\s*=\s*["']\s*([0-9]+)/i,
+      /<[^>]*level[^>]*>\s*([0-9]+)\s*<\/[^>]*level[^>]*>/i,
+      /<[^>]*(?:levelid|levelnumber)[^>]*>\s*([0-9]+)\s*<\/[^>]*>/i,
+      /\blevel\s*[:=]\s*([0-9]+)/i,
+      /dvhe\.[0-9]{2}\.([0-9]{2})/i
+    ]),
+    compatibilityId: matchFirst(targetText, [
+      /\bcompatibility(?:\s*id)?\s*[:=]\s*([A-Za-z0-9_.-]+)/i,
+      /\bcompatibility(?:id)?\s*=\s*["']\s*([A-Za-z0-9_.-]+)/i,
+      /<[^>]*compatibility[^>]*>\s*([A-Za-z0-9_.-]+)\s*<\/[^>]*compatibility[^>]*>/i,
+      /\bbl[_-]?signal[_-]?compatibility[_-]?id\s*[:=]\s*([A-Za-z0-9_.-]+)/i,
+      /<[^>]*bl[^>]*signal[^>]*compatibility[^>]*>\s*([A-Za-z0-9_.-]+)\s*<\/[^>]*>/i
+    ]),
+    matchedClipName: clipName && targetText !== normalized ? clipName : null,
+    rawKind: lowerName.endsWith(".xml") ? "xml" : path.extname(lowerName).replace(".", "") || "unknown",
+    sourceFile: file.filename
+  };
+}
+
+async function parseDolbyProfileFiles(files = [], clipName = "") {
+  for (const file of files) {
+    try {
+      const parsed = await parseDolbyProfileFile(file, clipName);
+      if (parsed.profile || parsed.level || parsed.compatibilityId) {
+        return parsed;
+      }
+    } catch {
+      // Ignore non-text sidecars here; the embedded stream probe remains authoritative.
+    }
+  }
+
+  return {};
+}
+
+function extractDolbyXmlClipBlock(text, clipName) {
+  const target = clipName.trim();
+  if (!target) {
+    return null;
+  }
+
+  const index = text.toLowerCase().indexOf(target.toLowerCase());
+  if (index === -1) {
+    return null;
+  }
+
+  const starts = [
+    text.lastIndexOf("<Shot", index),
+    text.lastIndexOf("<Clip", index),
+    text.lastIndexOf("<Segment", index),
+    text.lastIndexOf("<Asset", index),
+    text.lastIndexOf("<Event", index)
+  ].filter((value) => value >= 0);
+  const start = starts.length ? Math.max(...starts) : Math.max(0, index - 8000);
+
+  const tail = text.slice(index);
+  const endCandidates = ["</Shot>", "</Clip>", "</Segment>", "</Asset>", "</Event>"]
+    .map((tag) => {
+      const found = tail.indexOf(tag);
+      return found >= 0 ? index + found + tag.length : -1;
+    })
+    .filter((value) => value >= 0);
+  const end = endCandidates.length ? Math.min(...endCandidates) : Math.min(text.length, index + 8000);
+
+  return text.slice(start, end);
+}
+
+function decodeTextBuffer(buffer) {
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString("utf16le");
+  }
+
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return swapUtf16Be(buffer.subarray(2)).toString("utf16le");
+  }
+
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return buffer.subarray(3).toString("utf8");
+  }
+
+  return buffer.toString("utf8");
+}
+
+function swapUtf16Be(buffer) {
+  const output = Buffer.from(buffer);
+  for (let index = 0; index + 1 < output.length; index += 2) {
+    const byte = output[index];
+    output[index] = output[index + 1];
+    output[index + 1] = byte;
+  }
+  return output;
+}
+
+function matchFirst(text, patterns) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1] && match?.[2] && pattern.source.includes("dvmd-fw")) {
+      return `${Number(match[1])}.${Number(match[2])}`;
+    }
+
+    if (match?.[1]) {
+      const value = match[1].replace(/^0+(\d)/, "$1");
+      return pattern.source.includes("dvhe") ? String(Number(value)) : value;
+    }
+  }
+
+  return null;
+}
+
+function validateDolbyVisionUpload(metadata, probe, sidecar) {
+  if (metadata.masterType !== "dolby_vision") {
+    return;
+  }
+
+  const dovi = extractDolbyVisionMetadata(probe);
+  const profile = sidecar.profile || stringOrNull(dovi.profile);
+  const hasRpu = booleanOrFalse(dovi.rpuPresent);
+
+  if (!profile && !hasRpu) {
+    const sidecarHint = sidecar.sourceFile
+      ? ` A Dolby sidecar candidate (${sidecar.sourceFile}) was scanned but no profile value was found in it.`
+      : "";
+    throw httpError(
+      422,
+      `Dolby Vision metadata was not detected. Use a source video with embedded DOVI/RPU metadata, or upload the complete Dolby Vision master package containing its XML/RPU/IMF metadata.${sidecarHint} If the XML uses a different clip name, fill the XML clip name field with the clip name shown inside the XML.`
+    );
+  }
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function stringOrNull(value) {
+  return value === undefined || value === null || value === "" ? null : String(value);
+}
+
+function booleanOrFalse(value) {
+  if (value === undefined || value === null || value === "") {
+    return false;
+  }
+
+  return value === true || value === 1 || value === "1" || value === "true";
+}
+
+function prettyCodec(codecName, masterType) {
+  const value = String(codecName || "").toLowerCase();
+  if (value === "hevc" || value === "h265") {
+    return "HEVC / H.265";
+  }
+
+  if (value === "h264") {
+    return "H.264 / AVC";
+  }
+
+  if (value.startsWith("prores")) {
+    return "Apple ProRes";
+  }
+
+  if (value === "jpeg2000") {
+    return "JPEG 2000";
+  }
+
+  return defaultCodec(masterType, masterType === "dolby_vision" ? "copy" : "transcode");
+}
+
+function prettyColorSpace(probe, masterType) {
+  const color = String(probe.color_space || probe.color_primaries || "").toLowerCase();
+  if (color.includes("bt2020") || color.includes("2020")) {
+    return "BT.2020";
+  }
+
+  if (color.includes("bt709") || color.includes("709")) {
+    return "BT.709";
+  }
+
+  return defaultColorSpace(masterType);
+}
+
+function prettyTransferFunction(probe, masterType) {
+  const transfer = String(probe.color_transfer || "").toLowerCase();
+  if (transfer.includes("smpte2084") || transfer.includes("pq")) {
+    return "PQ / ST2084";
+  }
+
+  if (transfer.includes("arib-std-b67") || transfer.includes("hlg")) {
+    return "HLG";
+  }
+
+  if (transfer.includes("bt709") || transfer.includes("709")) {
+    return "BT.709";
+  }
+
+  return defaultTransferFunction(masterType);
+}
+
+function inferBitDepth(probe, masterType) {
+  const explicit = parseInteger(probe.bits_per_raw_sample);
+  if (explicit) {
+    return explicit;
+  }
+
+  const pixFmt = String(probe.pix_fmt || "");
+  const match = pixFmt.match(/(?:p|le|be)(10|12|16)/);
+  if (match) {
+    return Number(match[1]);
+  }
+
+  return defaultBitDepth(masterType);
 }
 
 async function directusRequest(pathname, token, options = {}) {
@@ -603,11 +1091,12 @@ async function findProjectBySlug(token, slug) {
   return data.data[0] || null;
 }
 
-async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath, probe, files) {
+async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath, probe, files, sidecar = {}) {
   const token = await directusLogin();
   const existingProject = await findProjectBySlug(token, metadata.slug);
   const coverImageId = await directusUploadFile(token, files.cover, `${metadata.title} cover`);
   const posterImageId = await directusUploadFile(token, files.poster, `${metadata.title} poster`);
+  const dovi = extractDolbyVisionMetadata(probe);
   const projectPayload = {
     title: metadata.title,
     slug: metadata.slug,
@@ -650,13 +1139,19 @@ async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath,
     type: metadata.masterType,
     hls_url: mediaUrlFromPath(playlistPath),
     file_url: mediaUrlFromPath(sourcePath),
-    codec: metadata.codec || probe.codec_name,
+    codec: metadata.codec || prettyCodec(probe.codec_name, metadata.masterType),
     resolution_width: metadata.resolutionWidth || probe.width,
     resolution_height: metadata.resolutionHeight || probe.height,
-    color_space: metadata.colorSpace,
-    transfer_function: metadata.transferFunction,
-    bit_depth: metadata.bitDepth,
+    color_space: metadata.colorSpace || prettyColorSpace(probe, metadata.masterType),
+    transfer_function: metadata.transferFunction || prettyTransferFunction(probe, metadata.masterType),
+    bit_depth: metadata.bitDepth || inferBitDepth(probe, metadata.masterType),
     bitrate_mbps: metadata.bitrateMbps,
+    dolby_profile: sidecar.profile || stringOrNull(dovi.profile),
+    dolby_level: sidecar.level || stringOrNull(dovi.level),
+    dolby_compatibility_id: sidecar.compatibilityId || stringOrNull(dovi.compatibilityId),
+    dolby_rpu_present: booleanOrFalse(dovi.rpuPresent),
+    dolby_el_present: booleanOrFalse(dovi.elPresent),
+    dolby_bl_present: booleanOrFalse(dovi.blPresent),
     is_default: metadata.isDefault,
     sort_order: 0,
     status: "ready",
@@ -664,14 +1159,42 @@ async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath,
     notes: metadata.notes
   };
 
-  const master = (
-    await directusRequest("/items/video_masters", token, {
-      method: "POST",
-      body: masterPayload
-    })
-  ).data;
+  const existingMasters = metadata.overwrite
+    ? await findMastersByIdentity(token, project.id, metadata)
+    : [];
+  const master = existingMasters[0]
+    ? (
+        await directusRequest(`/items/video_masters/${existingMasters[0].id}`, token, {
+          method: "PATCH",
+          body: masterPayload
+        })
+      ).data
+    : (
+        await directusRequest("/items/video_masters", token, {
+          method: "POST",
+          body: masterPayload
+        })
+      ).data;
+
+  for (const staleMaster of existingMasters.slice(1)) {
+    await directusRequest(`/items/video_masters/${staleMaster.id}`, token, {
+      method: "DELETE"
+    });
+  }
 
   return { project, master };
+}
+
+async function findMastersByIdentity(token, projectId, metadata) {
+  const params = new URLSearchParams({
+    "filter[project_id][_eq]": String(projectId),
+    "filter[type][_eq]": metadata.masterType,
+    "filter[label][_eq]": metadata.label,
+    sort: "id",
+    limit: "-1"
+  });
+  const data = await directusRequest(`/items/video_masters?${params.toString()}`, token);
+  return data.data || [];
 }
 
 async function clearDefaultMasters(token, projectId) {
@@ -699,22 +1222,42 @@ async function handleUpload(req, res) {
     requireUploadAuth(req);
     parsed = await parseMultipart(req);
     const metadata = normalizeUpload(parsed.fields);
-    const sourcePath = await moveSourceFile(parsed.file, metadata);
+    const packageInfo =
+      metadata.sourceKind === "master_package"
+        ? await moveMasterPackageFiles(parsed.files.masterPackage, metadata)
+        : null;
+    const sourcePath = packageInfo
+      ? packageInfo.sourcePath
+      : await moveSourceFile(parsed.file, metadata);
     const outputDir = await prepareOutputDir(metadata);
     const probe = await probeVideo(sourcePath);
-    const playlistPath = await generateHls(sourcePath, outputDir, metadata);
+    const dolbySidecar = await parseDolbyProfileFiles(
+      packageInfo?.sidecars || [],
+      parsed.fields.dolbyXmlClipName || parsed.fields.dolby_xml_clip_name || ""
+    );
+    validateDolbyVisionUpload(metadata, probe, dolbySidecar);
+    const playlistPath = await generateHls(sourcePath, outputDir, metadata, probe);
     const records = await createOrUpdateDirectusRecords(
       metadata,
       sourcePath,
       playlistPath,
       probe,
-      parsed.files
+      parsed.files,
+      dolbySidecar
     );
 
     sendJson(res, 201, {
       status: "ok",
       project: records.project,
       master: records.master,
+      sourceKind: metadata.sourceKind,
+      masterPackage: packageInfo
+        ? {
+            fileCount: packageInfo.files.length,
+            sourceFile: path.relative(packageInfo.packageDir, packageInfo.sourcePath).replace(/\\/g, "/"),
+            sidecarCount: packageInfo.sidecars.length
+          }
+        : null,
       sourceUrl: mediaUrlFromPath(sourcePath),
       hlsUrl: mediaUrlFromPath(playlistPath),
       probe
@@ -766,6 +1309,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && url.pathname.startsWith("/assets/")) {
+    await handleAsset(url.pathname, res);
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/uploads/videos") {
     await handleUpload(req, res);
     return;
@@ -795,9 +1343,50 @@ async function handleMedia(pathname, res) {
     res.writeHead(200, {
       "Content-Type": contentType(filePath),
       "Content-Length": stat.size,
-      "Cache-Control": "public, max-age=86400"
+      "Cache-Control": cacheControl(filePath)
     });
     fs.createReadStream(filePath).pipe(res);
+  } catch (error) {
+    sendJson(res, error.statusCode || 404, {
+      status: "error",
+      error: error.message
+    });
+  }
+}
+
+async function handleAsset(pathname, res) {
+  try {
+    const fileId = decodeURIComponent(pathname.replace(/^\/assets\//, "")).split("/")[0];
+    if (!/^[a-zA-Z0-9-]+$/.test(fileId)) {
+      throw httpError(400, "Invalid asset id.");
+    }
+
+    const token = await directusLogin();
+    const response = await fetch(`${DIRECTUS_URL}/assets/${encodeURIComponent(fileId)}`, {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    if (!response.ok) {
+      throw httpError(response.status, `Directus asset request failed: ${response.statusText}`);
+    }
+
+    res.writeHead(200, {
+      "Content-Type": response.headers.get("content-type") || "application/octet-stream",
+      ...(response.headers.get("content-length")
+        ? { "Content-Length": response.headers.get("content-length") }
+        : {}),
+      "Cache-Control": "public, max-age=86400"
+    });
+
+    if (response.body) {
+      Readable.fromWeb(response.body).pipe(res);
+      return;
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.end(buffer);
   } catch (error) {
     sendJson(res, error.statusCode || 404, {
       status: "error",
@@ -818,4 +1407,10 @@ function contentType(filePath) {
       ".mov": "video/quicktime"
     }[ext] || "application/octet-stream"
   );
+}
+
+function cacheControl(filePath) {
+  return path.extname(filePath).toLowerCase() === ".m3u8"
+    ? "no-cache, no-store, must-revalidate"
+    : "public, max-age=86400";
 }

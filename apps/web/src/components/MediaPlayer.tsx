@@ -42,46 +42,40 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
   const currentMasterRef = useRef<VideoMaster | null>(null);
   const fallbackAttemptedRef = useRef(false);
   const mountedRef = useRef(true);
+  const polyfillInstalledRef = useRef(false);
 
   const [activeMasterId, setActiveMasterId] = useState(() => getDefaultMaster(masters)?.id);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<DeviceCapabilities | null>(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   const activeMaster = useMemo(
-    () => masters.find((master) => master.id === activeMasterId) || getDefaultMaster(masters),
+    () => masters.find((m) => m.id === activeMasterId) ?? getDefaultMaster(masters),
     [activeMasterId, masters],
   );
 
   const defaultMaster = useMemo(() => getDefaultMaster(masters), [masters]);
   const sdrFallback = useMemo(
-    () => masters.find((master) => master.type === "sdr") || defaultMaster,
+    () => masters.find((m) => m.type === "sdr") ?? defaultMaster,
     [defaultMaster, masters],
   );
 
-  /* ---- Device capability detection ---- */
-  useEffect(() => {
-    setCapabilities(detectCapabilities());
-  }, []);
-
-  /* ---- Mount / unmount guard ---- */
   useEffect(() => {
     mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
+    setCapabilities(detectCapabilities());
+    return () => { mountedRef.current = false; };
   }, []);
 
-  /* ---- Native video events ---- */
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const onPlaying = () => setPlaybackState("playing");
-    const onPause = () => setPlaybackState("paused");
-    const onWaiting = () => {
-      if (playbackState === "playing") setPlaybackState("loading");
-    };
+    const onPause  = () => setPlaybackState("paused");
+    const onWaiting = () =>
+      setPlaybackState((s) => (s === "playing" ? "loading" : s));
 
     video.addEventListener("playing", onPlaying);
     video.addEventListener("pause", onPause);
@@ -92,11 +86,35 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
       video.removeEventListener("pause", onPause);
       video.removeEventListener("waiting", onWaiting);
     };
-  }, [playbackState]);
+  }, []);
 
-  /* ---- Load active master ---- */
+  const handleFatalPlaybackError = useCallback(
+    async (loadError: Error | null) => {
+      const failedMaster = currentMasterRef.current;
+      if (!mountedRef.current) return;
+
+      setPlaybackState("error");
+
+      if (
+        sdrFallback &&
+        failedMaster &&
+        sdrFallback.id !== failedMaster.id &&
+        !fallbackAttemptedRef.current
+      ) {
+        fallbackAttemptedRef.current = true;
+        setError(`${failedMaster.label} playback failed. Falling back to ${sdrFallback.label}.`);
+        setActiveMasterId(sdrFallback.id);
+        return;
+      }
+
+      setError(loadError?.message || "Playback failed for this master.");
+    },
+    [sdrFallback],
+  );
+
   useEffect(() => {
     let cancelled = false;
+    mountedRef.current = true;
 
     async function loadMaster() {
       const video = videoRef.current;
@@ -120,7 +138,10 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
 
         if (cancelled || !mountedRef.current) return;
 
-        shaka.polyfill.installAll();
+        if (!polyfillInstalledRef.current) {
+          shaka.polyfill.installAll();
+          polyfillInstalledRef.current = true;
+        }
 
         if (!shaka.Player.isBrowserSupported()) {
           throw new Error("This browser is not supported by Shaka Player.");
@@ -156,25 +177,17 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
         setPlaybackState(video.paused ? "ready" : "playing");
 
         if (wasPlaying) {
-          await video.play().catch(() => {
-            setPlaybackState("ready");
-          });
+          await video.play().catch(() => setPlaybackState("ready"));
         }
       } catch (loadError) {
-        await handleFatalPlaybackError(
-          loadError instanceof Error ? loadError : null,
-        );
+        await handleFatalPlaybackError(loadError instanceof Error ? loadError : null);
       }
     }
 
     void loadMaster();
+    return () => { cancelled = true; };
+  }, [activeMaster, handleFatalPlaybackError, reloadNonce]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [activeMaster]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /* ---- Cleanup Shaka on unmount ---- */
   useEffect(() => {
     return () => {
       void playerRef.current?.destroy();
@@ -182,48 +195,18 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
     };
   }, []);
 
-  /* ---- Fatal error → SDR fallback ---- */
-  const handleFatalPlaybackError = useCallback(
-    async (loadError: Error | null) => {
-      const failedMaster = currentMasterRef.current;
-      if (!mountedRef.current) return;
-
-      setPlaybackState("error");
-
-      if (
-        sdrFallback &&
-        failedMaster &&
-        sdrFallback.id !== failedMaster.id &&
-        !fallbackAttemptedRef.current
-      ) {
-        fallbackAttemptedRef.current = true;
-        setError(
-          `${failedMaster.label} playback failed — falling back to ${sdrFallback.label}.`,
-        );
-        setActiveMasterId(sdrFallback.id);
-        return;
-      }
-
-      setError(loadError?.message || "Playback failed for this master.");
-    },
-    [sdrFallback],
-  );
-
-  /* ---- User-initiated master switch ---- */
   const switchMaster = useCallback((master: VideoMaster) => {
     fallbackAttemptedRef.current = false;
     setActiveMasterId(master.id);
   }, []);
 
-  /* ---- Retry after error ---- */
   const retry = useCallback(() => {
     if (activeMaster) {
       fallbackAttemptedRef.current = false;
-      switchMaster(activeMaster);
+      setReloadNonce((value) => value + 1);
     }
-  }, [activeMaster, switchMaster]);
+  }, [activeMaster]);
 
-  /* ---- No masters edge case ---- */
   if (!activeMaster) {
     return (
       <div className="player-shell empty-state" role="status">
@@ -241,140 +224,163 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
 
   return (
     <section className="player-shell" aria-label="Video player">
-      <div className="player-frame">
-        <video
-          ref={videoRef}
-          className="video-player"
-          controls
-          playsInline
-          poster={poster || undefined}
-          aria-label={`Video player — ${activeMaster.label}`}
-          preload="metadata"
-        />
-        <div
-          className={`playback-badge ${playbackState}`}
-          aria-live="polite"
-          aria-label={`Playback status: ${playbackState}`}
-        >
-          {playbackState}
-        </div>
-      </div>
+      <div className={infoOpen ? "player-layout info-open" : "player-layout"}>
+        <div className="player-main">
+          <div className="player-frame" data-state={playbackState}>
+            <video
+              ref={videoRef}
+              className="video-player"
+              controls
+              playsInline
+              poster={poster || undefined}
+              aria-label={`Video player - ${activeMaster.label}`}
+              preload="metadata"
+            />
+          </div>
 
-      <div className="master-bar" role="group" aria-label="Video master switcher">
-        {masters.map((master) => (
-          <button
-            className={
-              master.id === activeMaster.id
-                ? "master-button active"
-                : "master-button"
-            }
-            key={master.id}
-            onClick={() => switchMaster(master)}
-            type="button"
-            aria-pressed={master.id === activeMaster.id}
-            aria-label={`Switch to ${master.label} (${master.type.replace("_", " ")})`}
-          >
-            <span>{master.label}</span>
-            <small>{master.type.replace("_", " ")}</small>
-          </button>
-        ))}
-      </div>
+          <div className="player-controls-row">
+            <div className="master-bar" role="group" aria-label="Video master switcher">
+              {masters.map((master) => (
+                <button
+                  className={
+                    master.id === activeMaster.id ? "master-button active" : "master-button"
+                  }
+                  key={master.id}
+                  onClick={() => switchMaster(master)}
+                  type="button"
+                  aria-pressed={master.id === activeMaster.id}
+                  aria-label={`Switch to ${master.label} (${master.type.replace("_", " ")})`}
+                >
+                  <span
+                    className={`master-dot master-dot-${master.type}`}
+                    aria-hidden="true"
+                  />
+                  <span className="master-button-label">
+                    <span>{master.label}</span>
+                    <small>{master.type.replace(/_/g, " ")}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
 
-      {hdrWarning ? (
-        <p className="player-warning" role="alert">
-          {hdrWarning}
-        </p>
-      ) : null}
-
-      {error ? (
-        <div
-          className={playbackState === "error" ? "player-error" : "player-warning"}
-          role="alert"
-        >
-          <p style={{ margin: 0 }}>{error}</p>
-          {playbackState === "error" && (
             <button
+              className={infoOpen ? "info-toggle active" : "info-toggle"}
+              onClick={() => setInfoOpen((open) => !open)}
               type="button"
-              onClick={retry}
-              className="master-button"
-              style={{ marginTop: 10 }}
-              aria-label="Retry playback"
+              aria-expanded={infoOpen}
+              aria-controls="player-info-panel"
             >
-              Retry
+              {infoOpen ? "Hide Info" : "Show Info"}
             </button>
-          )}
-        </div>
-      ) : null}
+          </div>
 
-      {/* ---- Active master technical metadata ---- */}
-      <dl className="tech-grid" aria-label="Current master technical details">
-        <div>
-          <dt>Type</dt>
-          <dd>{activeMaster.type.replace("_", " ")}</dd>
-        </div>
-        <div>
-          <dt>Codec</dt>
-          <dd>{activeMaster.codec || "Unknown"}</dd>
-        </div>
-        <div>
-          <dt>Resolution</dt>
-          <dd>{resolutionLabel || "Unknown"}</dd>
-        </div>
-        <div>
-          <dt>Color Space</dt>
-          <dd>{activeMaster.color_space || "Unknown"}</dd>
-        </div>
-        <div>
-          <dt>Transfer</dt>
-          <dd>{activeMaster.transfer_function || "Unknown"}</dd>
-        </div>
-        <div>
-          <dt>Bit Depth</dt>
-          <dd>
-            {activeMaster.bit_depth ? `${activeMaster.bit_depth}-bit` : "Unknown"}
-          </dd>
-        </div>
-      </dl>
+          {hdrWarning ? (
+            <p className="player-warning" role="alert">
+              {hdrWarning}
+            </p>
+          ) : null}
 
-      {/* ---- Device capability hints ---- */}
-      {capabilities ? (
-        <dl
-          className="capability-grid"
-          aria-label="Device playback capability detection"
+          {error ? (
+            <div
+              className={playbackState === "error" ? "player-error" : "player-warning"}
+              role="alert"
+            >
+              <p>{error}</p>
+              {playbackState === "error" ? (
+                <button
+                  type="button"
+                  onClick={retry}
+                  className="retry-button"
+                  aria-label="Retry playback"
+                >
+                  Retry
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+        <aside
+          className={infoOpen ? "player-info-panel open" : "player-info-panel"}
+          id="player-info-panel"
+          aria-hidden={!infoOpen}
         >
-          <div>
-            <dt>HDR Display</dt>
-            <dd>{capabilities.hdr ? "Likely" : "Not detected"}</dd>
+          <div className="info-panel-header">
+            <div>
+              <p className="eyebrow">Playback Info</p>
+              <h2>{activeMaster.label}</h2>
+            </div>
+            <button
+              className="info-close"
+              onClick={() => setInfoOpen(false)}
+              type="button"
+              aria-label="Close info panel"
+            >
+              Close
+            </button>
           </div>
-          <div>
-            <dt>P3 Gamut</dt>
-            <dd>{capabilities.p3 ? "Yes" : "No"}</dd>
+
+          <div className="info-section">
+            <h3>Current Master</h3>
+            <dl className="tech-grid" aria-label="Current master technical details">
+              <div><dt>Type</dt><dd>{activeMaster.type.replace(/_/g, " ")}</dd></div>
+              <div><dt>Codec</dt><dd>{activeMaster.codec || "N/A"}</dd></div>
+              <div><dt>Resolution</dt><dd>{resolutionLabel || "N/A"}</dd></div>
+              <div><dt>Color Space</dt><dd>{activeMaster.color_space || "N/A"}</dd></div>
+              <div><dt>Transfer</dt><dd>{activeMaster.transfer_function || "N/A"}</dd></div>
+              <div>
+                <dt>Bit Depth</dt>
+                <dd>{activeMaster.bit_depth ? `${activeMaster.bit_depth}-bit` : "N/A"}</dd>
+              </div>
+              {activeMaster.type === "dolby_vision" ? (
+                <>
+                  <div><dt>DV Profile</dt><dd>{activeMaster.dolby_profile || "N/A"}</dd></div>
+                  <div><dt>DV Level</dt><dd>{activeMaster.dolby_level || "N/A"}</dd></div>
+                  <div><dt>Compat.</dt><dd>{activeMaster.dolby_compatibility_id || "N/A"}</dd></div>
+                  <div><dt>RPU</dt><dd>{formatPresent(activeMaster.dolby_rpu_present)}</dd></div>
+                  <div><dt>EL</dt><dd>{formatPresent(activeMaster.dolby_el_present)}</dd></div>
+                  <div><dt>BL</dt><dd>{formatPresent(activeMaster.dolby_bl_present)}</dd></div>
+                </>
+              ) : null}
+            </dl>
           </div>
-          <div>
-            <dt>Rec.2020</dt>
-            <dd>{capabilities.rec2020 ? "Yes" : "No"}</dd>
-          </div>
-          <div>
-            <dt>HEVC</dt>
-            <dd>{capabilities.hevc ? "Maybe" : "Unknown"}</dd>
-          </div>
-          <div>
-            <dt>Native HLS</dt>
-            <dd>{capabilities.nativeHls ? "Yes" : "No"}</dd>
-          </div>
-        </dl>
-      ) : null}
+
+          {capabilities ? (
+            <div className="info-section">
+              <h3>Device</h3>
+              <dl className="capability-grid" aria-label="Device playback capability detection">
+                <div>
+                  <dt>HDR Display</dt>
+                  <dd>{capabilities.hdr ? "Likely" : "Not detected"}</dd>
+                </div>
+                <div>
+                  <dt>P3 Gamut</dt>
+                  <dd>{capabilities.p3 ? "Yes" : "No"}</dd>
+                </div>
+                <div>
+                  <dt>Rec.2020</dt>
+                  <dd>{capabilities.rec2020 ? "Yes" : "No"}</dd>
+                </div>
+                <div>
+                  <dt>HEVC</dt>
+                  <dd>{capabilities.hevc ? "Maybe" : "Unknown"}</dd>
+                </div>
+                <div>
+                  <dt>Native HLS</dt>
+                  <dd>{capabilities.nativeHls ? "Yes" : "No"}</dd>
+                </div>
+              </dl>
+            </div>
+          ) : null}
+        </aside>
+      </div>
     </section>
   );
 }
 
-/* ---- Helpers ---- */
-
 function getDefaultMaster(masters: VideoMaster[]) {
   return (
-    masters.find(
-      (master) => master.is_default === true || master.is_default === 1,
-    ) || masters[0]
+    masters.find((m) => m.is_default === true || m.is_default === 1) ?? masters[0]
   );
 }
 
@@ -386,8 +392,12 @@ function isHdrMaster(master: VideoMaster) {
   );
 }
 
+function formatPresent(value: boolean | number | null) {
+  if (value === null || value === undefined) return "N/A";
+  return value === true || value === 1 ? "Yes" : "No";
+}
+
 function detectCapabilities(): DeviceCapabilities {
-  /* SSR guard */
   if (typeof window === "undefined") {
     return { hdr: false, p3: false, rec2020: false, hevc: false, nativeHls: false };
   }
@@ -396,14 +406,13 @@ function detectCapabilities(): DeviceCapabilities {
   const mediaCapabilities = navigator.mediaCapabilities;
 
   return {
-    hdr: window.matchMedia?.("(dynamic-range: high)")?.matches || false,
-    p3: window.matchMedia?.("(color-gamut: p3)")?.matches || false,
-    rec2020: window.matchMedia?.("(color-gamut: rec2020)")?.matches || false,
+    hdr: window.matchMedia?.("(dynamic-range: high)")?.matches ?? false,
+    p3: window.matchMedia?.("(color-gamut: p3)")?.matches ?? false,
+    rec2020: window.matchMedia?.("(color-gamut: rec2020)")?.matches ?? false,
     hevc:
       video.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') !== "" ||
       video.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') !== "" ||
       Boolean(mediaCapabilities),
-    nativeHls:
-      video.canPlayType("application/vnd.apple.mpegurl") !== "",
+    nativeHls: video.canPlayType("application/vnd.apple.mpegurl") !== "",
   };
 }

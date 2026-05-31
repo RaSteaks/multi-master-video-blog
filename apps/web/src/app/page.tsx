@@ -1,12 +1,9 @@
 import Link from "next/link";
 import { LiquidBackground } from "@/components/LiquidBackground";
-import { getPosts, getVideoProjects } from "@/lib/directus";
+import { getCounts } from "@/lib/directus";
 
 export default async function Home() {
-  const [posts, videos] = await Promise.all([getPosts(100), getVideoProjects(100)]);
-
-  const postCount = posts.length;
-  const videoCount = videos.length;
+  const { posts: postCount, videos: videoCount } = await getCounts();
 
   return (
     <>

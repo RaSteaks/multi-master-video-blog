@@ -19,7 +19,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" data-scroll-behavior="smooth">
+    <html lang="zh-CN" data-scroll-behavior="smooth" suppressHydrationWarning>
       <body>
         <a href="#main-content" className="skip-link">
           Skip to content
@@ -32,6 +32,7 @@ export default function RootLayout({
           <nav aria-label="Primary navigation">
             <Link href="/videos">Videos</Link>
             <Link href="/posts">Posts</Link>
+            <Link href="/upload">Upload</Link>
             <Link href="/about">About</Link>
           </nav>
         </header>

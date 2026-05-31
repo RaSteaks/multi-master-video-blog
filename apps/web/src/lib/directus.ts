@@ -28,6 +28,12 @@ export type VideoMaster = {
   transfer_function: string | null;
   bit_depth: number | null;
   bitrate_mbps: number | null;
+  dolby_profile: string | null;
+  dolby_level: string | null;
+  dolby_compatibility_id: string | null;
+  dolby_rpu_present: boolean | number | null;
+  dolby_el_present: boolean | number | null;
+  dolby_bl_present: boolean | number | null;
   is_default: boolean | number;
   sort_order: number | null;
   status: string | null;
@@ -55,10 +61,25 @@ type DirectusListResponse<T> = {
   data: T[];
 };
 
-type DirectusItemResponse<T> = {
-  data: T;
+type DirectusAggregateResponse = {
+  data: Array<{
+    count?: number | string | Record<string, number | string>;
+  }>;
 };
 
+/* ---- Field sets: list views omit heavy/unused fields ---- */
+const POST_LIST_FIELDS =
+  "id,title,slug,summary,cover_image,category,published,created_at";
+const POST_DETAIL_FIELDS =
+  "id,title,slug,summary,content,cover_image,tags,category,published,created_at,updated_at";
+
+const VIDEO_LIST_FIELDS =
+  "id,title,slug,description,cover_image,poster_image,category,tags,published,sort_order,created_at," +
+  "masters.id,masters.label,masters.type,masters.hls_url,masters.is_default,masters.sort_order";
+const VIDEO_DETAIL_FIELDS =
+  "id,title,slug,description,cover_image,poster_image,category,tags,published,sort_order,created_at,updated_at,masters.*";
+
+/* ---- Config ---- */
 let cachedToken: string | null = null;
 
 const directusUrl = stripTrailingSlash(
@@ -68,6 +89,10 @@ const directusUrl = stripTrailingSlash(
 );
 
 const showDrafts = process.env.DIRECTUS_SHOW_DRAFTS === "true";
+
+const REVALIDATE_SECONDS = process.env.DIRECTUS_REVALIDATE
+  ? Number(process.env.DIRECTUS_REVALIDATE)
+  : 60;
 
 function stripTrailingSlash(value: string) {
   return value.replace(/\/$/, "");
@@ -84,24 +109,17 @@ function addPublishedFilter(params: URLSearchParams) {
 }
 
 async function getToken() {
-  if (cachedToken) {
-    return cachedToken;
-  }
+  if (cachedToken) return cachedToken;
 
   const email = process.env.DIRECTUS_EMAIL;
   const password = process.env.DIRECTUS_PASSWORD;
-
-  if (!email || !password) {
-    return null;
-  }
+  if (!email || !password) return null;
 
   const response = await fetch(`${directusUrl}/auth/login`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
-    cache: "no-store"
+    cache: "no-store",
   });
 
   if (!response.ok) {
@@ -113,16 +131,17 @@ async function getToken() {
   return cachedToken;
 }
 
-async function directusFetch<T>(pathname: string) {
+async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
   const token = await getToken();
   const response = await fetch(`${directusUrl}${pathname}`, {
-    headers: token
-      ? {
-          Authorization: `Bearer ${token}`
-        }
-      : undefined,
-    cache: "no-store"
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    next: { revalidate: REVALIDATE_SECONDS },
   });
+
+  if (response.status === 401 && token && !retried) {
+    cachedToken = null;
+    return directusFetch<T>(pathname, true);
+  }
 
   if (!response.ok) {
     throw new Error(`Directus request failed: ${pathname} ${response.status}`);
@@ -132,30 +151,17 @@ async function directusFetch<T>(pathname: string) {
 }
 
 export function assetUrl(fileId: DirectusFileId) {
-  if (!fileId) {
-    return null;
-  }
-
-  return `${directusUrl}/assets/${fileId}`;
+  if (!fileId) return null;
+  return `/api/assets/${fileId}`;
 }
 
 export function mediaUrl(pathname: string | null | undefined) {
-  if (!pathname) {
-    return "";
-  }
-
-  if (pathname.startsWith("http://") || pathname.startsWith("https://")) {
-    return pathname;
-  }
-
+  if (!pathname) return "";
   return pathname;
 }
 
 export function masterResolution(master: VideoMaster) {
-  if (!master.resolution_width || !master.resolution_height) {
-    return null;
-  }
-
+  if (!master.resolution_width || !master.resolution_height) return null;
   return `${master.resolution_width}x${master.resolution_height}`;
 }
 
@@ -165,13 +171,11 @@ export function isPublished(item: { published: boolean | number }) {
 
 export async function getPosts(limit = 24) {
   const params = new URLSearchParams({
-    fields:
-      "id,title,slug,summary,content,cover_image,tags,category,published,created_at,updated_at",
+    fields: POST_LIST_FIELDS,
     sort: "-id",
-    limit: String(limit)
+    limit: String(limit),
   });
   addPublishedFilter(params);
-
   const response = await directusFetch<DirectusListResponse<Post>>(
     `/items/posts?${params.toString()}`
   );
@@ -180,28 +184,24 @@ export async function getPosts(limit = 24) {
 
 export async function getPost(slug: string) {
   const params = new URLSearchParams({
-    fields:
-      "id,title,slug,summary,content,cover_image,tags,category,published,created_at,updated_at",
+    fields: POST_DETAIL_FIELDS,
     "filter[slug][_eq]": slug,
-    limit: "1"
+    limit: "1",
   });
   addPublishedFilter(params);
-
   const response = await directusFetch<DirectusListResponse<Post>>(
     `/items/posts?${params.toString()}`
   );
-  return response.data[0] || null;
+  return response.data[0] ?? null;
 }
 
 export async function getVideoProjects(limit = 24) {
   const params = new URLSearchParams({
-    fields:
-      "id,title,slug,description,cover_image,poster_image,category,tags,published,sort_order,created_at,updated_at,masters.*",
+    fields: VIDEO_LIST_FIELDS,
     sort: "sort_order,-id",
-    limit: String(limit)
+    limit: String(limit),
   });
   addPublishedFilter(params);
-
   const response = await directusFetch<DirectusListResponse<VideoProject>>(
     `/items/video_projects?${params.toString()}`
   );
@@ -210,40 +210,50 @@ export async function getVideoProjects(limit = 24) {
 
 export async function getVideoProject(slug: string) {
   const params = new URLSearchParams({
-    fields:
-      "id,title,slug,description,cover_image,poster_image,category,tags,published,sort_order,created_at,updated_at,masters.*",
+    fields: VIDEO_DETAIL_FIELDS,
     "filter[slug][_eq]": slug,
-    limit: "1"
+    limit: "1",
   });
   addPublishedFilter(params);
-
   const response = await directusFetch<DirectusListResponse<VideoProject>>(
     `/items/video_projects?${params.toString()}`
   );
-  const project = response.data[0] || null;
+  const project = response.data[0] ?? null;
   return project ? sortMasters(project) : null;
 }
 
 export async function getCounts() {
-  const [posts, videos] = await Promise.all([getPosts(100), getVideoProjects(100)]);
+  const params = new URLSearchParams({ "aggregate[count]": "*" });
+  addPublishedFilter(params);
+  const qs = params.toString();
+
+  const [postsRes, videosRes] = await Promise.all([
+    directusFetch<DirectusAggregateResponse>(`/items/posts?${qs}`),
+    directusFetch<DirectusAggregateResponse>(`/items/video_projects?${qs}`),
+  ]);
+
   return {
-    posts: posts.length,
-    videos: videos.length
+    posts: aggregateCount(postsRes),
+    videos: aggregateCount(videosRes),
   };
+}
+
+function aggregateCount(response: DirectusAggregateResponse) {
+  const count = response.data[0]?.count;
+  if (typeof count === "object" && count !== null) {
+    return Number(count["*"] ?? 0);
+  }
+
+  return Number(count ?? 0);
 }
 
 function sortMasters(project: VideoProject) {
   return {
     ...project,
-    masters: [...(project.masters || [])].sort((a, b) => {
+    masters: [...(project.masters ?? [])].sort((a, b) => {
       const orderA = a.sort_order ?? 0;
       const orderB = b.sort_order ?? 0;
-
-      if (orderA !== orderB) {
-        return orderA - orderB;
-      }
-
-      return a.id - b.id;
-    })
+      return orderA !== orderB ? orderA - orderB : a.id - b.id;
+    }),
   };
 }

@@ -35,7 +35,7 @@ function readEnv(filePath) {
   return values;
 }
 
-const env = readEnv(cmsEnvPath);
+const env = { ...readEnv(cmsEnvPath), ...process.env };
 const baseUrl = (env.PUBLIC_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8055"}`).replace(/\/$/, "");
 
 async function request(pathname, options = {}) {
@@ -409,6 +409,12 @@ const fields = {
     stringField("transfer_function", false, { width: "half" }),
     integerField("bit_depth"),
     decimalField("bitrate_mbps"),
+    stringField("dolby_profile", false, { width: "half" }),
+    stringField("dolby_level", false, { width: "half" }),
+    stringField("dolby_compatibility_id", false, { width: "half" }),
+    booleanField("dolby_rpu_present", false),
+    booleanField("dolby_el_present", false),
+    booleanField("dolby_bl_present", false),
     booleanField("is_default", false),
     integerField("sort_order", { defaultValue: 0 }),
     selectField("status", statusTypes, false),

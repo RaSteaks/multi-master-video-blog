@@ -8,6 +8,7 @@ dist/
 build/
 .turbo/
 .vercel/
+*.tsbuildinfo
 
 # Astro or other optional frontend caches
 .astro/
