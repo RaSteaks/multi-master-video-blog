@@ -167,6 +167,15 @@ a {
    Layout
    ========================================================================== */
 
+/* ---- Home page: hide header, let orbital layout fill full viewport ---- */
+body:has(.orbital-home) .site-header {
+  display: none;
+}
+
+body:has(.orbital-home) .orbital-home {
+  min-height: 100dvh;
+}
+
 /* ---- Site Header ---- */
 .site-header {
   position: sticky;
@@ -176,11 +185,12 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(12, 14, 16, 0.90);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(10, 11, 13, 0.68);
   padding: 13px max(20px, calc((100vw - 1120px) / 2));
-  backdrop-filter: blur(20px) saturate(150%);
-  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(48px) saturate(200%) brightness(1.06);
+  -webkit-backdrop-filter: blur(48px) saturate(200%) brightness(1.06);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.05);
   transition: border-color var(--transition-base);
 }
 
@@ -1225,40 +1235,52 @@ h3 {
   will-change: transform;
 }
 
-/* ---- Amber (home) — warm D65 ambient glow in a dark reference room ---- */
+/* ---- Neutral Gray (home) — flowing liquid-glass silver in a dark reference room ---- */
+.liquid-bg--teal::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40%;
+  z-index: 1;
+  background: radial-gradient(ellipse at 50% 0%,
+    rgba(200, 205, 218, 0.08), transparent 65%);
+  pointer-events: none;
+}
 .liquid-bg--teal .blob-1 {
-  width: 65vw; height: 65vw; max-width: 1000px; max-height: 1000px;
+  width: 70vw; height: 70vw; max-width: 1100px; max-height: 1100px;
   background: radial-gradient(circle at 35% 45%,
-    rgba(200, 140, 40, 0.28), rgba(100, 70, 18, 0.12), transparent 65%);
+    rgba(112, 118, 132, 0.24), rgba(64, 68, 78, 0.09), transparent 65%);
   top: -18%; left: -12%;
   animation: float-blob-1 18s ease-in-out infinite;
 }
 .liquid-bg--teal .blob-2 {
-  width: 55vw; height: 55vw; max-width: 800px; max-height: 800px;
+  width: 60vw; height: 60vw; max-width: 900px; max-height: 900px;
   background: radial-gradient(circle at 60% 35%,
-    rgba(72, 144, 194, 0.20), rgba(28, 54, 90, 0.10), transparent 65%);
+    rgba(122, 120, 118, 0.18), rgba(70, 68, 66, 0.08), transparent 65%);
   top: 35%; right: -14%;
   animation: float-blob-2 20s ease-in-out infinite;
 }
 .liquid-bg--teal .blob-3 {
-  width: 50vw; height: 50vw; max-width: 700px; max-height: 700px;
+  width: 55vw; height: 55vw; max-width: 800px; max-height: 800px;
   background: radial-gradient(circle at 50% 50%,
-    rgba(160, 110, 30, 0.20), rgba(80, 55, 14, 0.08), transparent 65%);
+    rgba(102, 106, 118, 0.18), rgba(58, 60, 70, 0.07), transparent 65%);
   bottom: -20%; left: 22%;
   animation: float-blob-3 19s ease-in-out infinite;
 }
 .liquid-bg--teal .blob-4 {
-  width: 38vw; height: 38vw; max-width: 550px; max-height: 550px;
+  width: 42vw; height: 42vw; max-width: 620px; max-height: 620px;
   background: radial-gradient(circle at 50% 50%,
-    rgba(212, 170, 80, 0.15), transparent 65%);
-  top: 8%; left: 38%;
+    rgba(138, 142, 154, 0.15), transparent 65%);
+  top: 6%; left: 36%;
   animation: float-blob-4 22s ease-in-out infinite;
 }
 .liquid-bg--teal .blob-5 {
-  width: 32vw; height: 32vw; max-width: 450px; max-height: 450px;
+  width: 36vw; height: 36vw; max-width: 520px; max-height: 520px;
   background: radial-gradient(circle at 50% 50%,
-    rgba(60, 110, 160, 0.14), transparent 65%);
-  bottom: 2%; right: 12%;
+    rgba(84, 90, 104, 0.14), transparent 65%);
+  bottom: 2%; right: 10%;
   animation: float-blob-5 21s ease-in-out infinite;
 }
 
@@ -1378,7 +1400,7 @@ h3 {
 .liquid-grain {
   position: absolute;
   inset: 0;
-  opacity: 0.04;
+  opacity: 0.065;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23grain)'/%3E%3C/svg%3E");
   background-repeat: repeat;
   background-size: 256px 256px;
@@ -1609,6 +1631,428 @@ h3 {
   .portal-card {
     min-height: 170px;
     padding: 28px 20px;
+  }
+}
+
+/* ---- Orbital personal homepage ---- */
+.orbital-home {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  min-height: 100dvh;
+  padding: 42px 24px 72px;
+  place-items: center;
+}
+
+.orbital-stage {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-template-rows:
+    minmax(150px, auto)
+    minmax(205px, auto)
+    minmax(205px, auto)
+    auto;
+  gap: 28px;
+  width: min(1120px, 100%);
+  align-items: start;
+}
+
+.profile-hub {
+  position: relative;
+  z-index: 2;
+  --wy: -3px;
+  grid-column: 5 / 10;
+  grid-row: 2 / 3;
+  align-self: stretch;
+  display: grid;
+  width: 100%;
+  justify-items: center;
+  align-content: center;
+  /* Hub-specific overrides (beyond .floating-widget base) */
+  border-radius: 32px;
+  padding: 34px 30px;
+  text-align: center;
+}
+
+
+.profile-avatar {
+  display: grid;
+  width: 122px;
+  height: 122px;
+  margin-bottom: 24px;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid rgba(212, 146, 42, 0.35);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.16), transparent 35%),
+    linear-gradient(135deg, rgba(212, 146, 42, 0.35), rgba(72, 144, 194, 0.18)),
+    var(--surface-raised);
+  color: var(--text);
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  box-shadow:
+    0 0 0 8px rgba(212, 146, 42, 0.06),
+    0 18px 44px rgba(0, 0, 0, 0.36);
+}
+
+.profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-hub h1 {
+  margin-bottom: 8px;
+  font-size: clamp(2.0rem, 4.2vw, 4.0rem);
+}
+
+.profile-role {
+  margin-bottom: 14px;
+  color: var(--accent);
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.profile-hub .summary {
+  max-width: 320px;
+  font-size: 0.96rem;
+}
+
+.profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.github-link,
+.profile-about-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 1px solid var(--line-light);
+  border-radius: 999px;
+  background: rgba(138, 125, 125, 0.04);
+  padding: 0 16px;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 700;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.github-link:hover,
+.profile-about-link:hover {
+  border-color: rgba(212, 146, 42, 0.55);
+  background: var(--accent-soft);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+/* ==========================================================================
+   Floating Widget — shared glass base for all homepage cards
+   ========================================================================== */
+
+.floating-widget {
+  background: rgba(255, 255, 255, 0.072);
+  backdrop-filter: blur(40px) saturate(180%) brightness(1.07);
+  -webkit-backdrop-filter: blur(40px) saturate(180%) brightness(1.07);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 24px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    0 4px 20px rgba(0, 0, 0, 0.24),
+    0 1px 3px rgba(0, 0, 0, 0.16);
+  transform: translateY(var(--wy, 0px));
+  transition:
+    transform var(--transition-base),
+    box-shadow var(--transition-base),
+    border-color var(--transition-base),
+    background var(--transition-base);
+  will-change: transform;
+}
+
+.floating-widget:hover {
+  transform: translateY(calc(var(--wy, 0px) - 5px));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    0 16px 44px rgba(0, 0, 0, 0.34),
+    0 4px 10px rgba(0, 0, 0, 0.20);
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.096);
+}
+
+/* Profile hub: deeper blur + deeper shadow for visual prominence */
+.profile-hub.floating-widget {
+  backdrop-filter: blur(80px) saturate(220%) brightness(1.06);
+  -webkit-backdrop-filter: blur(80px) saturate(220%) brightness(1.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 20px 60px rgba(0, 0, 0, 0.38),
+    0 4px 14px rgba(0, 0, 0, 0.22);
+}
+
+/* ==========================================================================
+   Orbit Cards — layout-only; glass comes from .floating-widget
+   ========================================================================== */
+
+.orbit-card {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  min-width: 0;
+  color: var(--text);
+}
+
+.orbit-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 24px;
+}
+
+.orbit-eyebrow {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+}
+
+.orbit-collection h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orbit-collection p {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.orbit-collection {
+  --wy: 0px;
+  grid-column: 2 / 5;
+  grid-row: 2 / 3;
+  align-self: start;
+  align-content: start;
+  width: 100%;
+  gap: 10px;
+  padding: 18px;
+}
+
+.orbit-collection h2 {
+  margin-bottom: 0;
+  font-size: 1rem;
+}
+
+.collection-links {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.collection-links a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  min-height: 36px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.collection-links a:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.collection-links span {
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.collection-links strong {
+  color: var(--accent-2);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  background: rgba(72, 144, 194, 0.12);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+
+.orbit-upload {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  text-align: center;
+}
+
+.orbit-upload:hover {
+  color: var(--text);
+}
+
+.orbit-blog-upload {
+  --wy: 4px;
+  grid-column: 4 / 6;
+  grid-row: 3;
+  justify-self: end;
+}
+
+.orbit-post-upload {
+  --wy: 6px;
+  grid-column: 8 / 10;
+  grid-row: 3;
+  justify-self: start;
+}
+
+/* ---- GitHub standalone widget ---- */
+.github-widget {
+  --wy: 8px;
+  grid-column: 6 / 8;
+  grid-row: 3;
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 10px 18px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.github-widget:hover {
+  color: var(--text);
+}
+
+
+/* ---- Tablet (≤1200px): 2-column, no stagger ---- */
+@media (max-width: 1200px) {
+  .orbital-home {
+    padding: 28px 16px 52px;
+    align-items: start;
+  }
+
+  .orbital-stage {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: 3;
+    gap: 24px;
+    width: min(720px, 100%);
+    margin: 0 auto;
+  }
+
+  .profile-hub {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    align-self: auto;
+    border-radius: 24px;
+    padding: 28px 20px;
+    --wy: 0px;
+  }
+
+  .orbit-collection,
+  .orbit-blog-upload, .orbit-post-upload,
+  .github-widget {
+    grid-column: auto;
+    grid-row: auto;
+    align-self: auto;
+    width: 100%;
+    --wy: 0px;
+  }
+
+  .orbit-blog-upload, .orbit-post-upload, .github-widget {
+    width: fit-content;
+    justify-self: start;
+  }
+
+  .orbit-collection {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ---- Mobile (≤640px): single column, no stagger ---- */
+@media (max-width: 640px) {
+  .orbital-home {
+    padding: 20px 12px 40px;
+  }
+
+  .orbital-stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    gap: 20px;
+    width: 100%;
+    margin: 0;
+  }
+
+  .profile-hub {
+    grid-column: 1;
+    grid-row: auto;
+    border-radius: 20px;
+    padding: 24px 16px;
+    --wy: 0px;
+  }
+
+  .orbit-collection,
+  .orbit-blog-upload, .orbit-post-upload,
+  .github-widget {
+    grid-column: 1;
+    grid-row: auto;
+    width: fit-content;
+    --wy: 0px;
+  }
+
+  .orbit-collection {
+    width: 100%;
+  }
+
+  .profile-avatar {
+    width: 96px;
+    height: 96px;
+    margin-bottom: 18px;
+    font-size: 1.55rem;
+  }
+
+  .profile-actions {
+    width: 100%;
+  }
+
+  .github-link,
+  .profile-about-link {
+    flex: 1 1 auto;
   }
 }
 

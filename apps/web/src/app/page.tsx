@@ -1,6 +1,13 @@
 import Link from "next/link";
 import { LiquidBackground } from "@/components/LiquidBackground";
 import { getCounts } from "@/lib/directus";
+import { siteConfig } from "@/lib/site-config";
+
+type UploadWidgetProps = {
+  className: string;
+  href: string;
+  title: string;
+};
 
 export default async function Home() {
   const { posts: postCount, videos: videoCount } = await getCounts();
@@ -9,108 +16,116 @@ export default async function Home() {
     <>
       <LiquidBackground variant="teal" />
 
-      <main className="home-hero">
-        {/* ---- Hero text ---- */}
-        <header className="home-hero-content">
-          <p className="eyebrow">Self-hosted · HDR · Multi-master</p>
-          <h1>Multi Master Video Blog</h1>
-          <p className="summary">
-            A cinema-grade media platform for articles, HLS video playback,
-            HDR metadata, and seamless switching between SDR, HDR10, HLG, and
-            Dolby Vision masters.
-          </p>
-        </header>
+      <main className="orbital-home" aria-labelledby="home-title">
+        <div className="orbital-stage">
+          <ProfileHub />
+          <CollectionCard postCount={postCount} videoCount={videoCount} />
 
-        {/* ---- Portal navigation cards ---- */}
-        <div className="portal-grid">
-          <Link
-            className="portal-card video-card"
-            href="/videos"
-            aria-label={`Browse ${videoCount} video projects`}
-          >
-            <div className="portal-icon" aria-hidden="true">
-              <svg
-                width="26"
-                height="26"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <polygon points="5 3 19 12 5 21 5 3" />
-              </svg>
-            </div>
-            <h2>Videos</h2>
-            <p>Browse video projects with multi-master HLS playback</p>
-            <div className="portal-stats">
-              <span className="portal-stat">
-                <strong>{videoCount}</strong> project{videoCount !== 1 ? "s" : ""}
-              </span>
-            </div>
-            <span className="portal-arrow">
-              View library
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M5 12h14M12 5l7 7-7 7" />
-              </svg>
-            </span>
-          </Link>
+          <UploadWidget
+            className="floating-widget orbit-card orbit-upload orbit-blog-upload"
+            href="/upload"
+            title="Upload Blog"
+          />
 
-          <Link
-            className="portal-card blog-card"
-            href="/posts"
-            aria-label={`Read ${postCount} articles`}
-          >
-            <div className="portal-icon" aria-hidden="true">
-              <svg
-                width="26"
-                height="26"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-              </svg>
-            </div>
-            <h2>Blog</h2>
-            <p>Read articles and written posts</p>
-            <div className="portal-stats">
-              <span className="portal-stat">
-                <strong>{postCount}</strong> article{postCount !== 1 ? "s" : ""}
-              </span>
-            </div>
-            <span className="portal-arrow">
-              Read posts
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M5 12h14M12 5l7 7-7 7" />
-              </svg>
-            </span>
-          </Link>
+          <UploadWidget
+            className="floating-widget orbit-card orbit-upload orbit-post-upload"
+            href={siteConfig.home.postUploadHref}
+            title="写文章"
+          />
+
+          <GitHubWidget />
         </div>
       </main>
     </>
+  );
+}
+
+function ProfileHub() {
+  return (
+    <section className="floating-widget profile-hub" aria-label="Personal introduction">
+      <div className="profile-avatar">
+        {siteConfig.home.avatarUrl ? (
+          <img src={siteConfig.home.avatarUrl} alt={`${siteConfig.home.profileName} avatar`} />
+        ) : (
+          <span>{siteConfig.home.profileInitials}</span>
+        )}
+      </div>
+
+      <h1 id="home-title">{siteConfig.home.profileName}</h1>
+      <p className="profile-role">{siteConfig.home.profileRole}</p>
+      <p className="summary">{siteConfig.home.profileBio}</p>
+    </section>
+  );
+}
+
+function CollectionCard({
+  postCount,
+  videoCount,
+}: {
+  postCount: number;
+  videoCount: number;
+}) {
+  return (
+    <section className="floating-widget orbit-card orbit-collection" aria-label="Personal collection">
+      <p className="orbit-eyebrow">{siteConfig.home.collectionEyebrow}</p>
+      <h2>{siteConfig.home.collectionTitle}</h2>
+      <p>{siteConfig.home.collectionSummary}</p>
+      <div className="collection-links">
+        <Link href="/videos">
+          <span>{siteConfig.home.collectionBlogLabel}</span>
+          <strong>{videoCount}</strong>
+        </Link>
+        <Link href="/posts">
+          <span>{siteConfig.home.collectionPostLabel}</span>
+          <strong>{postCount}</strong>
+        </Link>
+        <Link href="/about">
+          <span>{siteConfig.home.collectionAboutLabel}</span>
+          <strong>{siteConfig.home.collectionAboutValue}</strong>
+        </Link>
+      </div>
+    </section>
+  );
+}
+
+function UploadWidget({ className, href, title }: UploadWidgetProps) {
+  const isExternal = href.startsWith("http");
+  const content = <strong>{title}</strong>;
+
+  if (isExternal) {
+    return (
+      <a className={className} href={href} target="_blank" rel="noreferrer">
+        {content}
+      </a>
+    );
+  }
+
+  return (
+    <Link className={className} href={href}>
+      {content}
+    </Link>
+  );
+}
+
+function GitHubWidget() {
+  return (
+    <a
+      className="floating-widget github-widget"
+      href={siteConfig.home.githubUrl}
+      target="_blank"
+      rel="noreferrer"
+      aria-label="Open GitHub profile"
+    >
+      <GithubIcon />
+      <span>GitHub</span>
+    </a>
+  );
+}
+
+function GithubIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.54 2.87 8.39 6.84 9.75.5.1.68-.22.68-.49 0-.24-.01-1.04-.01-1.89-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.37-2.22-.26-4.55-1.14-4.55-5.07 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.31.1-2.72 0 0 .84-.28 2.75 1.05A9.4 9.4 0 0 1 12 6.99c.85 0 1.7.12 2.5.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.46.1 2.72.64.72 1.03 1.64 1.03 2.76 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49A10.15 10.15 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z" />
+    </svg>
   );
 }

@@ -19,22 +19,22 @@ export function LiquidBackground({ variant = "teal" }: { variant?: Variant }) {
           <filter id="liquid-filter" colorInterpolationFilters="sRGB">
             <feTurbulence
               type="fractalNoise"
-              baseFrequency="0.012 0.016"
-              numOctaves="5"
-              seed="3"
+              baseFrequency="0.010 0.013"
+              numOctaves="6"
+              seed="7"
               result="noise"
             >
               <animate
                 attributeName="baseFrequency"
-                values="0.012 0.016; 0.016 0.02; 0.012 0.016"
-                dur="20s"
+                values="0.010 0.013; 0.014 0.018; 0.010 0.013"
+                dur="22s"
                 repeatCount="indefinite"
               />
             </feTurbulence>
             <feDisplacementMap
               in="SourceGraphic"
               in2="noise"
-              scale="200"
+              scale="260"
               xChannelSelector="R"
               yChannelSelector="G"
             />

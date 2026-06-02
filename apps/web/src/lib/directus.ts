@@ -92,7 +92,7 @@ const showDrafts = process.env.DIRECTUS_SHOW_DRAFTS === "true";
 
 const REVALIDATE_SECONDS = process.env.DIRECTUS_REVALIDATE
   ? Number(process.env.DIRECTUS_REVALIDATE)
-  : 60;
+  : 0;
 
 function stripTrailingSlash(value: string) {
   return value.replace(/\/$/, "");
@@ -133,9 +133,13 @@ async function getToken() {
 
 async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
   const token = await getToken();
+  const cacheOptions =
+    REVALIDATE_SECONDS > 0
+      ? { next: { revalidate: REVALIDATE_SECONDS } }
+      : { cache: "no-store" as const };
   const response = await fetch(`${directusUrl}${pathname}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    next: { revalidate: REVALIDATE_SECONDS },
+    ...cacheOptions,
   });
 
   if (response.status === 401 && token && !retried) {

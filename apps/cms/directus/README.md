@@ -32,7 +32,7 @@ The local development `.env` uses:
 
 ```text
 admin@example.com
-change-this-local-password
+password
 ```
 
 Change this password before using the CMS beyond local development.
