@@ -1,13 +1,22 @@
+import type { CSSProperties } from "react";
 import Link from "next/link";
 import { LiquidBackground } from "@/components/LiquidBackground";
 import { getCounts } from "@/lib/directus";
+import {
+  homeLayout,
+  type HomeMobilePortraitLayout,
+  type HomeWidgetLayout,
+} from "@/lib/home-layout";
 import { siteConfig } from "@/lib/site-config";
 
 type UploadWidgetProps = {
   className: string;
   href: string;
+  layout?: HomeWidgetLayout;
   title: string;
 };
+
+type HomeWidgetStyle = CSSProperties & Record<`--${string}`, string | number>;
 
 export default async function Home() {
   const { posts: postCount, videos: videoCount } = await getCounts();
@@ -16,33 +25,82 @@ export default async function Home() {
     <>
       <LiquidBackground variant="teal" />
 
-      <main className="orbital-home" aria-labelledby="home-title">
-        <div className="orbital-stage">
-          <ProfileHub />
-          <CollectionCard postCount={postCount} videoCount={videoCount} />
+      <main className="orbital-home" aria-label={siteConfig.home.profileName}>
+        <div
+          className="orbital-stage"
+          style={{ "--home-stage-height": homeLayout.stage.minHeight } as HomeWidgetStyle}
+        >
+          <ProfileHub layout={homeLayout.widgets.profileHub} titleId="home-title" />
+          <CollectionCard
+            layout={homeLayout.widgets.collection}
+            postCount={postCount}
+            videoCount={videoCount}
+          />
 
           <UploadWidget
-            className="floating-widget orbit-card orbit-upload orbit-blog-upload"
+            className="floating-widget home-free-widget orbit-card orbit-upload orbit-blog-upload"
             href="/upload"
+            layout={homeLayout.widgets.uploadBlog}
             title="Upload Blog"
           />
 
           <UploadWidget
-            className="floating-widget orbit-card orbit-upload orbit-post-upload"
+            className="floating-widget home-free-widget orbit-card orbit-upload orbit-post-upload"
             href={siteConfig.home.postUploadHref}
+            layout={homeLayout.widgets.writePost}
             title="写文章"
           />
 
-          <GitHubWidget />
+          <GitHubWidget layout={homeLayout.widgets.github} />
+        </div>
+
+        <div
+          className="mobile-home-stage"
+          style={mobilePortraitStyle(homeLayout.mobilePortrait)}
+        >
+          <ProfileHub className="mobile-profile-hub" titleId="mobile-home-title" />
+          <CollectionCard
+            className="mobile-collection"
+            postCount={postCount}
+            videoCount={videoCount}
+          />
+
+          <div className="mobile-action-grid">
+            <UploadWidget
+              className="floating-widget orbit-card orbit-upload mobile-upload-blog"
+              href="/upload"
+              title="Upload Blog"
+            />
+
+            <UploadWidget
+              className="floating-widget orbit-card orbit-upload mobile-write-post"
+              href={siteConfig.home.postUploadHref}
+              title="写文章"
+            />
+
+            <GitHubWidget className="floating-widget github-widget mobile-github-widget" />
+          </div>
         </div>
       </main>
     </>
   );
 }
 
-function ProfileHub() {
+function ProfileHub({
+  className = "",
+  layout,
+  titleId,
+}: {
+  className?: string;
+  layout?: HomeWidgetLayout;
+  titleId: string;
+}) {
   return (
-    <section className="floating-widget profile-hub" aria-label="Personal introduction">
+    <section
+      className={`floating-widget profile-hub${layout ? " home-free-widget" : ""}${className ? ` ${className}` : ""}`}
+      style={layout ? homeWidgetStyle(layout) : undefined}
+      aria-label="Personal introduction"
+    >
       <div className="profile-avatar">
         {siteConfig.home.avatarUrl ? (
           <img src={siteConfig.home.avatarUrl} alt={`${siteConfig.home.profileName} avatar`} />
@@ -51,7 +109,7 @@ function ProfileHub() {
         )}
       </div>
 
-      <h1 id="home-title">{siteConfig.home.profileName}</h1>
+      <h1 id={titleId}>{siteConfig.home.profileName}</h1>
       <p className="profile-role">{siteConfig.home.profileRole}</p>
       <p className="summary">{siteConfig.home.profileBio}</p>
     </section>
@@ -59,14 +117,22 @@ function ProfileHub() {
 }
 
 function CollectionCard({
+  className = "",
+  layout,
   postCount,
   videoCount,
 }: {
+  className?: string;
+  layout?: HomeWidgetLayout;
   postCount: number;
   videoCount: number;
 }) {
   return (
-    <section className="floating-widget orbit-card orbit-collection" aria-label="Personal collection">
+    <section
+      className={`floating-widget orbit-card orbit-collection${layout ? " home-free-widget" : ""}${className ? ` ${className}` : ""}`}
+      style={layout ? homeWidgetStyle(layout) : undefined}
+      aria-label="Personal collection"
+    >
       <p className="orbit-eyebrow">{siteConfig.home.collectionEyebrow}</p>
       <h2>{siteConfig.home.collectionTitle}</h2>
       <p>{siteConfig.home.collectionSummary}</p>
@@ -88,30 +154,38 @@ function CollectionCard({
   );
 }
 
-function UploadWidget({ className, href, title }: UploadWidgetProps) {
+function UploadWidget({ className, href, layout, title }: UploadWidgetProps) {
   const isExternal = href.startsWith("http");
   const content = <strong>{title}</strong>;
+  const style = layout ? homeWidgetStyle(layout) : undefined;
 
   if (isExternal) {
     return (
-      <a className={className} href={href} target="_blank" rel="noreferrer">
+      <a className={className} href={href} style={style} target="_blank" rel="noreferrer">
         {content}
       </a>
     );
   }
 
   return (
-    <Link className={className} href={href}>
+    <Link className={className} href={href} style={style}>
       {content}
     </Link>
   );
 }
 
-function GitHubWidget() {
+function GitHubWidget({
+  className = "floating-widget home-free-widget github-widget",
+  layout,
+}: {
+  className?: string;
+  layout?: HomeWidgetLayout;
+}) {
   return (
     <a
-      className="floating-widget github-widget"
+      className={className}
       href={siteConfig.home.githubUrl}
+      style={layout ? homeWidgetStyle(layout) : undefined}
       target="_blank"
       rel="noreferrer"
       aria-label="Open GitHub profile"
@@ -120,6 +194,53 @@ function GitHubWidget() {
       <span>GitHub</span>
     </a>
   );
+}
+
+function mobilePortraitStyle(layout: HomeMobilePortraitLayout) {
+  return {
+    "--mobile-home-padding-x": layout.paddingX,
+    "--mobile-home-padding-y": layout.paddingY,
+    "--mobile-home-min-h": layout.minHeight,
+    "--mobile-home-stack-gap": layout.stackGap,
+    "--mobile-home-top-spacer": layout.topSpacer,
+    "--mobile-home-action-gap": layout.actionGap,
+    "--mobile-home-card-radius": layout.cardRadius,
+    "--mobile-home-action-height": layout.actionHeight,
+    "--mobile-home-max-width": layout.maxWidth,
+  } as HomeWidgetStyle;
+}
+
+function homeWidgetStyle(layout: HomeWidgetLayout) {
+  const style: HomeWidgetStyle = {
+    "--x": layout.x,
+    "--y": layout.y,
+  };
+
+  setCssVar(style, "--w", layout.w);
+  setCssVar(style, "--h", layout.h);
+  setCssVar(style, "--min-w", layout.minW);
+  setCssVar(style, "--max-w", layout.maxW);
+  setCssVar(style, "--min-h", layout.minH);
+  setCssVar(style, "--max-h", layout.maxH);
+  setCssVar(style, "--dx", layout.dx);
+  setCssVar(style, "--dy", layout.dy);
+  setCssVar(style, "--widget-padding", layout.padding);
+  setCssVar(style, "--widget-font-size", layout.fontSize);
+  setCssVar(style, "--widget-radius", layout.radius);
+  setCssVar(style, "--widget-gap", layout.gap);
+  setCssVar(style, "--widget-z", layout.zIndex);
+
+  return style;
+}
+
+function setCssVar(
+  style: HomeWidgetStyle,
+  name: `--${string}`,
+  value: string | number | undefined
+) {
+  if (value !== undefined) {
+    style[name] = value;
+  }
 }
 
 function GithubIcon() {
