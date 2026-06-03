@@ -258,7 +258,7 @@ async function parseMultipart(req) {
     });
 
     busboy.on("file", (name, file, info) => {
-      if (!["video", "cover", "poster", "masterPackage"].includes(name)) {
+      if (!["video", "cover", "masterPackage"].includes(name)) {
         file.resume();
         return;
       }
@@ -1095,7 +1095,6 @@ async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath,
   const token = await directusLogin();
   const existingProject = await findProjectBySlug(token, metadata.slug);
   const coverImageId = await directusUploadFile(token, files.cover, `${metadata.title} cover`);
-  const posterImageId = await directusUploadFile(token, files.poster, `${metadata.title} poster`);
   const dovi = extractDolbyVisionMetadata(probe);
   const projectPayload = {
     title: metadata.title,
@@ -1109,10 +1108,6 @@ async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath,
 
   if (coverImageId) {
     projectPayload.cover_image = coverImageId;
-  }
-
-  if (posterImageId) {
-    projectPayload.poster_image = posterImageId;
   }
 
   const project = existingProject

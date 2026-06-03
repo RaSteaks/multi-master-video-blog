@@ -373,7 +373,6 @@ const fields = {
   posts: [
     stringField("title", true),
     stringField("slug", true, { unique: true }),
-    textField("summary"),
     textField("content", { markdown: true }),
     fileField("cover_image"),
     jsonField("tags"),
@@ -387,7 +386,6 @@ const fields = {
     stringField("slug", true, { unique: true }),
     textField("description"),
     fileField("cover_image"),
-    fileField("poster_image"),
     stringField("category", false, { width: "half" }),
     jsonField("tags"),
     booleanField("published", false),
@@ -451,7 +449,6 @@ function fileRelation(collection, field) {
 const relations = [
   fileRelation("posts", "cover_image"),
   fileRelation("video_projects", "cover_image"),
-  fileRelation("video_projects", "poster_image"),
   {
     collection: "video_masters",
     field: "project_id",

@@ -104,7 +104,6 @@ async function main() {
     created.post = await createItem(token, "posts", {
       title: "Schema Test Post",
       slug: `schema-test-post-${suffix}`,
-      summary: "Temporary CRUD validation item.",
       content: "# Test\n\nTemporary content.",
       tags: ["test"],
       category: "test",

@@ -28,7 +28,6 @@ Common form fields:
 
 - `video`: required source video file
 - `cover`: optional cover image file
-- `poster`: optional poster image file
 - `title`
 - `slug`
 - `description`

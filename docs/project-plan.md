@@ -20,7 +20,6 @@ Build a self-hosted Windows media blog that supports articles, video projects, H
 - `id`
 - `title`
 - `slug`
-- `summary`
 - `content`
 - `cover_image`
 - `tags`
@@ -36,7 +35,6 @@ Build a self-hosted Windows media blog that supports articles, video projects, H
 - `slug`
 - `description`
 - `cover_image`
-- `poster_image`
 - `category`
 - `tags`
 - `published`
@@ -102,7 +100,6 @@ Current implemented relations:
 
 - `posts.cover_image` -> `directus_files`
 - `video_projects.cover_image` -> `directus_files`
-- `video_projects.poster_image` -> `directus_files`
 - `video_masters.project_id` -> `video_projects.id`
 - `video_projects.masters` provides the one-to-many editing alias for video masters.
 
@@ -133,7 +130,7 @@ Current behavior:
 ## Implemented Upload and Deployment Stage
 
 - Upload API accepts source video plus metadata.
-- Upload API can receive optional `cover` and `poster` image files and upload them to Directus.
+- Upload API can receive an optional `cover` image file and upload it to Directus.
 - Upload API generates HLS with FFmpeg.
 - Upload API requires `UPLOAD_API_TOKEN` when configured.
 - Local Windows service scripts are available in `deployment/windows/`.

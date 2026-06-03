@@ -14,7 +14,7 @@ export default async function VideosPage() {
       {videos.length > 0 ? (
         <div className="content-grid">
           {videos.map((video) => {
-            const cover = assetUrl(video.cover_image || video.poster_image);
+            const cover = assetUrl(video.cover_image);
             const masterCount = video.masters?.length || 0;
 
             return (

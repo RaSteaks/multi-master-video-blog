@@ -37,7 +37,6 @@ export default async function PostsPage() {
                 <div>
                   <p className="meta-line">{post.category || "Article"}</p>
                   <h2>{post.title}</h2>
-                  <p>{post.summary || "No summary yet."}</p>
                 </div>
               </Link>
             );

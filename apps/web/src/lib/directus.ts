@@ -4,7 +4,6 @@ export type Post = {
   id: number;
   title: string;
   slug: string;
-  summary: string | null;
   content: string | null;
   cover_image: DirectusFileId;
   tags: string[] | null;
@@ -47,7 +46,6 @@ export type VideoProject = {
   slug: string;
   description: string | null;
   cover_image: DirectusFileId;
-  poster_image: DirectusFileId;
   category: string | null;
   tags: string[] | null;
   published: boolean | number;
