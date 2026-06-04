@@ -907,6 +907,39 @@ function matchFirst(text, patterns) {
   return null;
 }
 
+function normalizeDolbyProfileVersion(profile, compatibilityId) {
+  const normalizedProfile = normalizeNumberLabel(profile);
+  if (!normalizedProfile) {
+    return null;
+  }
+
+  if (normalizedProfile.includes(".")) {
+    return normalizedProfile;
+  }
+
+  if (normalizedProfile === "8") {
+    const normalizedCompatibility = normalizeNumberLabel(compatibilityId);
+    if (normalizedCompatibility === "1") return "8.1";
+    if (normalizedCompatibility === "2") return "8.2";
+    if (normalizedCompatibility === "4") return "8.4";
+  }
+
+  return normalizedProfile;
+}
+
+function normalizeNumberLabel(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+
+  const match = text.match(/[0-9]+(?:\.[0-9]+)?/);
+  if (!match) return text;
+
+  return match[0]
+    .split(".")
+    .map((part) => String(Number(part)))
+    .join(".");
+}
+
 function validateDolbyVisionUpload(metadata, probe, sidecar) {
   if (metadata.masterType !== "dolby_vision") {
     return;
@@ -1096,6 +1129,11 @@ async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath,
   const existingProject = await findProjectBySlug(token, metadata.slug);
   const coverImageId = await directusUploadFile(token, files.cover, `${metadata.title} cover`);
   const dovi = extractDolbyVisionMetadata(probe);
+  const dolbyCompatibilityId = sidecar.compatibilityId || stringOrNull(dovi.compatibilityId);
+  const dolbyProfileVersion = normalizeDolbyProfileVersion(
+    sidecar.profile || stringOrNull(dovi.profile),
+    dolbyCompatibilityId
+  );
   const projectPayload = {
     title: metadata.title,
     slug: metadata.slug,
@@ -1141,9 +1179,9 @@ async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath,
     transfer_function: metadata.transferFunction || prettyTransferFunction(probe, metadata.masterType),
     bit_depth: metadata.bitDepth || inferBitDepth(probe, metadata.masterType),
     bitrate_mbps: metadata.bitrateMbps,
-    dolby_profile: sidecar.profile || stringOrNull(dovi.profile),
+    dolby_profile: dolbyProfileVersion,
     dolby_level: sidecar.level || stringOrNull(dovi.level),
-    dolby_compatibility_id: sidecar.compatibilityId || stringOrNull(dovi.compatibilityId),
+    dolby_compatibility_id: dolbyCompatibilityId,
     dolby_rpu_present: booleanOrFalse(dovi.rpuPresent),
     dolby_el_present: booleanOrFalse(dovi.elPresent),
     dolby_bl_present: booleanOrFalse(dovi.blPresent),

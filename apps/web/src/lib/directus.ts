@@ -67,15 +67,15 @@ type DirectusAggregateResponse = {
 
 /* ---- Field sets: list views omit heavy/unused fields ---- */
 const POST_LIST_FIELDS =
-  "id,title,slug,summary,cover_image,category,published,created_at";
+  "id,title,slug,cover_image,category,published,created_at";
 const POST_DETAIL_FIELDS =
-  "id,title,slug,summary,content,cover_image,tags,category,published,created_at,updated_at";
+  "id,title,slug,content,cover_image,tags,category,published,created_at,updated_at";
 
 const VIDEO_LIST_FIELDS =
-  "id,title,slug,description,cover_image,poster_image,category,tags,published,sort_order,created_at," +
+  "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at," +
   "masters.id,masters.label,masters.type,masters.hls_url,masters.is_default,masters.sort_order";
 const VIDEO_DETAIL_FIELDS =
-  "id,title,slug,description,cover_image,poster_image,category,tags,published,sort_order,created_at,updated_at,masters.*";
+  "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at,masters.*";
 
 /* ---- Config ---- */
 let cachedToken: string | null = null;
