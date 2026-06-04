@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { PageTransition } from "@/components/PageTransition";
 import { siteConfig } from "@/lib/site-config";
 import "./globals.css";
 
@@ -44,7 +45,7 @@ export default function RootLayout({
         </header>
 
         <main id="main-content" tabIndex={-1}>
-          {children}
+          <PageTransition>{children}</PageTransition>
         </main>
       </body>
     </html>

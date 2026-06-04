@@ -29,6 +29,7 @@
     "web:health": "powershell -ExecutionPolicy Bypass -File deployment/windows/web-service.ps1 health",
     "bootstrap:cms": "npm --workspace @multi-master-video-blog/cms run bootstrap",
     "setup:cms-schema": "node scripts/setup-directus-schema.cjs",
+    "migrate:cms:postgres": "node scripts/migrate-directus-sqlite-to-postgres.cjs",
     "dev:cms": "npm --workspace @multi-master-video-blog/cms run dev",
     "start:cms": "npm --workspace @multi-master-video-blog/cms run start",
     "manager": "node scripts/manager-dashboard.cjs",

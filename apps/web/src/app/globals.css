@@ -117,6 +117,15 @@ a {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+
+  html.route-transition-pending
+    .page-transition[data-animate-route="true"]
+    > :is(.shell, .orbital-home),
+  .page-transition[data-animate-route="true"] > :is(.shell, .orbital-home) {
+    opacity: 1 !important;
+    filter: none !important;
+    transform: none !important;
+  }
 }
 
 /* ---- Selection ---- */
@@ -229,6 +238,56 @@ body:has(.orbital-home) .orbital-home {
 .site-header nav a:focus-visible {
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* ---- Route transitions ---- */
+.page-transition {
+  min-height: calc(100dvh - 68px);
+}
+
+.page-transition[data-animate-route="true"] > :is(.shell, .orbital-home) {
+  animation: route-content-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: 50% 24px;
+  will-change: opacity, transform, filter;
+}
+
+.page-transition[data-animate-route="true"] > .liquid-bg {
+  animation: route-background-enter 520ms ease both;
+}
+
+html.route-transition-pending
+  .page-transition[data-animate-route="true"]
+  > :is(.shell, .orbital-home) {
+  opacity: 0.76;
+  filter: blur(2px);
+  transform: translate3d(0, -6px, 0) scale(0.992);
+  transition:
+    opacity 180ms ease,
+    filter 180ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes route-content-enter {
+  from {
+    opacity: 0;
+    filter: blur(8px);
+    transform: translate3d(0, 16px, 0) scale(0.992);
+  }
+
+  60% {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes route-background-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* ---- Shell ---- */
@@ -1515,44 +1574,42 @@ h3 {
   animation: float-blob-5 21s ease-in-out infinite;
 }
 
-/* ---- Gray (videos) — reference room surround: true neutral, virtually absent ---- */
-/* ITU-R BT.2111 specifies ~18% neutral gray surroundings; translated here as      */
-/* barely-perceptible dark gray texture — no hue, no distraction.                  */
-.liquid-bg--gray { background: #0B0C0E; }
+/* ---- Gray (videos) — brighter neutral surround with visible liquid motion ---- */
+.liquid-bg--gray { background: #121518; }
 .liquid-bg--gray .blob-1 {
   width: 70vw; height: 70vw; max-width: 1100px; max-height: 1100px;
   background: radial-gradient(circle at 40% 40%,
-    rgba(72, 72, 72, 0.09), transparent 60%);
+    rgba(130, 134, 138, 0.18), transparent 64%);
   top: -20%; left: -15%;
-  animation: float-blob-1 28s ease-in-out infinite;
+  animation: float-blob-1 20s ease-in-out infinite;
 }
 .liquid-bg--gray .blob-2 {
   width: 60vw; height: 60vw; max-width: 900px; max-height: 900px;
   background: radial-gradient(circle at 55% 40%,
-    rgba(60, 60, 60, 0.07), transparent 60%);
+    rgba(108, 112, 116, 0.16), transparent 64%);
   top: 30%; right: -16%;
-  animation: float-blob-2 32s ease-in-out infinite;
+  animation: float-blob-2 23s ease-in-out infinite;
 }
 .liquid-bg--gray .blob-3 {
   width: 55vw; height: 55vw; max-width: 800px; max-height: 800px;
   background: radial-gradient(circle at 50% 50%,
-    rgba(68, 68, 68, 0.07), transparent 60%);
+    rgba(118, 122, 126, 0.15), transparent 64%);
   bottom: -22%; left: 20%;
-  animation: float-blob-3 30s ease-in-out infinite;
+  animation: float-blob-3 22s ease-in-out infinite;
 }
 .liquid-bg--gray .blob-4 {
   width: 40vw; height: 40vw; max-width: 600px; max-height: 600px;
   background: radial-gradient(circle at 50% 50%,
-    rgba(55, 55, 55, 0.06), transparent 60%);
+    rgba(96, 100, 104, 0.13), transparent 65%);
   top: 10%; left: 35%;
-  animation: float-blob-4 34s ease-in-out infinite;
+  animation: float-blob-4 24s ease-in-out infinite;
 }
 .liquid-bg--gray .blob-5 {
   width: 35vw; height: 35vw; max-width: 500px; max-height: 500px;
   background: radial-gradient(circle at 50% 50%,
-    rgba(50, 50, 50, 0.05), transparent 60%);
+    rgba(88, 92, 96, 0.12), transparent 66%);
   bottom: 4%; right: 10%;
-  animation: float-blob-5 31s ease-in-out infinite;
+  animation: float-blob-5 21s ease-in-out infinite;
 }
 
 /* ---- Blob keyframes (slower = less distraction) ---- */

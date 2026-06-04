@@ -70,3 +70,11 @@ temp/
 
 .claude
 .vscode
+
+backups/
+start-all-services.bat
+start-api.bat
+start-web.bat
+start-postgresql.bat
+start-manager.bat
+start-cms.bat
