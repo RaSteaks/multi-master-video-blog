@@ -221,6 +221,10 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
       : null;
 
   const resolutionLabel = masterResolution(activeMaster);
+  const dolbyProfileVersion = formatDolbyProfileVersion(
+    activeMaster.dolby_profile,
+    activeMaster.dolby_compatibility_id,
+  );
 
   return (
     <section className="player-shell" aria-label="Video player">
@@ -334,7 +338,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
               </div>
               {activeMaster.type === "dolby_vision" ? (
                 <>
-                  <div><dt>DV Profile</dt><dd>{activeMaster.dolby_profile || "N/A"}</dd></div>
+                  <div><dt>DV Profile Version</dt><dd>{dolbyProfileVersion || "N/A"}</dd></div>
                   <div><dt>DV Level</dt><dd>{activeMaster.dolby_level || "N/A"}</dd></div>
                   <div><dt>Compat.</dt><dd>{activeMaster.dolby_compatibility_id || "N/A"}</dd></div>
                   <div><dt>RPU</dt><dd>{formatPresent(activeMaster.dolby_rpu_present)}</dd></div>
@@ -395,6 +399,37 @@ function isHdrMaster(master: VideoMaster) {
 function formatPresent(value: boolean | number | null) {
   if (value === null || value === undefined) return "N/A";
   return value === true || value === 1 ? "Yes" : "No";
+}
+
+function formatDolbyProfileVersion(profile: string | null, compatibilityId: string | null) {
+  const normalizedProfile = normalizeNumberLabel(profile);
+  if (!normalizedProfile) return null;
+
+  if (normalizedProfile.includes(".")) {
+    return normalizedProfile;
+  }
+
+  if (normalizedProfile === "8") {
+    const normalizedCompatibility = normalizeNumberLabel(compatibilityId);
+    if (normalizedCompatibility === "1") return "8.1";
+    if (normalizedCompatibility === "2") return "8.2";
+    if (normalizedCompatibility === "4") return "8.4";
+  }
+
+  return normalizedProfile;
+}
+
+function normalizeNumberLabel(value: string | number | null | undefined) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+
+  const match = text.match(/[0-9]+(?:\.[0-9]+)?/);
+  if (!match) return text;
+
+  return match[0]
+    .split(".")
+    .map((part) => String(Number(part)))
+    .join(".");
 }
 
 function detectCapabilities(): DeviceCapabilities {

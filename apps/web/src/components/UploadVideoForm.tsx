@@ -68,7 +68,6 @@ export function UploadVideoForm() {
   const [video, setVideo] = useState<File | null>(null);
   const [masterPackageFiles, setMasterPackageFiles] = useState<File[]>([]);
   const [cover, setCover] = useState<File | null>(null);
-  const [poster, setPoster] = useState<File | null>(null);
   const [dolbyXmlClipName, setDolbyXmlClipName] = useState("");
   const [state, setState] = useState<UploadState>("idle");
   const [progress, setProgress] = useState(0);
@@ -140,7 +139,6 @@ export function UploadVideoForm() {
     }
 
     if (cover) form.append("cover", cover);
-    if (poster) form.append("poster", poster);
     form.append("dolbyXmlClipName", dolbyXmlClipName.trim());
     form.append("title", title.trim());
     form.append("slug", slug.trim());
@@ -272,10 +270,6 @@ export function UploadVideoForm() {
           <label>
             Cover image
             <input type="file" accept="image/*" onChange={(event) => setCover(event.target.files?.[0] || null)} />
-          </label>
-          <label>
-            Poster image
-            <input type="file" accept="image/*" onChange={(event) => setPoster(event.target.files?.[0] || null)} />
           </label>
           <div className="upload-source-note">
             <strong>{selectedSourceMode.title}</strong>

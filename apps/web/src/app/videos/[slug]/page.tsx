@@ -16,7 +16,7 @@ export default async function VideoPage({ params }: VideoPageProps) {
     notFound();
   }
 
-  const poster = assetUrl(video.poster_image || video.cover_image);
+  const poster = assetUrl(video.cover_image);
   const masterCount = video.masters?.length || 0;
 
   return (

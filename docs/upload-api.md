@@ -68,7 +68,6 @@ curl.exe -X POST http://127.0.0.1:8060/uploads/videos ^
   -H "Authorization: Bearer local-upload-token" ^
   -F "video=@D:\multi-master-video-blog\exports\test-video-sdr.mp4" ^
   -F "cover=@D:\multi-master-video-blog\exports\test-cover.jpg" ^
-  -F "poster=@D:\multi-master-video-blog\exports\test-cover.jpg" ^
   -F "title=Test Video" ^
   -F "slug=test-video" ^
   -F "description=Uploaded from the API" ^
@@ -116,7 +115,6 @@ Directus records:
 
 ```text
 video_projects.cover_image
-video_projects.poster_image
 video_masters.hls_url
 video_masters.file_url
 ```

@@ -17,7 +17,6 @@ const expectedTables = {
     "id",
     "title",
     "slug",
-    "summary",
     "content",
     "cover_image",
     "tags",
@@ -32,7 +31,6 @@ const expectedTables = {
     "slug",
     "description",
     "cover_image",
-    "poster_image",
     "category",
     "tags",
     "published",
@@ -73,7 +71,6 @@ const expectedTables = {
 const expectedRelations = [
   ["posts", "cover_image", "directus_files"],
   ["video_projects", "cover_image", "directus_files"],
-  ["video_projects", "poster_image", "directus_files"],
   ["video_masters", "project_id", "video_projects"]
 ];
 
