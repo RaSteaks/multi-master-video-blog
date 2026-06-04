@@ -516,6 +516,16 @@ h3 {
   padding: 4px 18px 4px 0;
 }
 
+.article-toc-cover {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  margin-bottom: 16px;
+}
+
 .article-toc p {
   margin-bottom: 12px;
   color: var(--accent-2);
@@ -2071,6 +2081,7 @@ h3 {
 .orbit-collection p {
   display: -webkit-box;
   -webkit-line-clamp: 1;
+  line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
   color: var(--muted);
@@ -2342,6 +2353,7 @@ h3 {
 
   .orbit-collection p {
     -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 
   .orbit-blog-upload,
@@ -2427,6 +2439,7 @@ h3 {
 
   .orbit-collection p {
     -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 
   .orbit-blog-upload,
@@ -2591,6 +2604,7 @@ h3 {
 
   .mobile-collection p {
     -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 
   .mobile-action-grid {

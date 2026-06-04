@@ -3,7 +3,7 @@ import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { getPost } from "@/lib/directus";
+import { assetUrl, getPost } from "@/lib/directus";
 
 type PostPageProps = {
   params: Promise<{
@@ -28,6 +28,7 @@ export default async function PostPage({ params }: PostPageProps) {
   const content = post.content || "";
   const tocItems = extractTocItems(content);
   const hasToc = tocItems.length > 0;
+  const coverImageUrl = assetUrl(post.cover_image);
   const markdownComponents = createMarkdownComponents();
 
   return (
@@ -46,6 +47,14 @@ export default async function PostPage({ params }: PostPageProps) {
 
         {hasToc ? (
           <aside className="article-toc" aria-label="Article table of contents">
+            {coverImageUrl ? (
+              <img
+                className="article-toc-cover"
+                src={coverImageUrl}
+                alt={`Cover image for ${post.title}`}
+                loading="lazy"
+              />
+            ) : null}
             <p>目录</p>
             <nav>
               {tocItems.map((item) => (
