@@ -11,6 +11,13 @@ type MediaPlayerProps = {
 
 type PlaybackState = "idle" | "loading" | "ready" | "playing" | "paused" | "error";
 
+type PlaybackSnapshot = {
+  targetMasterId: number;
+  requestId: number;
+  time: number;
+  wasPlaying: boolean;
+};
+
 type DeviceCapabilities = {
   hdr: boolean;
   p3: boolean;
@@ -21,7 +28,7 @@ type DeviceCapabilities = {
 
 type ShakaPlayer = {
   configure(config: unknown): void;
-  load(source: string): Promise<void>;
+  load(source: string, startTime?: number | null): Promise<void>;
   destroy(): Promise<void>;
   addEventListener(type: string, listener: (event: Event & { detail?: unknown }) => void): void;
 };
@@ -43,6 +50,9 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
   const fallbackAttemptedRef = useRef(false);
   const mountedRef = useRef(true);
   const polyfillInstalledRef = useRef(false);
+  const loadRequestIdRef = useRef(0);
+  const pendingPlaybackRef = useRef<PlaybackSnapshot | null>(null);
+  const lastLoadSnapshotRef = useRef<PlaybackSnapshot | null>(null);
 
   const [activeMasterId, setActiveMasterId] = useState(() => getDefaultMaster(masters)?.id);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
@@ -88,9 +98,26 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
     };
   }, []);
 
+  const capturePlaybackSnapshot = useCallback(
+    (targetMasterId: number, sourceSnapshot?: PlaybackSnapshot | null): PlaybackSnapshot => {
+      const video = videoRef.current;
+      const requestId = loadRequestIdRef.current + 1;
+      loadRequestIdRef.current = requestId;
+
+      return {
+        targetMasterId,
+        requestId,
+        time: sourceSnapshot?.time ?? playbackTime(video),
+        wasPlaying: sourceSnapshot?.wasPlaying ?? Boolean(video && !video.paused && !video.ended),
+      };
+    },
+    [],
+  );
+
   const handleFatalPlaybackError = useCallback(
     async (loadError: Error | null) => {
       const failedMaster = currentMasterRef.current;
+      const failedSnapshot = lastLoadSnapshotRef.current;
       if (!mountedRef.current) return;
 
       setPlaybackState("error");
@@ -102,6 +129,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
         !fallbackAttemptedRef.current
       ) {
         fallbackAttemptedRef.current = true;
+        pendingPlaybackRef.current = capturePlaybackSnapshot(sdrFallback.id, failedSnapshot);
         setError(`${failedMaster.label} playback failed. Falling back to ${sdrFallback.label}.`);
         setActiveMasterId(sdrFallback.id);
         return;
@@ -109,7 +137,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
 
       setError(loadError?.message || "Playback failed for this master.");
     },
-    [sdrFallback],
+    [capturePlaybackSnapshot, sdrFallback],
   );
 
   useEffect(() => {
@@ -120,10 +148,18 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
       const video = videoRef.current;
       if (!video || !activeMaster) return;
 
-      const previousTime = video.currentTime || 0;
-      const wasPlaying = !video.paused;
+      const pendingSnapshot = pendingPlaybackRef.current;
+      const snapshot =
+        pendingSnapshot?.targetMasterId === activeMaster.id
+          ? pendingSnapshot
+          : capturePlaybackSnapshot(activeMaster.id);
       const source = mediaUrl(activeMaster.hls_url);
 
+      if (pendingSnapshot?.targetMasterId === activeMaster.id) {
+        pendingPlaybackRef.current = null;
+      }
+
+      lastLoadSnapshotRef.current = snapshot;
       currentMasterRef.current = activeMaster;
       if (mountedRef.current) {
         setPlaybackState("loading");
@@ -167,26 +203,46 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
           playerRef.current = player;
         }
 
-        await playerRef.current.load(source);
-        if (cancelled || !mountedRef.current) return;
-
-        if (previousTime > 0 && Number.isFinite(previousTime)) {
-          video.currentTime = previousTime;
+        await playerRef.current.load(source, snapshot.time > 0 ? snapshot.time : null);
+        if (
+          cancelled ||
+          !mountedRef.current ||
+          snapshot.requestId !== loadRequestIdRef.current
+        ) {
+          return;
         }
 
-        setPlaybackState(video.paused ? "ready" : "playing");
+        if (snapshot.time > 0 && Number.isFinite(snapshot.time)) {
+          const nextTime = clampPlaybackTime(snapshot.time, video.duration);
+          if (Math.abs(video.currentTime - nextTime) > 0.35) {
+            video.currentTime = nextTime;
+          }
+        }
 
-        if (wasPlaying) {
-          await video.play().catch(() => setPlaybackState("ready"));
+        if (snapshot.wasPlaying) {
+          await video
+            .play()
+            .then(() => setPlaybackState("playing"))
+            .catch(() => setPlaybackState("ready"));
+        } else {
+          setPlaybackState(video.paused ? "ready" : "playing");
         }
       } catch (loadError) {
+        if (
+          cancelled ||
+          !mountedRef.current ||
+          snapshot.requestId !== loadRequestIdRef.current
+        ) {
+          return;
+        }
+
         await handleFatalPlaybackError(loadError instanceof Error ? loadError : null);
       }
     }
 
     void loadMaster();
     return () => { cancelled = true; };
-  }, [activeMaster, handleFatalPlaybackError, reloadNonce]);
+  }, [activeMaster, capturePlaybackSnapshot, handleFatalPlaybackError, reloadNonce]);
 
   useEffect(() => {
     return () => {
@@ -196,16 +252,20 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
   }, []);
 
   const switchMaster = useCallback((master: VideoMaster) => {
+    if (master.id === activeMasterId) return;
+
     fallbackAttemptedRef.current = false;
+    pendingPlaybackRef.current = capturePlaybackSnapshot(master.id);
     setActiveMasterId(master.id);
-  }, []);
+  }, [activeMasterId, capturePlaybackSnapshot]);
 
   const retry = useCallback(() => {
     if (activeMaster) {
       fallbackAttemptedRef.current = false;
+      pendingPlaybackRef.current = capturePlaybackSnapshot(activeMaster.id);
       setReloadNonce((value) => value + 1);
     }
-  }, [activeMaster]);
+  }, [activeMaster, capturePlaybackSnapshot]);
 
   if (!activeMaster) {
     return (
@@ -304,6 +364,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
           ) : null}
         </div>
 
+        <div className="player-info-sidebar">
         <aside
           className={infoOpen ? "player-info-panel open" : "player-info-panel"}
           id="player-info-panel"
@@ -377,6 +438,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
             </div>
           ) : null}
         </aside>
+        </div>
       </div>
     </section>
   );
@@ -399,6 +461,16 @@ function isHdrMaster(master: VideoMaster) {
 function formatPresent(value: boolean | number | null) {
   if (value === null || value === undefined) return "N/A";
   return value === true || value === 1 ? "Yes" : "No";
+}
+
+function playbackTime(video: HTMLVideoElement | null) {
+  if (!video || !Number.isFinite(video.currentTime)) return 0;
+  return Math.max(video.currentTime, 0);
+}
+
+function clampPlaybackTime(time: number, duration: number) {
+  if (!Number.isFinite(duration) || duration <= 0) return time;
+  return Math.min(time, Math.max(duration - 0.25, 0));
 }
 
 function formatDolbyProfileVersion(profile: string | null, compatibilityId: string | null) {
@@ -438,7 +510,6 @@ function detectCapabilities(): DeviceCapabilities {
   }
 
   const video = document.createElement("video");
-  const mediaCapabilities = navigator.mediaCapabilities;
 
   return {
     hdr: window.matchMedia?.("(dynamic-range: high)")?.matches ?? false,
@@ -446,8 +517,7 @@ function detectCapabilities(): DeviceCapabilities {
     rec2020: window.matchMedia?.("(color-gamut: rec2020)")?.matches ?? false,
     hevc:
       video.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') !== "" ||
-      video.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') !== "" ||
-      Boolean(mediaCapabilities),
+      video.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') !== "",
     nativeHls: video.canPlayType("application/vnd.apple.mpegurl") !== "",
   };
 }

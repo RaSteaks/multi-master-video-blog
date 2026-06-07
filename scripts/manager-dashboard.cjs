@@ -3,6 +3,10 @@ const fsp = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
 const { execFile, spawn } = require("node:child_process");
+const {
+  loadDirectusEnv,
+  openDirectusDatabase
+} = require("./directus-db-utils.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const HOST = process.env.MANAGER_HOST || "127.0.0.1";
@@ -199,53 +203,47 @@ async function getServiceStatus(service) {
 }
 
 async function getDatabaseStatus() {
-  const databasePath = path.join(ROOT, "apps", "cms", "directus", "database", "data.db");
-  const exists = fs.existsSync(databasePath);
-
-  if (!exists) {
-    return {
-      id: "database",
-      name: "SQLite Database",
-      healthy: false,
-      running: false,
-      path: databasePath,
-      error: "Database file not found."
-    };
-  }
+  let db = null;
 
   try {
-    const sqlite3 = require("sqlite3").verbose();
-    const db = new sqlite3.Database(databasePath);
-    const get = (sql) =>
-      new Promise((resolve, reject) => {
-        db.get(sql, (error, row) => (error ? reject(error) : resolve(row)));
-      });
-
-    const tables = await get("select count(*) as count from sqlite_master where type = 'table'");
-    const projects = await get("select count(*) as count from video_projects");
-    const masters = await get("select count(*) as count from video_masters");
-    db.close();
+    db = await openDirectusDatabase(loadDirectusEnv());
+    const tables = await db.listTables();
+    const projects = await countTableRows(db, "video_projects", tables);
+    const masters = await countTableRows(db, "video_masters", tables);
 
     return {
       id: "database",
-      name: "SQLite Database",
+      name: db.name,
       healthy: true,
       running: true,
-      path: databasePath,
-      tables: tables.count,
-      projects: projects.count,
-      masters: masters.count
+      path: db.path,
+      tables: tables.length,
+      projects,
+      masters
     };
   } catch (error) {
     return {
       id: "database",
-      name: "SQLite Database",
+      name: "Directus Database",
       healthy: false,
-      running: true,
-      path: databasePath,
+      running: false,
+      path: "apps/cms/directus/.env",
       error: error.message
     };
+  } finally {
+    if (db) {
+      await db.close().catch(() => {});
+    }
   }
+}
+
+async function countTableRows(db, table, tables) {
+  if (!tables.includes(table)) {
+    return "N/A";
+  }
+
+  const row = await db.get(`select count(*) as count from ${db.tableRef(table)}`);
+  return Number(row.count);
 }
 
 async function allStatus() {
@@ -441,7 +439,7 @@ function html() {
     <header>
       <div>
         <h1>Blog Service Manager</h1>
-        <p>Local control panel for frontend, backend, Directus, and SQLite status.</p>
+        <p>Local control panel for frontend, backend, Directus, and database status.</p>
       </div>
       <button class="primary" onclick="refresh()">Refresh</button>
     </header>

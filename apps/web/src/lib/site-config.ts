@@ -19,6 +19,7 @@ export const siteConfig = {
     "SITE_DESCRIPTION",
     "Self-hosted media blog with HLS playback and multi-master video switching.",
   ),
+  articleTocLabel: envText("SITE_ARTICLE_TOC_LABEL", "目录"),
   home: {
     summary: envText(
       "SITE_HOME_SUMMARY",

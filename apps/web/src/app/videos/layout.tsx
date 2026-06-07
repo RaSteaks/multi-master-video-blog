@@ -1,7 +1,7 @@
 import { LiquidBackground } from "@/components/LiquidBackground";
 
 /**
- * Video section layout — wraps all /videos/* routes with a purple-magenta
+ * Video section layout wraps all /videos/* routes with a neutral gray
  * liquid flowing background.
  */
 export default function VideosLayout({ children }: { children: React.ReactNode }) {

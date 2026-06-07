@@ -27,6 +27,10 @@ pnpm-debug.log*
 !.env.example
 !*.env.example
 
+# Local editable site content
+apps/web/content/about.md
+!apps/web/content/about.example.md
+
 # Directus local state
 apps/cms/directus/database/
 apps/cms/directus/uploads/
@@ -67,3 +71,10 @@ temp/
 .claude
 .vscode
 
+backups/
+start-all-services.bat
+start-api.bat
+start-web.bat
+start-postgresql.bat
+start-manager.bat
+start-cms.bat
