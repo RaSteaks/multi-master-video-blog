@@ -4,7 +4,6 @@ import { LiquidBackground } from "@/components/LiquidBackground";
 import { getCounts } from "@/lib/directus";
 import {
   homeLayout,
-  type HomeMobilePortraitLayout,
   type HomeWidgetLayout,
 } from "@/lib/home-layout";
 import { siteConfig } from "@/lib/site-config";
@@ -37,48 +36,22 @@ export default async function Home() {
             videoCount={videoCount}
           />
 
-          <UploadWidget
-            className="floating-widget home-free-widget orbit-card orbit-upload orbit-blog-upload"
-            href="/upload"
-            layout={homeLayout.widgets.uploadBlog}
-            title="Upload Blog"
-          />
-
-          <UploadWidget
-            className="floating-widget home-free-widget orbit-card orbit-upload orbit-post-upload"
-            href={siteConfig.home.postUploadHref}
-            layout={homeLayout.widgets.writePost}
-            title="写文章"
-          />
-
-          <GitHubWidget layout={homeLayout.widgets.github} />
-        </div>
-
-        <div
-          className="mobile-home-stage"
-          style={mobilePortraitStyle(homeLayout.mobilePortrait)}
-        >
-          <ProfileHub className="mobile-profile-hub" titleId="mobile-home-title" />
-          <CollectionCard
-            className="mobile-collection"
-            postCount={postCount}
-            videoCount={videoCount}
-          />
-
-          <div className="mobile-action-grid">
+          <div className="home-action-row">
             <UploadWidget
-              className="floating-widget orbit-card orbit-upload mobile-upload-blog"
+              className="floating-widget home-free-widget orbit-card orbit-upload orbit-blog-upload"
               href="/upload"
+              layout={homeLayout.widgets.uploadBlog}
               title="Upload Blog"
             />
 
             <UploadWidget
-              className="floating-widget orbit-card orbit-upload mobile-write-post"
+              className="floating-widget home-free-widget orbit-card orbit-upload orbit-post-upload"
               href={siteConfig.home.postUploadHref}
+              layout={homeLayout.widgets.writePost}
               title="写文章"
             />
 
-            <GitHubWidget className="floating-widget github-widget mobile-github-widget" />
+            <GitHubWidget layout={homeLayout.widgets.github} />
           </div>
         </div>
       </main>
@@ -194,20 +167,6 @@ function GitHubWidget({
       <span>GitHub</span>
     </a>
   );
-}
-
-function mobilePortraitStyle(layout: HomeMobilePortraitLayout) {
-  return {
-    "--mobile-home-padding-x": layout.paddingX,
-    "--mobile-home-padding-y": layout.paddingY,
-    "--mobile-home-min-h": layout.minHeight,
-    "--mobile-home-stack-gap": layout.stackGap,
-    "--mobile-home-top-spacer": layout.topSpacer,
-    "--mobile-home-action-gap": layout.actionGap,
-    "--mobile-home-card-radius": layout.cardRadius,
-    "--mobile-home-action-height": layout.actionHeight,
-    "--mobile-home-max-width": layout.maxWidth,
-  } as HomeWidgetStyle;
 }
 
 function homeWidgetStyle(layout: HomeWidgetLayout) {

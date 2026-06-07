@@ -1,12 +1,29 @@
 import { notFound } from "next/navigation";
 import { MediaPlayer } from "@/components/MediaPlayer";
 import { assetUrl, getVideoProject } from "@/lib/directus";
+import { siteConfig } from "@/lib/site-config";
 
 type VideoPageProps = {
   params: Promise<{
     slug: string;
   }>;
 };
+
+export async function generateMetadata({ params }: VideoPageProps) {
+  const { slug } = await params;
+  const video = await getVideoProject(slug);
+  if (!video) return {};
+  return {
+    title: `${video.title} — ${siteConfig.title}`,
+    description: video.description || video.title,
+    openGraph: {
+      title: video.title,
+      description: video.description || undefined,
+      type: "video.other" as const,
+      images: video.cover_image ? [assetUrl(video.cover_image)!] : [],
+    },
+  };
+}
 
 export default async function VideoPage({ params }: VideoPageProps) {
   const { slug } = await params;
@@ -31,7 +48,7 @@ export default async function VideoPage({ params }: VideoPageProps) {
         ) : null}
       </header>
 
-      <p className="meta-line" style={{ marginTop: -36 }}>
+      <p className="meta-line">
         {masterCount} video master{masterCount !== 1 ? "s" : ""}
         {video.tags?.length ? <> · {video.tags.join(", ")}</> : null}
       </p>

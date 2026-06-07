@@ -45,6 +45,12 @@
   --badge-dv: #D4922A;
   --badge-custom: #6B7A88;
 
+  /* Accent hover & neutral reference (player/monitor UI) */
+  --accent-hover: #e6aa52;
+  --neutral-ref: #4E5D6A;
+  --neutral-ref-glow: rgba(78, 93, 106, 0.25);
+  --neutral-ref-active-bg: rgba(78, 93, 106, 0.14);
+
   /* Effects */
   --radius-sm: 4px;
   --radius: 6px;
@@ -81,6 +87,7 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow-x: clip;
 }
 
 img,
@@ -240,6 +247,11 @@ body:has(.orbital-home) .orbital-home {
   background: var(--accent-soft);
 }
 
+.site-header nav a[aria-current="page"] {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
 /* ---- Route transitions ---- */
 .page-transition {
   min-height: calc(100dvh - 68px);
@@ -318,6 +330,11 @@ html.route-transition-pending
   gap: 36px;
   max-width: none;
   align-items: end;
+}
+
+/* Tighten gap between video header and meta-line (offsets page-stack gap) */
+.video-title + .meta-line {
+  margin-top: -36px;
 }
 
 /* ---- Article shell ---- */
@@ -470,11 +487,15 @@ h3 {
 
 .meta-line {
   margin-bottom: 7px;
-  color: var(--accent-2) !important;
+  color: var(--accent-2);
   font-size: 0.74rem;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+.content-card .meta-line {
+  color: var(--accent-2);
 }
 
 /* ==========================================================================
@@ -698,7 +719,7 @@ h3 {
 }
 
 .markdown-body a:hover {
-  color: #e6aa52;
+  color: var(--accent-hover);
 }
 
 .markdown-body code {
@@ -829,6 +850,7 @@ h3 {
   width: 100%;
 }
 
+
 .player-main {
   display: grid;
   gap: 14px;
@@ -854,7 +876,7 @@ h3 {
   left: 0;
   right: 0;
   height: 2px;
-  background: #4E5D6A;
+  background: var(--neutral-ref);
   z-index: 1;
   opacity: 0;
   transition: opacity var(--transition-base);
@@ -929,14 +951,14 @@ h3 {
 }
 
 .master-button:focus-visible {
-  border-color: #4E5D6A;
-  box-shadow: 0 0 0 3px rgba(78, 93, 106, 0.25);
+  border-color: var(--neutral-ref);
+  box-shadow: 0 0 0 3px var(--neutral-ref-glow);
 }
 
 .master-button.active {
-  border-color: #4E5D6A;
+  border-color: var(--neutral-ref);
   border-left-width: 2px;
-  background: rgba(78, 93, 106, 0.14);
+  background: var(--neutral-ref-active-bg);
   color: var(--text);
 }
 
@@ -1009,74 +1031,69 @@ h3 {
 }
 
 .info-toggle.active {
-  border-color: #4E5D6A;
-  background: rgba(78, 93, 106, 0.14);
+  border-color: var(--neutral-ref);
+  background: var(--neutral-ref-active-bg);
   color: var(--text);
 }
 
 .info-toggle:focus-visible,
 .info-close:focus-visible,
 .retry-button:focus-visible {
-  border-color: #4E5D6A;
-  box-shadow: 0 0 0 3px rgba(78, 93, 106, 0.25);
+  border-color: var(--neutral-ref);
+  box-shadow: 0 0 0 3px var(--neutral-ref-glow);
 }
 
 .retry-button {
   margin-top: 10px;
 }
 
-/* ---- Info panel — visibility-based animation (fixes display:none→grid) ---- */
+/* ---- Info sidebar wrapper — absolute, right of video, out of flow ---- */
+.player-info-sidebar {
+  position: absolute;
+  left: calc(100% + 14px);
+  top: 0;
+  width: 340px;
+  height: 100%; /* tracks player-layout height */
+  pointer-events: none; /* pass-through when panel is hidden */
+}
+
+/* ---- Info panel — sticky within the sidebar, follows scroll then pins ---- */
 .player-info-panel {
   display: grid;
   gap: 20px;
-  width: 100%;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--surface) 96%, black);
   padding: 18px;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
 
-  /* Animation state — always in layout, transitions work */
+  /* Sticky: scrolls with page until it hits top threshold, then pins */
+  position: sticky;
+  top: 68px;
+  max-height: calc(100dvh - 84px);
+
+  /* Hidden state */
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(10px);
-  max-height: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  border-top-width: 0;
-  border-bottom-width: 0;
+  transform: translateX(10px);
   transition:
     opacity var(--transition-base),
     transform var(--transition-base),
-    visibility 0s var(--transition-base),
-    max-height 0s var(--transition-base),
-    padding-top 0s var(--transition-base),
-    padding-bottom 0s var(--transition-base),
-    border-top-width 0s var(--transition-base),
-    border-bottom-width 0s var(--transition-base);
+    visibility 0s var(--transition-base);
 }
 
 .player-info-panel.open {
   visibility: visible;
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0);
-  max-height: 9000px;
-  padding-top: 18px;
-  padding-bottom: 18px;
-  border-top-width: 1px;
-  border-bottom-width: 1px;
+  transform: translateX(0);
   transition:
     opacity var(--transition-base),
     transform var(--transition-base),
-    visibility 0s 0s,
-    max-height 0s 0s,
-    padding-top 0s 0s,
-    padding-bottom 0s 0s,
-    border-top-width 0s 0s,
-    border-bottom-width 0s 0s;
+    visibility 0s 0s;
 }
 
 .info-panel-header {
@@ -1172,33 +1189,13 @@ h3 {
 .capability-grid dd {
   margin: 0;
   overflow-wrap: anywhere;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   font-weight: 500;
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 0.82rem;
 }
 
 @media (min-width: 1880px) {
-  .player-info-panel {
-    position: fixed;
-    top: 74px;
-    right: 24px;
-    width: 340px;
-    max-height: calc(100dvh - 100px);
-    transform: translateX(14px);
-    backdrop-filter: blur(16px) saturate(130%);
-    -webkit-backdrop-filter: blur(16px) saturate(130%);
-  }
-
-  .player-info-panel.open {
-    transform: translateX(0);
-    max-height: calc(100dvh - 100px);
-    overflow: auto;
-    padding: 18px;
-    border-width: 1px;
-  }
-
   .player-info-panel .tech-grid,
   .player-info-panel .capability-grid {
     grid-template-columns: 1fr;
@@ -1407,8 +1404,8 @@ h3 {
 }
 
 .upload-actions button:hover {
-  background: #e6aa52;
-  border-color: #e6aa52;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .upload-actions button:disabled {
@@ -1661,229 +1658,6 @@ h3 {
    Homepage
    ========================================================================== */
 
-.home-hero {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: calc(100dvh - 55px);
-  padding: 48px 24px 72px;
-}
-
-.home-hero-content {
-  text-align: center;
-  max-width: 720px;
-  margin-bottom: 60px;
-}
-
-.home-hero-content h1 {
-  font-size: clamp(2.6rem, 7vw, 5.5rem);
-  margin-bottom: 18px;
-}
-
-.home-hero-content .summary {
-  font-size: 1.08rem;
-  max-width: 560px;
-  margin: 0 auto;
-  color: var(--text-secondary);
-}
-
-/* ---- Portal cards ---- */
-.portal-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
-  width: min(700px, 100%);
-}
-
-.portal-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  min-height: 220px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: var(--radius-lg);
-  background: rgba(22, 26, 30, 0.50);
-  padding: 36px 24px;
-  text-align: center;
-  cursor: pointer;
-  backdrop-filter: blur(24px) saturate(130%);
-  -webkit-backdrop-filter: blur(24px) saturate(130%);
-  overflow: hidden;
-  transition:
-    border-color var(--transition-base),
-    background var(--transition-base),
-    box-shadow var(--transition-base),
-    transform var(--transition-base);
-}
-
-/* Subtle top-glow on hover */
-.portal-card::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  border-radius: inherit;
-  opacity: 0;
-  transition: opacity var(--transition-slow);
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* Radial glow background */
-.portal-card::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  opacity: 0;
-  transition: opacity var(--transition-slow);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.portal-card.video-card::before {
-  background: var(--accent);
-  box-shadow: 0 0 20px var(--accent);
-}
-.portal-card.video-card::after {
-  background: radial-gradient(ellipse at 50% -20%, rgba(212, 146, 42, 0.14), transparent 65%);
-}
-
-.portal-card.blog-card::before {
-  background: var(--accent-2);
-  box-shadow: 0 0 20px var(--accent-2);
-}
-.portal-card.blog-card::after {
-  background: radial-gradient(ellipse at 50% -20%, rgba(72, 144, 194, 0.14), transparent 65%);
-}
-
-.portal-card:hover::before,
-.portal-card:hover::after {
-  opacity: 1;
-}
-
-.portal-card:hover {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(30, 35, 40, 0.60);
-  transform: translateY(-3px);
-  box-shadow: 0 12px 50px -10px rgba(0, 0, 0, 0.6);
-}
-
-.portal-card:focus-visible {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
-}
-
-.portal-card > * {
-  position: relative;
-  z-index: 1;
-}
-
-.portal-icon {
-  width: 52px;
-  height: 52px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-}
-
-.portal-card.video-card .portal-icon {
-  background: var(--accent-soft);
-  color: var(--accent);
-  box-shadow: 0 0 0 1px rgba(212, 146, 42, 0.20);
-}
-
-.portal-card.blog-card .portal-icon {
-  background: var(--accent-2-soft);
-  color: var(--accent-2);
-  box-shadow: 0 0 0 1px rgba(72, 144, 194, 0.20);
-}
-
-.portal-card h2 {
-  margin-bottom: 4px;
-  font-size: 1.25rem;
-}
-
-.portal-card p {
-  margin-bottom: 0;
-  color: var(--muted);
-  font-size: 0.88rem;
-  line-height: 1.55;
-}
-
-.portal-arrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 0.8rem;
-  font-weight: 600;
-  transition: color var(--transition-fast), gap var(--transition-fast);
-}
-
-.portal-card:hover .portal-arrow {
-  gap: 9px;
-}
-
-.portal-card.video-card:hover .portal-arrow {
-  color: var(--accent);
-}
-
-.portal-card.blog-card:hover .portal-arrow {
-  color: var(--accent-2);
-}
-
-.portal-stats {
-  display: flex;
-  gap: 16px;
-  margin-top: 4px;
-}
-
-.portal-stat {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--muted);
-  font-size: 0.76rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.portal-stat strong {
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-
-/* ---- Homepage responsive ---- */
-@media (max-width: 640px) {
-  .home-hero {
-    min-height: calc(100dvh - 90px);
-    padding: 40px 16px 56px;
-  }
-
-  .home-hero-content {
-    margin-bottom: 40px;
-  }
-
-  .portal-grid {
-    grid-template-columns: 1fr;
-    width: 100%;
-  }
-
-  .portal-card {
-    min-height: 170px;
-    padding: 28px 20px;
-  }
-}
-
 /* ---- Orbital personal homepage ---- */
 .orbital-home {
   --home-motion-duration: 420ms;
@@ -1910,9 +1684,6 @@ h3 {
   transform: translate3d(0, 0, 0) scale(1);
   transform-origin: center;
   transition:
-    opacity 260ms var(--home-motion-ease),
-    transform var(--home-motion-duration) var(--home-motion-ease),
-    visibility 0s 0s,
     width var(--home-motion-duration) var(--home-motion-ease),
     min-height var(--home-motion-duration) var(--home-motion-ease),
     gap var(--home-motion-duration) var(--home-motion-ease),
@@ -1920,22 +1691,6 @@ h3 {
     grid-template-rows var(--home-motion-duration) var(--home-motion-ease);
 }
 
-.mobile-home-stage {
-  position: absolute;
-  display: grid;
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
-  width: min(var(--mobile-home-max-width, 430px), calc(100% - 28px));
-  transform: translate3d(0, 14px, 0) scale(0.98);
-  transform-origin: center top;
-  transition:
-    opacity 260ms var(--home-motion-ease),
-    transform var(--home-motion-duration) var(--home-motion-ease),
-    visibility 0s 260ms,
-    width var(--home-motion-duration) var(--home-motion-ease),
-    gap var(--home-motion-duration) var(--home-motion-ease);
-}
 
 .profile-hub {
   position: relative;
@@ -2257,6 +2012,13 @@ h3 {
   cursor: pointer;
 }
 
+/* Wraps the 3 action buttons. Transparent on desktop/tablet so children
+   participate directly in the orbital-stage absolute/grid layout.
+   Activates as a flex row on mobile portrait. */
+.home-action-row {
+  display: contents;
+}
+
 .home-free-widget {
   --wy: 0px;
   position: absolute;
@@ -2572,146 +2334,138 @@ h3 {
   }
 }
 
-/* ---- Mobile portrait: independent page layout with variable section gaps ---- */
+/* ---- Mobile portrait: single DOM flex flow (replaces dual-DOM system) ---- */
 @media (max-width: 640px) and (orientation: portrait) {
   .orbital-home {
-    min-height: var(--mobile-home-min-h, 100svh);
-    padding:
-      var(--mobile-home-padding-y, clamp(18px, 4svh, 34px))
-      var(--mobile-home-padding-x, clamp(12px, 4vw, 18px));
+    min-height: 100svh;
+    padding: 0;
     place-items: stretch center;
   }
 
+  /* Switch orbital-stage from grid/absolute canvas to a flex column */
   .orbital-stage {
-    position: absolute;
-    visibility: hidden;
-    opacity: 0;
-    pointer-events: none;
-    transform: translate3d(0, -14px, 0) scale(0.98);
-    transition:
-      opacity 260ms var(--home-motion-ease),
-      transform var(--home-motion-duration) var(--home-motion-ease),
-      visibility 0s 260ms;
-  }
-
-  .mobile-home-stage {
-    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100svh;
+    width: min(430px, 100%);
+    margin: 0 auto;
+    padding:
+      clamp(44px, 7svh, 72px)
+      clamp(12px, 4vw, 18px)
+      clamp(18px, 4svh, 34px);
+    gap: clamp(12px, 2.4svh, 22px);
+    /* Ensure it's always visible (override the grid-mode visibility state) */
     visibility: visible;
     opacity: 1;
     pointer-events: auto;
-    grid-template-columns: minmax(0, 0.6fr) minmax(0, 0.4fr);
-    grid-template-rows: var(--mobile-home-top-spacer, clamp(44px, 7svh, 72px)) auto auto auto;
-    gap: var(--mobile-home-stack-gap, clamp(12px, 2.4svh, 22px));
-    width: min(var(--mobile-home-max-width, 430px), 100%);
-    align-content: start;
-    align-items: stretch;
-    margin: 0 auto;
-    transform: translate3d(0, 0, 0) scale(1);
-    transition:
-      opacity 260ms var(--home-motion-ease),
-      transform var(--home-motion-duration) var(--home-motion-ease),
-      visibility 0s 0s,
-      width var(--home-motion-duration) var(--home-motion-ease),
-      gap var(--home-motion-duration) var(--home-motion-ease);
+    transform: none;
+    transition: none;
   }
 
-  .mobile-home-stage .floating-widget {
+  /* All free-positioned widgets revert to flow layout */
+  .home-free-widget {
+    position: static;
+    left: auto;
+    top: auto;
+    width: 100%;
+    height: auto;
+    min-width: 0;
+    max-width: 100%;
     --motion-x: 0px;
     --motion-y: 0px;
+    --wy: 0px;
+  }
+
+  .floating-widget {
     --home-hover-lift: -2px;
   }
 
-  .mobile-profile-hub {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    width: 90%;
-    justify-self: center;
-  }
-
-  .mobile-collection {
-    grid-column: 1 / 2;
-    grid-row: 3;
+  /* Display order: profile → collection → action buttons */
+  .profile-hub {
+    order: 1;
+    grid-column: auto;
+    grid-row: auto;
     width: 100%;
-    border-radius: var(--mobile-home-card-radius, 20px);
-  }
-
-  .mobile-profile-hub {
+    border-radius: 20px;
     padding: clamp(20px, 4svh, 28px) 16px;
+    --wy: 0px;
   }
 
-  .mobile-profile-hub .profile-avatar {
+  .profile-hub .profile-avatar {
     width: clamp(88px, 24vw, 104px);
     height: clamp(88px, 24vw, 104px);
     margin-bottom: clamp(16px, 2.4svh, 22px);
   }
 
-  .mobile-profile-hub h1 {
+  .profile-hub h1 {
     font-size: clamp(1.9rem, 8vw, 2.7rem);
   }
 
-  .mobile-profile-hub .summary {
+  .profile-hub .summary {
     max-width: 310px;
     font-size: 0.92rem;
     line-height: 1.6;
   }
 
-  .mobile-collection {
+  .orbit-collection {
+    order: 2;
+    grid-column: auto;
+    grid-row: auto;
+    width: 100%;
     padding: clamp(14px, 3svh, 18px);
   }
 
-  .mobile-collection p {
+  .orbit-collection p {
     -webkit-line-clamp: 2;
     line-clamp: 2;
   }
 
-  .mobile-action-grid {
-    grid-column: 2 / 3;
-    grid-row: 3;
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: var(--mobile-home-action-gap, clamp(10px, 2.2vw, 14px));
-    align-content: start;
-    align-self: start;
-  }
-
-  .mobile-action-grid > * {
-    display: inline-flex;
-    align-items: center;
+  /* Action row: flex container with the 3 buttons side by side */
+  .home-action-row {
+    display: flex;
+    order: 3;
+    flex-wrap: wrap;
     justify-content: center;
-    box-sizing: border-box;
-    width: 70%;
-    justify-self: center;
-    height: var(--mobile-home-action-height, 44px);
-    min-height: var(--mobile-home-action-height, 44px);
-    max-height: var(--mobile-home-action-height, 44px);
-    padding: 0 12px;
-    line-height: 1;
+    gap: clamp(10px, 2.2vw, 14px);
+    width: 100%;
   }
 
-.mobile-home-stage .mobile-upload-blog {
-  --motion-y: 0px;
-}
+  .orbit-upload {
+    grid-column: auto;
+    grid-row: auto;
+    justify-self: auto;
+    width: auto;
+    height: 44px;
+    min-height: 44px;
+    padding: 0 16px;
+    flex: 0 0 auto;
+    --motion-x: 0px;
+    --motion-y: 0px;
+    --wy: 0px;
+  }
 
-.mobile-home-stage .mobile-write-post {
-  --motion-y: clamp(46px, 7.8svh, 58px);
-}
-
-.mobile-home-stage .mobile-github-widget {
-  --motion-y: clamp(92px, 15.6svh, 116px);
-}
-
-  .mobile-github-widget {
-    grid-column: 1;
+  .github-widget {
+    grid-column: auto;
+    grid-row: auto;
+    width: auto;
+    height: 44px;
+    min-height: 44px;
+    padding: 0 16px;
+    justify-content: center;
+    --motion-x: 0px;
+    --motion-y: 0px;
+    --wy: 0px;
   }
 }
 
 @media (max-width: 380px) and (orientation: portrait) {
-  .mobile-home-stage {
+  .orbital-stage {
     gap: clamp(10px, 2svh, 18px);
   }
 
-  .mobile-action-grid .orbit-upload,
-  .mobile-action-grid .github-widget {
+  .orbit-upload,
+  .github-widget {
     padding: 0 10px;
     font-size: 0.78rem;
   }
@@ -2726,9 +2480,52 @@ h3 {
     width: 100%;
   }
 
-  .player-layout,
-  .player-layout.info-open {
+  .player-layout {
     grid-template-columns: 1fr;
+  }
+
+  /* Revert sidebar + panel to flow layout below video on small screens */
+  .player-info-sidebar {
+    position: static;
+    width: 100%;
+    height: auto;
+    pointer-events: auto;
+  }
+
+  .player-info-panel {
+    position: static;
+    max-height: 0;
+    overflow: hidden;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+    border-bottom-width: 0;
+    transform: none;
+    transition:
+      opacity var(--transition-base),
+      visibility 0s var(--transition-base),
+      max-height 0s var(--transition-base),
+      padding-top 0s var(--transition-base),
+      padding-bottom 0s var(--transition-base),
+      border-top-width 0s var(--transition-base),
+      border-bottom-width 0s var(--transition-base);
+  }
+
+  .player-info-panel.open {
+    max-height: 9000px;
+    padding-top: 18px;
+    padding-bottom: 18px;
+    border-top-width: 1px;
+    border-bottom-width: 1px;
+    transform: none;
+    transition:
+      opacity var(--transition-base),
+      visibility 0s 0s,
+      max-height 0s 0s,
+      padding-top 0s 0s,
+      padding-bottom 0s 0s,
+      border-top-width 0s 0s,
+      border-bottom-width 0s 0s;
   }
 
   .content-grid {

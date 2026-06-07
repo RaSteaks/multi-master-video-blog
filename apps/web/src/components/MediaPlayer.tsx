@@ -364,6 +364,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
           ) : null}
         </div>
 
+        <div className="player-info-sidebar">
         <aside
           className={infoOpen ? "player-info-panel open" : "player-info-panel"}
           id="player-info-panel"
@@ -437,6 +438,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
             </div>
           ) : null}
         </aside>
+        </div>
       </div>
     </section>
   );
@@ -508,7 +510,6 @@ function detectCapabilities(): DeviceCapabilities {
   }
 
   const video = document.createElement("video");
-  const mediaCapabilities = navigator.mediaCapabilities;
 
   return {
     hdr: window.matchMedia?.("(dynamic-range: high)")?.matches ?? false,
@@ -516,8 +517,7 @@ function detectCapabilities(): DeviceCapabilities {
     rec2020: window.matchMedia?.("(color-gamut: rec2020)")?.matches ?? false,
     hevc:
       video.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') !== "" ||
-      video.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') !== "" ||
-      Boolean(mediaCapabilities),
+      video.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') !== "",
     nativeHls: video.canPlayType("application/vnd.apple.mpegurl") !== "",
   };
 }

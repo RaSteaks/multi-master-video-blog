@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { NavBar } from "@/components/NavBar";
 import { PageTransition } from "@/components/PageTransition";
 import { siteConfig } from "@/lib/site-config";
 import "./globals.css";
@@ -36,17 +37,12 @@ export default function RootLayout({
           <Link className="brand" href="/" aria-label={`${siteConfig.title} - Home`}>
             {siteConfig.title}
           </Link>
-          <nav aria-label="Primary navigation">
-            <Link href="/videos">Videos</Link>
-            <Link href="/posts">Posts</Link>
-            <Link href="/upload">Upload</Link>
-            <Link href="/about">About</Link>
-          </nav>
+          <NavBar />
         </header>
 
-        <main id="main-content" tabIndex={-1}>
+        <div id="main-content" tabIndex={-1}>
           <PageTransition>{children}</PageTransition>
-        </main>
+        </div>
       </body>
     </html>
   );

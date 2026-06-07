@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { assetUrl, getPost } from "@/lib/directus";
+import { siteConfig } from "@/lib/site-config";
 
 type PostPageProps = {
   params: Promise<{
@@ -16,6 +17,21 @@ type TocItem = {
   level: number;
   text: string;
 };
+
+export async function generateMetadata({ params }: PostPageProps) {
+  const { slug } = await params;
+  const post = await getPost(slug);
+  if (!post) return {};
+  return {
+    title: `${post.title} — ${siteConfig.title}`,
+    description: post.content?.replace(/[#*`>_[\]]/g, "").slice(0, 160) || post.title,
+    openGraph: {
+      title: post.title,
+      type: "article" as const,
+      images: post.cover_image ? [assetUrl(post.cover_image)!] : [],
+    },
+  };
+}
 
 export default async function PostPage({ params }: PostPageProps) {
   const { slug } = await params;
@@ -38,6 +54,15 @@ export default async function PostPage({ params }: PostPageProps) {
         <h1>{post.title}</h1>
       </header>
 
+      {coverImageUrl && !hasToc ? (
+        <img
+          className="hero-media"
+          src={coverImageUrl}
+          alt={`Cover image for ${post.title}`}
+          loading="lazy"
+        />
+      ) : null}
+
       <div className={hasToc ? "article-content-grid" : undefined}>
         <article className="markdown-body">
           <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
@@ -55,7 +80,7 @@ export default async function PostPage({ params }: PostPageProps) {
                 loading="lazy"
               />
             ) : null}
-            <p>目录</p>
+            <p>{siteConfig.articleTocLabel}</p>
             <nav>
               {tocItems.map((item) => (
                 <a

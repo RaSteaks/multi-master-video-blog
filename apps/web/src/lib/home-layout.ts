@@ -22,24 +22,6 @@ export type HomeWidgetLayout = {
   zIndex?: number;
 };
 
-export type HomeMobilePortraitLayout = {
-  // Page padding for mobile portrait. svh tracks the visible viewport height better on phones.
-  paddingX: string;
-  paddingY: string;
-  // Minimum page height for short and tall phones.
-  minHeight: string;
-  // Vertical distance between the main mobile sections.
-  stackGap: string;
-  // Empty row before the first mobile section. Increase this to move the whole mobile page down.
-  topSpacer: string;
-  // Distance inside the action button grid.
-  actionGap: string;
-  // Mobile-only card and button sizing.
-  cardRadius: string;
-  actionHeight: string;
-  maxWidth: string;
-};
-
 // Homepage free-positioning config.
 // Desktop uses these coordinates and dimensions through CSS variables.
 // Tablet/mobile ignore absolute coordinates and fall back to the flow layout in globals.css.
@@ -103,21 +85,7 @@ export const homeLayout = {
       fontSize: "0.84rem",
     },
   },
-  mobilePortrait: {
-    paddingX: "clamp(12px, 4vw, 18px)",
-    paddingY: "clamp(18px, 4svh, 34px)",
-    minHeight: "100svh",
-    stackGap: "clamp(12px, 2.4svh, 22px)",
-    topSpacer: "clamp(44px, 7svh, 72px)",
-    actionGap: "clamp(10px, 2.2vw, 14px)",
-    cardRadius: "20px",
-    actionHeight: "44px",
-    maxWidth: "430px",
-  },
 } satisfies {
-  stage: {
-    minHeight: string;
-  };
+  stage: { minHeight: string };
   widgets: Record<string, HomeWidgetLayout>;
-  mobilePortrait: HomeMobilePortraitLayout;
 };
