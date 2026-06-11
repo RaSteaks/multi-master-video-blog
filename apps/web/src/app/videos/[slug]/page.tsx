@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { AnalyticsTracker } from "@/components/AnalyticsTracker";
 import { MediaPlayer } from "@/components/MediaPlayer";
 import { assetUrl, getVideoProject } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
@@ -38,6 +39,7 @@ export default async function VideoPage({ params }: VideoPageProps) {
 
   return (
     <main className="shell page-stack">
+      <AnalyticsTracker itemType="video" itemId={video.id} />
       <header className="page-header video-title">
         <div>
           <p className="eyebrow">{video.category || "Video"}</p>
@@ -53,7 +55,7 @@ export default async function VideoPage({ params }: VideoPageProps) {
         {video.tags?.length ? <> · {video.tags.join(", ")}</> : null}
       </p>
 
-      <MediaPlayer masters={video.masters || []} poster={poster} />
+      <MediaPlayer masters={video.masters || []} poster={poster} videoProjectId={video.id} />
     </main>
   );
 }

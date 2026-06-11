@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { trackAnalyticsEvent } from "@/components/AnalyticsTracker";
 import type { VideoMaster } from "@/lib/directus";
 import { masterResolution, mediaUrl } from "@/lib/directus";
 
 type MediaPlayerProps = {
   masters: VideoMaster[];
   poster?: string | null;
+  videoProjectId?: number;
 };
 
 type PlaybackState = "idle" | "loading" | "ready" | "playing" | "paused" | "error";
@@ -44,7 +46,7 @@ type ShakaNamespace = {
   };
 };
 
-export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
+export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProps) {
   const playableMasters = useMemo(() => masters.filter(isPlayableMaster), [masters]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playerRef = useRef<ShakaPlayer | null>(null);
@@ -55,6 +57,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
   const loadRequestIdRef = useRef(0);
   const pendingPlaybackRef = useRef<PlaybackSnapshot | null>(null);
   const lastLoadSnapshotRef = useRef<PlaybackSnapshot | null>(null);
+  const trackedPlaysRef = useRef(new Set<number>());
 
   const [activeMasterId, setActiveMasterId] = useState(() => getDefaultMaster(playableMasters)?.id);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
@@ -90,7 +93,23 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
     const video = videoRef.current;
     if (!video) return;
 
-    const onPlaying = () => setPlaybackState("playing");
+    const onPlaying = () => {
+      setPlaybackState("playing");
+      const master = currentMasterRef.current;
+      if (!videoProjectId || !master || trackedPlaysRef.current.has(master.id)) {
+        return;
+      }
+
+      trackedPlaysRef.current.add(master.id);
+      trackAnalyticsEvent({
+        eventType: "play",
+        itemType: "video",
+        itemId: videoProjectId,
+        masterId: master.id,
+        dedupeKey: `play:video:${videoProjectId}:${master.id}`,
+        dedupeMs: 2000,
+      });
+    };
     const onPause  = () => setPlaybackState("paused");
     const onWaiting = () =>
       setPlaybackState((s) => (s === "playing" ? "loading" : s));
@@ -104,7 +123,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
       video.removeEventListener("pause", onPause);
       video.removeEventListener("waiting", onWaiting);
     };
-  }, []);
+  }, [videoProjectId]);
 
   const capturePlaybackSnapshot = useCallback(
     (

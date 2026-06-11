@@ -6,7 +6,9 @@ param(
 
   [int]$Port = 3000,
 
-  [int]$WaitSeconds = 30
+  [int]$WaitSeconds = 30,
+
+  [string]$NpmScript = "dev:web"
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,10 +59,10 @@ function Start-Web {
   $stdout = Join-Path $logDir "web.out.log"
   $stderr = Join-Path $logDir "web.err.log"
 
-  Write-Host "Starting Web on port $Port..."
+  Write-Host "Starting Web in development mode on port $Port..."
   Start-Process `
     -FilePath "npm.cmd" `
-    -ArgumentList @("run", "start:web") `
+    -ArgumentList @("run", $NpmScript) `
     -WorkingDirectory $ProjectRoot `
     -RedirectStandardOutput $stdout `
     -RedirectStandardError $stderr `
@@ -117,7 +119,11 @@ switch ($Action) {
     Show-WebStatus
   }
   "rebuild-restart" {
-    Build-Web
+    if ($NpmScript -eq "dev:web") {
+      Write-Host "Development mode does not require a production build."
+    } else {
+      Build-Web
+    }
     Stop-Web
     Start-Sleep -Seconds 1
     Start-Web

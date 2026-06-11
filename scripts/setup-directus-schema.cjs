@@ -1,5 +1,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  loadDirectusEnv,
+  openDirectusDatabase,
+  quoteIdent
+} = require("./directus-db-utils.cjs");
 
 const cmsEnvPath = path.join(
   __dirname,
@@ -167,6 +172,46 @@ async function ensureRelation(token, relation) {
   }
 }
 
+async function ensureDashboard(token, dashboard) {
+  const { id, ...payload } = dashboard;
+  if (await exists(`/dashboards/${id}`, token)) {
+    await request(`/dashboards/${id}`, {
+      method: "PATCH",
+      token,
+      body: payload
+    });
+    console.log(`dashboard exists: ${dashboard.name}`);
+    return;
+  }
+
+  await request("/dashboards", {
+    method: "POST",
+    token,
+    body: dashboard
+  });
+  console.log(`dashboard created: ${dashboard.name}`);
+}
+
+async function ensurePanel(token, panel) {
+  const { id, ...payload } = panel;
+  if (await exists(`/panels/${id}`, token)) {
+    await request(`/panels/${id}`, {
+      method: "PATCH",
+      token,
+      body: payload
+    });
+    console.log(`panel exists: ${panel.name}`);
+    return;
+  }
+
+  await request("/panels", {
+    method: "POST",
+    token,
+    body: panel
+  });
+  console.log(`panel created: ${panel.name}`);
+}
+
 function stringField(field, required = false, options = {}) {
   return {
     field,
@@ -271,6 +316,23 @@ function jsonField(field) {
   };
 }
 
+function hiddenStringField(field, options = {}) {
+  return {
+    field,
+    type: "string",
+    meta: {
+      interface: "input",
+      hidden: true,
+      width: "full"
+    },
+    schema: {
+      is_nullable: !options.required,
+      max_length: options.maxLength || 255,
+      is_unique: options.unique || false
+    }
+  };
+}
+
 function jsonObjectField(field) {
   return {
     field,
@@ -369,6 +431,26 @@ const collections = [
       display_template: "{{label}}"
     },
     schema: {}
+  },
+  {
+    collection: "analytics_events",
+    meta: {
+      collection: "analytics_events",
+      icon: "analytics",
+      note: "Raw frontend analytics events for post views and video playback.",
+      display_template: "{{event_type}} · {{item_type}} · {{created_at}}"
+    },
+    schema: {}
+  },
+  {
+    collection: "analytics_items",
+    meta: {
+      collection: "analytics_items",
+      icon: "monitoring",
+      note: "Aggregated analytics counters used by the CMS dashboard.",
+      display_template: "{{title}} · {{view_count}} views · {{visitor_count}} visitors"
+    },
+    schema: {}
   }
 ];
 
@@ -407,12 +489,23 @@ const displayGamutTypes = [
   { text: "Custom", value: "custom" }
 ];
 
+const analyticsItemTypes = [
+  { text: "Post", value: "post" },
+  { text: "Video", value: "video" }
+];
+
+const analyticsEventTypes = [
+  { text: "View", value: "view" },
+  { text: "Play", value: "play" }
+];
+
 const fields = {
   posts: [
     stringField("title", true),
     stringField("slug", true, { unique: true }),
     textField("content", { markdown: true }),
     fileField("cover_image"),
+    fileField("backgroundimage"),
     jsonField("tags"),
     stringField("category", false, { width: "half" }),
     booleanField("published", false),
@@ -479,6 +572,33 @@ const fields = {
     textField("notes"),
     dateTimeField("created_at"),
     dateTimeField("updated_at")
+  ],
+  analytics_events: [
+    selectField("event_type", analyticsEventTypes, true),
+    selectField("item_type", analyticsItemTypes, true),
+    stringField("item_key", true, { width: "half", maxLength: 80 }),
+    integerField("post_id"),
+    integerField("video_project_id"),
+    integerField("video_master_id"),
+    hiddenStringField("visitor_hash", { required: true, maxLength: 64 }),
+    stringField("path", false, { width: "full", maxLength: 500 }),
+    stringField("referrer", false, { width: "full", maxLength: 500 }),
+    hiddenStringField("user_agent", { maxLength: 500 }),
+    dateTimeField("created_at")
+  ],
+  analytics_items: [
+    selectField("item_type", analyticsItemTypes, true),
+    stringField("item_key", true, { width: "half", maxLength: 80, unique: true }),
+    stringField("title", true, { width: "full" }),
+    stringField("slug", false, { width: "half" }),
+    integerField("post_id"),
+    integerField("video_project_id"),
+    integerField("view_count", { defaultValue: 0 }),
+    integerField("visitor_count", { defaultValue: 0 }),
+    integerField("play_count", { defaultValue: 0 }),
+    integerField("player_count", { defaultValue: 0 }),
+    dateTimeField("last_event_at"),
+    dateTimeField("updated_at")
   ]
 };
 
@@ -505,9 +625,38 @@ function fileRelation(collection, field) {
   };
 }
 
+function itemRelation(collection, field, relatedCollection) {
+  return {
+    collection,
+    field,
+    related_collection: relatedCollection,
+    meta: {
+      many_collection: collection,
+      many_field: field,
+      one_collection: relatedCollection,
+      one_field: null,
+      one_deselect_action: "nullify"
+    },
+    schema: {
+      table: collection,
+      column: field,
+      foreign_key_table: relatedCollection,
+      foreign_key_column: "id",
+      on_update: "NO ACTION",
+      on_delete: "SET NULL"
+    }
+  };
+}
+
 const relations = [
   fileRelation("posts", "cover_image"),
+  fileRelation("posts", "backgroundimage"),
   fileRelation("video_projects", "cover_image"),
+  itemRelation("analytics_events", "post_id", "posts"),
+  itemRelation("analytics_events", "video_project_id", "video_projects"),
+  itemRelation("analytics_events", "video_master_id", "video_masters"),
+  itemRelation("analytics_items", "post_id", "posts"),
+  itemRelation("analytics_items", "video_project_id", "video_projects"),
   {
     collection: "video_masters",
     field: "project_id",
@@ -530,6 +679,177 @@ const relations = [
   }
 ];
 
+const analyticsDashboard = {
+  id: "1d9e17dc-2d50-4606-9331-c5fb6b12d458",
+  name: "Content Analytics",
+  icon: "monitoring",
+  color: "#5fa8d3",
+  note: "Post visits, unique visitors, video visits, and playback counts."
+};
+
+const analyticsPanels = [
+  {
+    id: "c14e9d58-36a6-4a58-a48c-7a7e7f981b7d",
+    dashboard: analyticsDashboard.id,
+    name: "Top Posts",
+    icon: "article",
+    color: "#5fa8d3",
+    show_header: true,
+    type: "list",
+    position_x: 1,
+    position_y: 1,
+    width: 18,
+    height: 12,
+    options: {
+      collection: "analytics_items",
+      limit: 20,
+      sortField: "view_count",
+      sortDirection: "desc",
+      displayTemplate: "{{title}} · {{view_count}} views · {{visitor_count}} visitors",
+      filter: { item_type: { _eq: "post" } }
+    }
+  },
+  {
+    id: "b38f82e5-cb72-4c39-b9d2-b7cae5cf4492",
+    dashboard: analyticsDashboard.id,
+    name: "Top Videos",
+    icon: "movie",
+    color: "#42b883",
+    show_header: true,
+    type: "list",
+    position_x: 19,
+    position_y: 1,
+    width: 18,
+    height: 12,
+    options: {
+      collection: "analytics_items",
+      limit: 20,
+      sortField: "play_count",
+      sortDirection: "desc",
+      displayTemplate: "{{title}} · {{play_count}} plays · {{player_count}} players · {{visitor_count}} visitors",
+      filter: { item_type: { _eq: "video" } }
+    }
+  },
+  {
+    id: "b4f2651d-59dd-45b8-85ea-8f6dd23a153b",
+    dashboard: analyticsDashboard.id,
+    name: "Raw Events",
+    icon: "timeline",
+    color: "#d49b37",
+    show_header: true,
+    type: "time_series",
+    position_x: 1,
+    position_y: 13,
+    width: 36,
+    height: 10,
+    options: {
+      collection: "analytics_events",
+      dateField: "created_at",
+      groupAggregation: "count",
+      groupPrecision: "day",
+      valueField: "id",
+      curveType: "smooth",
+      fillType: "gradient",
+      color: "#5fa8d3"
+    }
+  }
+];
+
+async function ensureAnalyticsDashboardInDatabase() {
+  const db = await openDirectusDatabase(loadDirectusEnv());
+
+  try {
+    const panelIds = analyticsPanels.map((panel) => panel.id);
+    await execDb(
+      db,
+      `delete from ${db.tableRef("directus_panels")} where ${quoteIdent("id")} in (${placeholders(db, panelIds.length)})`,
+      panelIds
+    );
+    await execDb(
+      db,
+      `delete from ${db.tableRef("directus_dashboards")} where ${quoteIdent("id")} = ${placeholder(db, 1)}`,
+      [analyticsDashboard.id]
+    );
+    await execDb(
+      db,
+      [
+        `insert into ${db.tableRef("directus_dashboards")}`,
+        `(${[
+          "id",
+          "name",
+          "icon",
+          "note",
+          "color"
+        ].map(quoteIdent).join(", ")})`,
+        `values (${placeholders(db, 5)})`
+      ].join(" "),
+      [
+        analyticsDashboard.id,
+        analyticsDashboard.name,
+        analyticsDashboard.icon,
+        analyticsDashboard.note,
+        analyticsDashboard.color
+      ]
+    );
+
+    for (const panel of analyticsPanels) {
+      await execDb(
+        db,
+        [
+          `insert into ${db.tableRef("directus_panels")}`,
+          `(${[
+            "id",
+            "dashboard",
+            "name",
+            "icon",
+            "color",
+            "show_header",
+            "note",
+            "type",
+            "position_x",
+            "position_y",
+            "width",
+            "height",
+            "options"
+          ].map(quoteIdent).join(", ")})`,
+          `values (${placeholders(db, 13)})`
+        ].join(" "),
+        [
+          panel.id,
+          panel.dashboard,
+          panel.name,
+          panel.icon,
+          panel.color,
+          db.type === "pg" ? panel.show_header : Number(panel.show_header),
+          panel.note || null,
+          panel.type,
+          panel.position_x,
+          panel.position_y,
+          panel.width,
+          panel.height,
+          JSON.stringify(panel.options)
+        ]
+      );
+    }
+
+    console.log(`dashboard ready: ${analyticsDashboard.name}`);
+  } finally {
+    await db.close();
+  }
+}
+
+async function execDb(db, sql, params = []) {
+  await db.all(sql, params);
+}
+
+function placeholder(db, index) {
+  return db.type === "pg" ? `$${index}` : "?";
+}
+
+function placeholders(db, count) {
+  return Array.from({ length: count }, (_, index) => placeholder(db, index + 1)).join(", ");
+}
+
 async function main() {
   const token = await login();
 
@@ -546,6 +866,8 @@ async function main() {
   for (const relation of relations) {
     await ensureRelation(token, relation);
   }
+
+  await ensureAnalyticsDashboardInDatabase();
 
   console.log("Directus content schema is ready.");
 }

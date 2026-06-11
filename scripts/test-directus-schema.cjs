@@ -11,6 +11,7 @@ const expectedTables = {
     "slug",
     "content",
     "cover_image",
+    "backgroundimage",
     "tags",
     "category",
     "published",
@@ -78,13 +79,48 @@ const expectedTables = {
     "notes",
     "created_at",
     "updated_at"
+  ],
+  analytics_events: [
+    "id",
+    "event_type",
+    "item_type",
+    "item_key",
+    "post_id",
+    "video_project_id",
+    "video_master_id",
+    "visitor_hash",
+    "path",
+    "referrer",
+    "user_agent",
+    "created_at"
+  ],
+  analytics_items: [
+    "id",
+    "item_type",
+    "item_key",
+    "title",
+    "slug",
+    "post_id",
+    "video_project_id",
+    "view_count",
+    "visitor_count",
+    "play_count",
+    "player_count",
+    "last_event_at",
+    "updated_at"
   ]
 };
 
 const expectedRelations = [
   ["posts", "cover_image", "directus_files"],
+  ["posts", "backgroundimage", "directus_files"],
   ["video_projects", "cover_image", "directus_files"],
-  ["video_masters", "project_id", "video_projects"]
+  ["video_masters", "project_id", "video_projects"],
+  ["analytics_events", "post_id", "posts"],
+  ["analytics_events", "video_project_id", "video_projects"],
+  ["analytics_events", "video_master_id", "video_masters"],
+  ["analytics_items", "post_id", "posts"],
+  ["analytics_items", "video_project_id", "video_projects"]
 ];
 
 async function main() {
@@ -119,24 +155,20 @@ async function main() {
         "select",
         quoteIdent("collection"),
         `from ${db.tableRef("directus_collections")}`,
-        `where ${quoteIdent("collection")} in (${
-          db.type === "pg" ? "$1, $2, $3" : "?, ?, ?"
-        })`,
+        `where ${quoteIdent("collection")} in (${collectionPlaceholders(db.type)})`,
         `order by ${quoteIdent("collection")}`
       ].join(" "),
-      ["posts", "video_projects", "video_masters"]
+      Object.keys(expectedTables)
     );
     const fields = await db.all(
       [
         "select",
         `${quoteIdent("collection")}, ${quoteIdent("field")}`,
         `from ${db.tableRef("directus_fields")}`,
-        `where ${quoteIdent("collection")} in (${
-          db.type === "pg" ? "$1, $2, $3" : "?, ?, ?"
-        })`,
+        `where ${quoteIdent("collection")} in (${collectionPlaceholders(db.type)})`,
         `order by ${quoteIdent("collection")}, ${quoteIdent("field")}`
       ].join(" "),
-      ["posts", "video_projects", "video_masters"]
+      Object.keys(expectedTables)
     );
     const relations = await db.all(
       [
@@ -190,3 +222,9 @@ main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
+
+function collectionPlaceholders(dbType) {
+  return Object.keys(expectedTables)
+    .map((_, index) => (dbType === "pg" ? `$${index + 1}` : "?"))
+    .join(", ");
+}

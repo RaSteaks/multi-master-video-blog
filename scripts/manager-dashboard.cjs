@@ -19,7 +19,7 @@ const services = {
     name: "Frontend Web",
     port: 3000,
     url: "http://127.0.0.1:3000/",
-    startArgs: ["run", "start:web"],
+    startArgs: ["run", "dev:web"],
     buildArgs: ["run", "build:web"],
     logName: "web"
   },
@@ -274,7 +274,9 @@ async function handleAction(serviceId, action) {
     return startService(service);
   }
   if (action === "rebuild-restart" && serviceId === "web") {
-    await buildWeb();
+    if (service.startArgs.join(" ") !== "run dev:web") {
+      await buildWeb();
+    }
     await stopService(service);
     await new Promise((resolve) => setTimeout(resolve, 1000));
     return startService(service);

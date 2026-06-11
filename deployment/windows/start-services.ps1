@@ -25,7 +25,7 @@ function Start-BlogService {
     -WindowStyle Hidden
 }
 
-Start-BlogService -Name "web" -Arguments @("run", "start:web")
+Start-BlogService -Name "web" -Arguments @("run", "dev:web")
 Start-BlogService -Name "cms" -Arguments @("run", "start:cms")
 Start-BlogService -Name "api" -Arguments @("run", "start:api")
 

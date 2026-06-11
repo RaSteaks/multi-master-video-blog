@@ -27,6 +27,8 @@ const MASTER_TYPES = new Set(["sdr", "hdr10", "hlg", "dolby_vision", "custom"]);
 const SOURCE_KINDS = new Set(["embedded", "master_package", "hls_package"]);
 const TRANSCODE_TYPES = new Set(["sdr", "hdr10", "hlg", "custom"]);
 const HDR_MASTER_TYPES = new Set(["hdr10", "hlg", "dolby_vision"]);
+const ANALYTICS_ITEM_TYPES = new Set(["post", "video"]);
+const ANALYTICS_EVENT_TYPES = new Set(["view", "play"]);
 const COLOR_REQUIRED_FIELDS = [
   "colorPrimaries",
   "colorTransfer",
@@ -1871,6 +1873,196 @@ async function directusLogin() {
   return data.data.access_token;
 }
 
+async function readJsonBody(req, maxBytes = 64 * 1024) {
+  const chunks = [];
+  let size = 0;
+
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) {
+      throw httpError(413, "Request body is too large.");
+    }
+    chunks.push(chunk);
+  }
+
+  if (chunks.length === 0) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw httpError(400, "Request body must be valid JSON.");
+  }
+}
+
+function hashAnalyticsValue(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function clientAddress(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0].trim();
+  }
+
+  return req.socket.remoteAddress || "";
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || "").trim();
+  return text.length > maxLength ? text.slice(0, maxLength) : text;
+}
+
+function normalizeAnalyticsEvent(body, req) {
+  const eventType = truncateText(body.eventType || body.event_type, 24);
+  const itemType = truncateText(body.itemType || body.item_type, 24);
+  const itemId = parseInteger(body.itemId || body.item_id);
+  const masterId = parseInteger(body.masterId || body.master_id);
+
+  if (!ANALYTICS_EVENT_TYPES.has(eventType)) {
+    throw httpError(400, "eventType must be view or play.");
+  }
+
+  if (!ANALYTICS_ITEM_TYPES.has(itemType)) {
+    throw httpError(400, "itemType must be post or video.");
+  }
+
+  if (!itemId) {
+    throw httpError(400, "itemId is required.");
+  }
+
+  if (eventType === "play" && itemType !== "video") {
+    throw httpError(400, "play events are only supported for videos.");
+  }
+
+  const userAgent = truncateText(req.headers["user-agent"] || "", 500);
+  const rawVisitor =
+    truncateText(body.visitorId || body.visitor_id, 120) ||
+    `${clientAddress(req)}|${userAgent}`;
+
+  return {
+    eventType,
+    itemType,
+    itemId,
+    masterId,
+    visitorHash: hashAnalyticsValue(rawVisitor),
+    path: truncateText(body.path, 500),
+    referrer: truncateText(body.referrer, 500),
+    userAgent
+  };
+}
+
+async function getAnalyticsItemRecord(token, event) {
+  const collection = event.itemType === "post" ? "posts" : "video_projects";
+  const data = await directusRequest(
+    `/items/${collection}/${event.itemId}?fields=id,title,slug`,
+    token
+  );
+
+  return data.data;
+}
+
+async function syncAnalyticsItem(token, event) {
+  const item = await getAnalyticsItemRecord(token, event);
+  const itemKey = `${event.itemType}:${event.itemId}`;
+  const eventParams = new URLSearchParams({
+    "filter[item_key][_eq]": itemKey,
+    fields: "event_type,visitor_hash,created_at",
+    limit: "-1"
+  });
+  const events = (
+    await directusRequest(`/items/analytics_events?${eventParams.toString()}`, token)
+  ).data || [];
+  const viewEvents = events.filter((itemEvent) => itemEvent.event_type === "view");
+  const playEvents = events.filter((itemEvent) => itemEvent.event_type === "play");
+  const lastEventAt = events
+    .map((itemEvent) => itemEvent.created_at)
+    .filter(Boolean)
+    .sort()
+    .at(-1) || null;
+
+  const payload = {
+    item_type: event.itemType,
+    item_key: itemKey,
+    title: item.title,
+    slug: item.slug,
+    post_id: event.itemType === "post" ? item.id : null,
+    video_project_id: event.itemType === "video" ? item.id : null,
+    view_count: viewEvents.length,
+    visitor_count: new Set(viewEvents.map((itemEvent) => itemEvent.visitor_hash)).size,
+    play_count: playEvents.length,
+    player_count: new Set(playEvents.map((itemEvent) => itemEvent.visitor_hash)).size,
+    last_event_at: lastEventAt,
+    updated_at: new Date().toISOString()
+  };
+
+  const itemParams = new URLSearchParams({
+    "filter[item_key][_eq]": itemKey,
+    fields: "id",
+    limit: "1"
+  });
+  const existing = (
+    await directusRequest(`/items/analytics_items?${itemParams.toString()}`, token)
+  ).data?.[0];
+
+  if (existing) {
+    return (
+      await directusRequest(`/items/analytics_items/${existing.id}`, token, {
+        method: "PATCH",
+        body: payload
+      })
+    ).data;
+  }
+
+  return (
+    await directusRequest("/items/analytics_items", token, {
+      method: "POST",
+      body: payload
+    })
+  ).data;
+}
+
+async function handleAnalyticsEvent(req, res) {
+  try {
+    const event = normalizeAnalyticsEvent(await readJsonBody(req), req);
+    const token = await directusLogin();
+    const item = await getAnalyticsItemRecord(token, event);
+    const now = new Date().toISOString();
+    const itemKey = `${event.itemType}:${event.itemId}`;
+
+    const created = await directusRequest("/items/analytics_events", token, {
+      method: "POST",
+      body: {
+        event_type: event.eventType,
+        item_type: event.itemType,
+        item_key: itemKey,
+        post_id: event.itemType === "post" ? item.id : null,
+        video_project_id: event.itemType === "video" ? item.id : null,
+        video_master_id: event.masterId || null,
+        visitor_hash: event.visitorHash,
+        path: event.path,
+        referrer: event.referrer,
+        user_agent: event.userAgent,
+        created_at: now
+      }
+    });
+
+    const aggregate = await syncAnalyticsItem(token, event);
+
+    sendJson(res, 201, {
+      status: "ok",
+      event: created.data.id,
+      aggregate
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, {
+      status: "error",
+      error: error.message
+    });
+  }
+}
+
 async function findProjectBySlug(token, slug) {
   const params = new URLSearchParams({
     "filter[slug][_eq]": slug,
@@ -2181,6 +2373,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && url.pathname === "/uploads/videos") {
     await handleUpload(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/analytics/events") {
+    await handleAnalyticsEvent(req, res);
     return;
   }
 

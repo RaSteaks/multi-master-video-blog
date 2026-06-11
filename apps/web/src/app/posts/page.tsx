@@ -7,8 +7,8 @@ export default async function PostsPage() {
   return (
     <main className="shell page-stack">
       <header className="page-header">
-        <p className="eyebrow">Articles</p>
-        <h1>Posts</h1>
+        <p className="eyebrow">记录探索技术的路程</p>
+        <h1>文章</h1>
       </header>
 
       {posts.length > 0 ? (

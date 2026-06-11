@@ -3,6 +3,7 @@ import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { AnalyticsTracker } from "@/components/AnalyticsTracker";
 import { assetUrl, getPost } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
 
@@ -45,9 +46,19 @@ export default async function PostPage({ params }: PostPageProps) {
   const tocItems = extractTocItems(content);
   const hasToc = tocItems.length > 0;
   const coverImageUrl = assetUrl(post.cover_image);
+  const bgImageUrl = assetUrl(post.backgroundimage);
   const markdownComponents = createMarkdownComponents();
 
   return (
+    <>
+      <AnalyticsTracker itemType="post" itemId={post.id} />
+      {bgImageUrl ? (
+        <div
+          className="site-bg"
+          style={{ backgroundImage: `url(${bgImageUrl})`, "--site-bg-blur": "14px" } as React.CSSProperties}
+          aria-hidden="true"
+        />
+      ) : null}
     <main className={hasToc ? "shell article-shell article-shell-with-toc" : "shell article-shell"}>
       <header className="page-header">
         <p className="eyebrow">{post.category || "Article"}</p>
@@ -96,6 +107,7 @@ export default async function PostPage({ params }: PostPageProps) {
         ) : null}
       </div>
     </main>
+    </>
   );
 }
 

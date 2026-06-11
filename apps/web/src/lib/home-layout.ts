@@ -62,9 +62,21 @@ export const homeLayout = {
       radius: "999px",
       fontSize: "0.84rem",
     },
-    // Centered external profile link. dx keeps the widget centered on x.
+    // External profile link — GitHub. dx keeps the widget centered on x.
     github: {
-      x: "49%",
+      x: "42%",
+      y: "80%",
+      w: "132px",
+      h: "44px",
+      dx: "-50%",
+      padding: "10px 18px",
+      radius: "999px",
+      fontSize: "0.84rem",
+      gap: "8px",
+    },
+    // External profile link — Bilibili. Same dimensions as github.
+    bilibili: {
+      x: "56%",
       y: "80%",
       w: "132px",
       h: "44px",
@@ -76,7 +88,7 @@ export const homeLayout = {
     },
     // Link to the Directus post editor.
     writePost: {
-      x: "66%",
+      x: "65%",
       y: "80%",
       w: "132px",
       h: "44px",

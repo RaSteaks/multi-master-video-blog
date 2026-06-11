@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { NavBar } from "@/components/NavBar";
 import { PageTransition } from "@/components/PageTransition";
+import { assetUrl, getSiteSettings } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
 import "./globals.css";
 
@@ -21,14 +22,29 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const settings = await getSiteSettings();
+  const bgUrl = assetUrl(settings?.background_image ?? null);
+  const blur = settings?.background_blur ?? 8;
+
   return (
     <html lang="zh-CN" data-scroll-behavior="smooth" suppressHydrationWarning>
       <body>
+        {bgUrl ? (
+          <div
+            className="site-bg"
+            style={{
+              backgroundImage: `url(${bgUrl})`,
+              "--site-bg-blur": `${blur}px`,
+            } as React.CSSProperties}
+            aria-hidden="true"
+          />
+        ) : null}
+
         <a href="#main-content" className="skip-link">
           Skip to content
         </a>

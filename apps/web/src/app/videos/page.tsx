@@ -8,7 +8,7 @@ export default async function VideosPage() {
     <main className="shell page-stack">
       <header className="page-header">
         <p className="eyebrow">Video Library</p>
-        <h1>Videos</h1>
+        <h1>Video&Showreels</h1>
       </header>
 
       {videos.length > 0 ? (

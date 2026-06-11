@@ -6,6 +6,7 @@ export type Post = {
   slug: string;
   content: string | null;
   cover_image: DirectusFileId;
+  backgroundimage: DirectusFileId;
   tags: string[] | null;
   category: string | null;
   published: boolean | number;
@@ -90,7 +91,7 @@ type DirectusAggregateResponse = {
 const POST_LIST_FIELDS =
   "id,title,slug,cover_image,category,published,created_at";
 const POST_DETAIL_FIELDS =
-  "id,title,slug,content,cover_image,tags,category,published,created_at,updated_at";
+  "id,title,slug,content,cover_image,backgroundimage,tags,category,published,created_at,updated_at";
 
 const VIDEO_LIST_FIELDS =
   "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at," +
@@ -243,6 +244,22 @@ export async function getVideoProject(slug: string) {
   );
   const project = response.data[0] ?? null;
   return project ? sortMasters(project) : null;
+}
+
+export type SiteSettings = {
+  background_image: DirectusFileId;
+  background_blur: number | null;
+};
+
+export async function getSiteSettings(): Promise<SiteSettings | null> {
+  try {
+    const response = await directusFetch<{ data: SiteSettings }>(
+      "/items/site_settings?fields=background_image,background_blur"
+    );
+    return response.data ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function getCounts() {
