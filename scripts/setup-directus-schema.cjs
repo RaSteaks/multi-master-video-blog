@@ -271,6 +271,23 @@ function jsonField(field) {
   };
 }
 
+function jsonObjectField(field) {
+  return {
+    field,
+    type: "json",
+    meta: {
+      interface: "input-code",
+      options: {
+        language: "json"
+      },
+      width: "full"
+    },
+    schema: {
+      is_nullable: true
+    }
+  };
+}
+
 function aliasO2mField(field) {
   return {
     field,
@@ -366,7 +383,28 @@ const masterTypes = [
 const statusTypes = [
   { text: "Draft", value: "draft" },
   { text: "Ready", value: "ready" },
+  { text: "Rejected", value: "rejected" },
+  { text: "Quarantine", value: "quarantine" },
   { text: "Archived", value: "archived" }
+];
+
+const verificationStatusTypes = [
+  { text: "Ready", value: "ready" },
+  { text: "Rejected", value: "rejected" },
+  { text: "Quarantine", value: "quarantine" }
+];
+
+const processingModeTypes = [
+  { text: "Copy / Remux", value: "copy" },
+  { text: "Transcode", value: "transcode" }
+];
+
+const displayGamutTypes = [
+  { text: "BT.709", value: "bt709" },
+  { text: "BT.2020", value: "bt2020" },
+  { text: "P3-D65(smpte432)", value: "p3_d65" },
+  { text: "DCI-P3(smpte431)", value: "dci_p3" },
+  { text: "Custom", value: "custom" }
 ];
 
 const fields = {
@@ -416,6 +454,27 @@ const fields = {
     booleanField("is_default", false),
     integerField("sort_order", { defaultValue: 0 }),
     selectField("status", statusTypes, false),
+    selectField("processing_mode", processingModeTypes, false),
+    booleanField("is_derivative", false),
+    integerField("derived_from_master_id"),
+    stringField("source_sha256", false, { width: "full", maxLength: 64 }),
+    selectField("display_gamut", displayGamutTypes, false),
+    stringField("color_primaries", false, { width: "half" }),
+    stringField("color_transfer", false, { width: "half" }),
+    stringField("matrix_coefficients", false, { width: "half" }),
+    stringField("color_range", false, { width: "half" }),
+    stringField("pixel_format", false, { width: "half" }),
+    stringField("chroma_location", false, { width: "half" }),
+    stringField("hls_video_range", false, { width: "half" }),
+    jsonObjectField("hdr_static_metadata"),
+    jsonObjectField("dolby_metadata"),
+    jsonObjectField("source_probe_json"),
+    jsonObjectField("output_probe_json"),
+    selectField("verification_status", verificationStatusTypes, false),
+    jsonObjectField("verification_errors"),
+    dateTimeField("verified_at"),
+    textField("conversion_intent"),
+    textField("conversion_lut_or_filter"),
     dateTimeField("uploaded_at"),
     textField("notes"),
     dateTimeField("created_at"),

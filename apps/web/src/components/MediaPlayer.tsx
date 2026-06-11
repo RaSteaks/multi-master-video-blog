@@ -16,6 +16,7 @@ type PlaybackSnapshot = {
   requestId: number;
   time: number;
   wasPlaying: boolean;
+  allowSdrFallback: boolean;
 };
 
 type DeviceCapabilities = {
@@ -44,6 +45,7 @@ type ShakaNamespace = {
 };
 
 export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
+  const playableMasters = useMemo(() => masters.filter(isPlayableMaster), [masters]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playerRef = useRef<ShakaPlayer | null>(null);
   const currentMasterRef = useRef<VideoMaster | null>(null);
@@ -54,7 +56,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
   const pendingPlaybackRef = useRef<PlaybackSnapshot | null>(null);
   const lastLoadSnapshotRef = useRef<PlaybackSnapshot | null>(null);
 
-  const [activeMasterId, setActiveMasterId] = useState(() => getDefaultMaster(masters)?.id);
+  const [activeMasterId, setActiveMasterId] = useState(() => getDefaultMaster(playableMasters)?.id);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<DeviceCapabilities | null>(null);
@@ -62,15 +64,21 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const activeMaster = useMemo(
-    () => masters.find((m) => m.id === activeMasterId) ?? getDefaultMaster(masters),
-    [activeMasterId, masters],
+    () => playableMasters.find((m) => m.id === activeMasterId) ?? getDefaultMaster(playableMasters),
+    [activeMasterId, playableMasters],
   );
 
-  const defaultMaster = useMemo(() => getDefaultMaster(masters), [masters]);
+  const defaultMaster = useMemo(() => getDefaultMaster(playableMasters), [playableMasters]);
   const sdrFallback = useMemo(
-    () => masters.find((m) => m.type === "sdr") ?? defaultMaster,
-    [defaultMaster, masters],
+    () => playableMasters.find((m) => m.type === "sdr") ?? defaultMaster,
+    [defaultMaster, playableMasters],
   );
+
+  useEffect(() => {
+    if (!activeMaster && defaultMaster) {
+      setActiveMasterId(defaultMaster.id);
+    }
+  }, [activeMaster, defaultMaster]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -99,7 +107,11 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
   }, []);
 
   const capturePlaybackSnapshot = useCallback(
-    (targetMasterId: number, sourceSnapshot?: PlaybackSnapshot | null): PlaybackSnapshot => {
+    (
+      targetMasterId: number,
+      sourceSnapshot?: PlaybackSnapshot | null,
+      options: { allowSdrFallback?: boolean } = {},
+    ): PlaybackSnapshot => {
       const video = videoRef.current;
       const requestId = loadRequestIdRef.current + 1;
       loadRequestIdRef.current = requestId;
@@ -109,6 +121,8 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
         requestId,
         time: sourceSnapshot?.time ?? playbackTime(video),
         wasPlaying: sourceSnapshot?.wasPlaying ?? Boolean(video && !video.paused && !video.ended),
+        allowSdrFallback:
+          sourceSnapshot?.allowSdrFallback ?? options.allowSdrFallback ?? true,
       };
     },
     [],
@@ -126,6 +140,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
         sdrFallback &&
         failedMaster &&
         sdrFallback.id !== failedMaster.id &&
+        failedSnapshot?.allowSdrFallback !== false &&
         !fallbackAttemptedRef.current
       ) {
         fallbackAttemptedRef.current = true;
@@ -255,14 +270,18 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
     if (master.id === activeMasterId) return;
 
     fallbackAttemptedRef.current = false;
-    pendingPlaybackRef.current = capturePlaybackSnapshot(master.id);
+    pendingPlaybackRef.current = capturePlaybackSnapshot(master.id, null, {
+      allowSdrFallback: false,
+    });
     setActiveMasterId(master.id);
   }, [activeMasterId, capturePlaybackSnapshot]);
 
   const retry = useCallback(() => {
     if (activeMaster) {
       fallbackAttemptedRef.current = false;
-      pendingPlaybackRef.current = capturePlaybackSnapshot(activeMaster.id);
+      pendingPlaybackRef.current = capturePlaybackSnapshot(activeMaster.id, null, {
+        allowSdrFallback: false,
+      });
       setReloadNonce((value) => value + 1);
     }
   }, [activeMaster, capturePlaybackSnapshot]);
@@ -270,14 +289,18 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
   if (!activeMaster) {
     return (
       <div className="player-shell empty-state" role="status">
-        <p>No video masters have been configured for this project.</p>
+        <p>
+          {masters.length
+            ? "No verified video masters are ready for playback."
+            : "No video masters have been configured for this project."}
+        </p>
       </div>
     );
   }
 
   const hdrWarning =
     capabilities && isHdrMaster(activeMaster) && !capabilities.hdr
-      ? "This display may not support HDR playback. Switch to SDR for a better experience."
+      ? "This display may not support HDR playback. The selected master will remain active if playback fails."
       : null;
 
   const resolutionLabel = masterResolution(activeMaster);
@@ -304,7 +327,7 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
 
           <div className="player-controls-row">
             <div className="master-bar" role="group" aria-label="Video master switcher">
-              {masters.map((master) => (
+              {playableMasters.map((master) => (
                 <button
                   className={
                     master.id === activeMaster.id ? "master-button active" : "master-button"
@@ -391,12 +414,28 @@ export function MediaPlayer({ masters, poster }: MediaPlayerProps) {
               <div><dt>Type</dt><dd>{activeMaster.type.replace(/_/g, " ")}</dd></div>
               <div><dt>Codec</dt><dd>{activeMaster.codec || "N/A"}</dd></div>
               <div><dt>Resolution</dt><dd>{resolutionLabel || "N/A"}</dd></div>
+              <div><dt>Gamut</dt><dd>{formatDisplayGamut(activeMaster)}</dd></div>
               <div><dt>Color Space</dt><dd>{activeMaster.color_space || "N/A"}</dd></div>
-              <div><dt>Transfer</dt><dd>{activeMaster.transfer_function || "N/A"}</dd></div>
+              <div><dt>Primaries</dt><dd>{activeMaster.color_primaries || "N/A"}</dd></div>
+              <div><dt>Transfer</dt><dd>{activeMaster.color_transfer || activeMaster.transfer_function || "N/A"}</dd></div>
+              <div><dt>Matrix</dt><dd>{activeMaster.matrix_coefficients || "N/A"}</dd></div>
+              <div><dt>Range</dt><dd>{activeMaster.color_range || "N/A"}</dd></div>
+              <div><dt>HLS Range</dt><dd>{activeMaster.hls_video_range || "N/A"}</dd></div>
+              <div><dt>Pixel Format</dt><dd>{activeMaster.pixel_format || "N/A"}</dd></div>
+              <div><dt>Chroma</dt><dd>{activeMaster.chroma_location || "N/A"}</dd></div>
               <div>
                 <dt>Bit Depth</dt>
                 <dd>{activeMaster.bit_depth ? `${activeMaster.bit_depth}-bit` : "N/A"}</dd>
               </div>
+              <div><dt>Processing</dt><dd>{activeMaster.processing_mode || "N/A"}</dd></div>
+              <div><dt>Verified</dt><dd>{activeMaster.verification_status || "N/A"}</dd></div>
+              <div><dt>Derivative</dt><dd>{formatPresent(activeMaster.is_derivative)}</dd></div>
+              {activeMaster.is_derivative ? (
+                <>
+                  <div><dt>Source Master</dt><dd>{activeMaster.derived_from_master_id || "N/A"}</dd></div>
+                  <div><dt>Intent</dt><dd>{activeMaster.conversion_intent || "N/A"}</dd></div>
+                </>
+              ) : null}
               {activeMaster.type === "dolby_vision" ? (
                 <>
                   <div><dt>DV Profile Version</dt><dd>{dolbyProfileVersion || "N/A"}</dd></div>
@@ -448,6 +487,18 @@ function getDefaultMaster(masters: VideoMaster[]) {
   return (
     masters.find((m) => m.is_default === true || m.is_default === 1) ?? masters[0]
   );
+}
+
+function isPlayableMaster(master: VideoMaster) {
+  return master.verification_status === "ready";
+}
+
+function formatDisplayGamut(master: VideoMaster) {
+  if (master.display_gamut === "bt2020") return "BT.2020";
+  if (master.display_gamut === "p3_d65") return "P3-D65(smpte432)";
+  if (master.display_gamut === "dci_p3") return "DCI-P3(smpte431)";
+  if (master.display_gamut === "bt709") return "BT.709";
+  return master.color_space || master.display_gamut || "N/A";
 }
 
 function isHdrMaster(master: VideoMaster) {

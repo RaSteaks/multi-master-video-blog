@@ -24,7 +24,18 @@ const FFPROBE_PATH =
   env.FFPROBE_PATH || resolveOptionalPackage("ffprobe-static", "path") || "ffprobe";
 
 const MASTER_TYPES = new Set(["sdr", "hdr10", "hlg", "dolby_vision", "custom"]);
+const SOURCE_KINDS = new Set(["embedded", "master_package", "hls_package"]);
 const TRANSCODE_TYPES = new Set(["sdr", "hdr10", "hlg", "custom"]);
+const HDR_MASTER_TYPES = new Set(["hdr10", "hlg", "dolby_vision"]);
+const COLOR_REQUIRED_FIELDS = [
+  "colorPrimaries",
+  "colorTransfer",
+  "matrixCoefficients",
+  "colorRange",
+  "pixelFormat",
+  "bitDepth",
+  "chromaLocation"
+];
 
 function loadEnv(filePath) {
   const values = { ...process.env };
@@ -114,6 +125,11 @@ function parseDecimal(value) {
 
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseNullableInteger(value) {
+  const parsed = parseInteger(value);
+  return parsed === undefined ? null : parsed;
 }
 
 function parseTags(value) {
@@ -358,14 +374,14 @@ function normalizeUpload(fields) {
     throw httpError(400, `masterType must be one of: ${Array.from(MASTER_TYPES).join(", ")}.`);
   }
 
-  if (!["embedded", "master_package"].includes(sourceKind)) {
-    throw httpError(400, "sourceKind must be embedded or master_package.");
+  if (!SOURCE_KINDS.has(sourceKind)) {
+    throw httpError(400, `sourceKind must be one of: ${Array.from(SOURCE_KINDS).join(", ")}.`);
   }
 
-  const mode =
-    fields.mode === "copy" || masterType === "dolby_vision"
-      ? "copy"
-      : "transcode";
+  const mode = fields.mode === "transcode" ? "transcode" : "copy";
+  if (!["copy", "transcode"].includes(mode)) {
+    throw httpError(400, "mode must be copy or transcode.");
+  }
 
   return {
     title,
@@ -380,6 +396,14 @@ function normalizeUpload(fields) {
     isDefault: parseBoolean(fields.isDefault, masterType === "sdr"),
     overwrite: parseBoolean(fields.overwrite, false),
     mode,
+    processingMode: mode,
+    isDerivative: parseBoolean(fields.isDerivative || fields.is_derivative, false),
+    derivedFromMasterId: parseNullableInteger(
+      fields.derivedFromMasterId || fields.derived_from_master_id
+    ),
+    conversionIntent: fields.conversionIntent || fields.conversion_intent || null,
+    conversionLutOrFilter:
+      fields.conversionLutOrFilter || fields.conversion_lut_or_filter || null,
     codec: fields.codec || null,
     colorSpace: fields.colorSpace || fields.color_space || null,
     transferFunction:
@@ -471,11 +495,16 @@ async function moveMasterPackageFiles(files, metadata) {
     });
   }
 
-  const primary = selectMasterPackagePrimary(movedFiles);
+  const primary =
+    metadata.sourceKind === "hls_package"
+      ? selectHlsPackagePrimary(movedFiles)
+      : selectMasterPackagePrimary(movedFiles);
   if (!primary) {
     throw httpError(
       400,
-      "No primary video essence was found in the master package. Include MP4, MOV, MXF, MKV, HEVC, H265, or 265 files."
+      metadata.sourceKind === "hls_package"
+        ? "No HLS playlist was found in the package. Include a master.m3u8 multivariant playlist."
+        : "No primary video essence was found in the master package. Include MP4, MOV, MXF, MKV, HEVC, H265, or 265 files."
     );
   }
 
@@ -500,6 +529,30 @@ function selectMasterPackagePrimary(files) {
 
       return a.packageRelativePath.localeCompare(b.packageRelativePath);
     })[0];
+}
+
+function selectHlsPackagePrimary(files) {
+  const playlists = [...files]
+    .filter((file) => path.extname(file.packagePath).toLowerCase() === ".m3u8")
+    .sort((a, b) => hlsPlaylistScore(a) - hlsPlaylistScore(b));
+
+  return playlists[0] || null;
+}
+
+function hlsPlaylistScore(file) {
+  const relative = file.packageRelativePath.replace(/\\/g, "/").toLowerCase();
+  const basename = path.basename(relative);
+  let score = relative.split("/").length * 20;
+
+  if (basename === "master.m3u8") {
+    score -= 100;
+  }
+
+  if (basename.includes("media") || basename.includes("stream")) {
+    score -= 20;
+  }
+
+  return score;
 }
 
 function masterPackagePrimaryScore(file, priorities) {
@@ -536,20 +589,14 @@ function isDolbySidecar(filePath) {
 async function prepareOutputDir(metadata) {
   const typeSegment = metadata.masterType.replace("_", "-");
   const labelSegment = safePathSegment(metadata.label || defaultLabel(metadata.masterType), "master");
-  const versionSegment = metadata.overwrite
-    ? labelSegment
-    : `${Date.now()}-${labelSegment}`;
+  const versionSegment = `${Date.now()}-${labelSegment}`;
   const outputDir = path.join(MEDIA_ROOT, metadata.slug, typeSegment, versionSegment);
   assertInside(MEDIA_ROOT, outputDir);
 
   if (fs.existsSync(outputDir)) {
     const entries = await fsp.readdir(outputDir);
-    if (entries.length > 0 && !metadata.overwrite) {
+    if (entries.length > 0) {
       throw httpError(409, `HLS output directory already exists and is not empty: ${outputDir}`);
-    }
-
-    if (metadata.overwrite) {
-      await fsp.rm(outputDir, { recursive: true, force: true });
     }
   }
 
@@ -574,12 +621,8 @@ async function probeVideo(sourcePath) {
 }
 
 async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
-  const playlistPath = path.join(outputDir, "master.m3u8");
-
-  if (shouldCreatePreviewHls(metadata, probe)) {
-    await generatePreviewHls(sourcePath, outputDir, playlistPath);
-    return playlistPath;
-  }
+  const masterPlaylistPath = path.join(outputDir, "master.m3u8");
+  const mediaPlaylistPath = path.join(outputDir, "media.m3u8");
 
   if (metadata.mode === "copy") {
     const args = [
@@ -617,12 +660,21 @@ async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
       "independent_segments",
       "-hls_segment_filename",
       path.join(outputDir, "segment_%03d.m4s"),
-      playlistPath
+      mediaPlaylistPath
     );
 
     await runProcess(FFMPEG_PATH, args, { cwd: outputDir });
-    await stampHlsPlaylist(playlistPath);
-    return playlistPath;
+    return {
+      masterPlaylistPath,
+      mediaPlaylistPath
+    };
+  }
+
+  if (HDR_MASTER_TYPES.has(metadata.masterType)) {
+    throw httpError(
+      422,
+      `${metadata.masterType} masters must use mode=copy. Create HDR/SDR compatibility versions as separate derivative masters with an explicit conversion pipeline.`
+    );
   }
 
   const args = [
@@ -637,6 +689,14 @@ async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
     "20",
     "-pix_fmt",
     "yuv420p",
+    "-color_primaries",
+    "bt709",
+    "-color_trc",
+    "bt709",
+    "-colorspace",
+    "bt709",
+    "-color_range",
+    "tv",
     "-force_key_frames",
     "expr:gte(t,n_forced*4)",
     "-sc_threshold",
@@ -653,13 +713,15 @@ async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
     "independent_segments",
     "-hls_segment_filename",
     path.join(outputDir, "segment_%03d.ts"),
-    playlistPath
+    mediaPlaylistPath
   ];
 
   if (TRANSCODE_TYPES.has(metadata.masterType)) {
     await runProcess(FFMPEG_PATH, args);
-    await stampHlsPlaylist(playlistPath);
-    return playlistPath;
+    return {
+      masterPlaylistPath,
+      mediaPlaylistPath
+    };
   }
 
   throw httpError(400, `Unsupported transcode masterType: ${metadata.masterType}`);
@@ -718,6 +780,252 @@ async function generatePreviewHls(sourcePath, outputDir, playlistPath) {
   await stampHlsPlaylist(playlistPath);
 }
 
+async function prepareHlsPackageOutput(packageInfo, outputDir) {
+  const sourceRoot = packageInfo.packageDir;
+  const sourcePlaylistPath = packageInfo.sourcePath;
+  const sourceRelative = path.relative(sourceRoot, sourcePlaylistPath);
+  await fsp.cp(sourceRoot, outputDir, { recursive: true });
+
+  const copiedSourcePlaylistPath = path.join(outputDir, sourceRelative);
+  assertInside(outputDir, copiedSourcePlaylistPath);
+
+  const mediaPlaylistPath = await primaryMediaPlaylistPath(copiedSourcePlaylistPath, outputDir);
+  const masterPlaylistPath = path.join(outputDir, "master.m3u8");
+  const variants = await copiedHlsVariants(copiedSourcePlaylistPath, outputDir);
+
+  if (path.resolve(mediaPlaylistPath) === path.resolve(masterPlaylistPath)) {
+    const fallbackMediaPath = path.join(outputDir, "media.m3u8");
+    await fsp.copyFile(mediaPlaylistPath, fallbackMediaPath);
+    return {
+      masterPlaylistPath,
+      mediaPlaylistPath: fallbackMediaPath,
+      variants
+    };
+  }
+
+  return {
+    masterPlaylistPath,
+    mediaPlaylistPath,
+    variants
+  };
+}
+
+async function copiedHlsVariants(masterPlaylistPath, outputDir) {
+  const text = await fsp.readFile(masterPlaylistPath, "utf8");
+  return parseStreamInfoVariants(text).map((variant) => {
+    if (!variant.uri) {
+      return null;
+    }
+
+    const absoluteVariantPath = path.resolve(path.dirname(masterPlaylistPath), stripUriQuery(variant.uri));
+    assertInside(outputDir, absoluteVariantPath);
+    return {
+      attributes: variant.attributes,
+      uri: path.relative(outputDir, absoluteVariantPath).replace(/\\/g, "/")
+    };
+  }).filter(Boolean);
+}
+
+async function primaryMediaPlaylistPath(playlistPath, rootDir) {
+  const text = await fsp.readFile(playlistPath, "utf8");
+  const variantUris = parseVariantUris(text);
+  if (!variantUris.length) {
+    return playlistPath;
+  }
+
+  const variantPath = path.resolve(path.dirname(playlistPath), stripUriQuery(variantUris[0]));
+  assertInside(rootDir, variantPath);
+  return variantPath;
+}
+
+function parseVariantUris(playlistText) {
+  const lines = playlistText.split(/\r?\n/);
+  const uris = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lines[index].startsWith("#EXT-X-STREAM-INF:")) {
+      continue;
+    }
+
+    const uri = lines
+      .slice(index + 1)
+      .find((line) => line.trim() && !line.trim().startsWith("#"));
+    if (uri) {
+      uris.push(uri.trim());
+    }
+  }
+
+  return uris;
+}
+
+function parseStreamInfoVariants(playlistText) {
+  const lines = playlistText.split(/\r?\n/);
+  const variants = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line.startsWith("#EXT-X-STREAM-INF:")) {
+      continue;
+    }
+
+    const uri = lines
+      .slice(index + 1)
+      .find((candidate) => candidate.trim() && !candidate.trim().startsWith("#"));
+    variants.push({
+      attributes: parseHlsAttributeList(line.slice("#EXT-X-STREAM-INF:".length)),
+      uri: uri ? uri.trim() : null
+    });
+  }
+
+  return variants;
+}
+
+function parseHlsAttributeList(text) {
+  const attributes = {};
+  let current = "";
+  let quoted = false;
+  const parts = [];
+
+  for (const char of text) {
+    if (char === '"') {
+      quoted = !quoted;
+    }
+
+    if (char === "," && !quoted) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (current) {
+    parts.push(current);
+  }
+
+  for (const part of parts) {
+    const separator = part.indexOf("=");
+    if (separator === -1) {
+      continue;
+    }
+
+    const key = part.slice(0, separator).trim().toUpperCase();
+    const value = part.slice(separator + 1).trim().replace(/^"|"$/g, "");
+    attributes[key] = value;
+  }
+
+  return attributes;
+}
+
+function stripUriQuery(uri) {
+  return uri.split("?")[0].split("#")[0];
+}
+
+function normalizeHlsVideoRange(value) {
+  const text = String(value ?? "").trim().toUpperCase();
+  return ["SDR", "PQ", "HLG"].includes(text) ? text : null;
+}
+
+async function inspectHlsPackage(packageInfo, metadata, sidecar = {}) {
+  const playlistPath = packageInfo.sourcePath;
+  const playlistText = await fsp.readFile(playlistPath, "utf8");
+  const variants = parseStreamInfoVariants(playlistText);
+
+  if (!variants.length) {
+    throwColorContractError([
+      "hls_package: master.m3u8 must be a multivariant playlist with EXT-X-STREAM-INF and VIDEO-RANGE."
+    ]);
+  }
+
+  const inspected = [];
+  const errors = [];
+
+  for (const variant of variants) {
+    if (!variant.uri) {
+      errors.push("hls_package: EXT-X-STREAM-INF is missing its media playlist URI.");
+      continue;
+    }
+
+    const videoRange = normalizeHlsVideoRange(variant.attributes["VIDEO-RANGE"]);
+    if (!videoRange) {
+      errors.push(`hls_package: ${variant.uri} is missing VIDEO-RANGE.`);
+    }
+
+    const variantPath = path.resolve(path.dirname(playlistPath), stripUriQuery(variant.uri));
+    assertInside(packageInfo.packageDir, variantPath);
+    const probe = await probeVideo(variantPath);
+    const contract = buildColorContract(probe, metadata, sidecar, {
+      hlsVideoRange: videoRange
+    });
+    errors.push(...validateColorContract(metadata, contract, `hls_package ${variant.uri}`));
+    inspected.push({
+      uri: variant.uri,
+      path: variantPath,
+      attributes: variant.attributes,
+      probe,
+      contract
+    });
+  }
+
+  const primary = inspected[0];
+  if (!primary) {
+    errors.push("hls_package: no probeable media playlist was found.");
+  }
+
+  if (primary) {
+    for (const item of inspected.slice(1)) {
+      errors.push(
+        ...compareHlsVariantContracts(primary.contract, item.contract).map(
+          (message) => `hls_package ${item.uri}: ${message}`
+        )
+      );
+    }
+  }
+
+  if (errors.length) {
+    throwColorContractError(errors);
+  }
+
+  return {
+    playlistPath,
+    primaryMediaPlaylistPath: primary.path,
+    probe: primary.probe,
+    contract: primary.contract,
+    variants: inspected.map((item) => ({
+      uri: item.uri,
+      videoRange: item.contract.hlsVideoRange,
+      colorPrimaries: item.contract.colorPrimaries,
+      colorTransfer: item.contract.colorTransfer,
+      matrixCoefficients: item.contract.matrixCoefficients,
+      colorRange: item.contract.colorRange,
+      bitDepth: item.contract.bitDepth,
+      displayGamut: item.contract.displayGamut
+    }))
+  };
+}
+
+function compareHlsVariantContracts(base, next) {
+  const fields = [
+    "bitDepth",
+    "colorPrimaries",
+    "displayGamut",
+    "colorTransfer",
+    "matrixCoefficients",
+    "colorRange",
+    "hlsVideoRange"
+  ];
+  const errors = [];
+
+  for (const field of fields) {
+    if ((base[field] ?? null) !== (next[field] ?? null)) {
+      errors.push(`${field} differs across HLS variants.`);
+    }
+  }
+
+  return errors;
+}
+
 async function stampHlsPlaylist(playlistPath) {
   const version = Date.now();
   const text = await fsp.readFile(playlistPath, "utf8");
@@ -739,10 +1047,154 @@ async function stampHlsPlaylist(playlistPath) {
   await fsp.writeFile(playlistPath, stamped);
 }
 
+async function finalizeHlsOutput(output, metadata, sourceContract, sidecar = {}, sourceProbe = {}) {
+  const outputProbe = await probeVideo(output.mediaPlaylistPath);
+  const outputContract = buildColorContract(outputProbe, metadata, sidecar, {
+    hlsVideoRange: sourceContract.hlsVideoRange
+  });
+  const errors = [
+    ...validateColorContract(metadata, outputContract, "output"),
+    ...compareColorContracts(sourceContract, outputContract)
+  ];
+
+  if (errors.length) {
+    throwColorContractError(errors);
+  }
+
+  await writeMultivariantPlaylist(output.masterPlaylistPath, output.mediaPlaylistPath, outputContract, outputProbe, output.variants);
+  await stampHlsPlaylist(output.mediaPlaylistPath);
+  await stampHlsPlaylist(output.masterPlaylistPath);
+
+  const verification = {
+    status: "ready",
+    errors: [],
+    verifiedAt: new Date().toISOString(),
+    sourceProbeSummary: summarizeProbe(sourceProbe),
+    outputProbeSummary: summarizeProbe(outputProbe)
+  };
+  await writeVerificationReport(path.dirname(output.masterPlaylistPath), {
+    verification,
+    sourceContract,
+    outputContract
+  });
+
+  return {
+    playlistPath: output.masterPlaylistPath,
+    outputProbe,
+    outputContract,
+    verification
+  };
+}
+
+async function writeMultivariantPlaylist(masterPlaylistPath, mediaPlaylistPath, contract, probe, variants = []) {
+  if (variants.length) {
+    const lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"];
+    for (const variant of variants) {
+      const attributes = {
+        ...variant.attributes,
+        "VIDEO-RANGE": contract.hlsVideoRange || variant.attributes["VIDEO-RANGE"]
+      };
+      lines.push(`#EXT-X-STREAM-INF:${serializeHlsAttributeList(attributes)}`);
+      lines.push(variant.uri);
+    }
+    lines.push("");
+    await fsp.writeFile(masterPlaylistPath, lines.join("\n"), "utf8");
+    return;
+  }
+
+  const relativeMediaUri = path.relative(path.dirname(masterPlaylistPath), mediaPlaylistPath).replace(/\\/g, "/");
+  const bandwidth = Number(probe.bit_rate || contract.bitRate || 8000000);
+  const attributes = [
+    `BANDWIDTH=${Math.max(Math.round(bandwidth), 1)}`,
+    `AVERAGE-BANDWIDTH=${Math.max(Math.round(bandwidth), 1)}`,
+    contract.width && contract.height ? `RESOLUTION=${contract.width}x${contract.height}` : null,
+    contract.hlsVideoRange ? `VIDEO-RANGE=${contract.hlsVideoRange}` : null,
+    `CODECS="${codecStringFromProbe(probe, contract)}"`
+  ].filter(Boolean);
+
+  const text = [
+    "#EXTM3U",
+    "#EXT-X-VERSION:7",
+    "#EXT-X-INDEPENDENT-SEGMENTS",
+    `#EXT-X-STREAM-INF:${attributes.join(",")}`,
+    relativeMediaUri,
+    ""
+  ].join("\n");
+
+  await fsp.writeFile(masterPlaylistPath, text, "utf8");
+}
+
+function serializeHlsAttributeList(attributes) {
+  return Object.entries(attributes)
+    .map(([key, value]) => {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+
+      const needsQuotes = /[,"]/.test(String(value)) || key === "CODECS";
+      const escaped = String(value).replace(/"/g, '\\"');
+      return `${key}=${needsQuotes ? `"${escaped}"` : escaped}`;
+    })
+    .filter(Boolean)
+    .join(",");
+}
+
+function codecStringFromProbe(probe, contract) {
+  const codec = String(probe.codec_name || contract.codecName || "").toLowerCase();
+
+  if (codec === "hevc" || codec === "h265") {
+    return "hvc1.1.6.L93.B0,mp4a.40.2";
+  }
+
+  if (codec === "h264") {
+    return "avc1.640028,mp4a.40.2";
+  }
+
+  if (codec === "av1") {
+    return "av01.0.08M.10,mp4a.40.2";
+  }
+
+  return `${codec || "mp4v"}.unknown,mp4a.40.2`;
+}
+
+async function writeVerificationReport(outputDir, report) {
+  await fsp.writeFile(
+    path.join(outputDir, "color-verification.json"),
+    JSON.stringify(report, null, 2),
+    "utf8"
+  );
+}
+
+function summarizeProbe(probe) {
+  return {
+    codec_name: probe.codec_name || null,
+    pix_fmt: probe.pix_fmt || null,
+    color_primaries: probe.color_primaries || null,
+    color_transfer: probe.color_transfer || null,
+    color_space: probe.color_space || null,
+    color_range: probe.color_range || null,
+    chroma_location: probe.chroma_location || null,
+    width: probe.width || null,
+    height: probe.height || null,
+    bits_per_raw_sample: probe.bits_per_raw_sample || null
+  };
+}
+
 function mediaUrlFromPath(filePath) {
   assertInside(MEDIA_ROOT, filePath);
   const relative = path.relative(MEDIA_ROOT, filePath).replace(/\\/g, "/");
   return `/media/${relative}`;
+}
+
+async function sha256File(filePath) {
+  const hash = crypto.createHash("sha256");
+  await new Promise((resolve, reject) => {
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", resolve);
+  });
+  return hash.digest("hex");
 }
 
 function extractDolbyVisionMetadata(probe) {
@@ -767,6 +1219,330 @@ function extractDolbyVisionMetadata(probe) {
     elPresent: firstDefined(dovi.el_present_flag, dovi.el_present),
     blPresent: firstDefined(dovi.bl_present_flag, dovi.bl_present)
   };
+}
+
+function extractHdrStaticMetadata(probe) {
+  const sideDataList = Array.isArray(probe.side_data_list) ? probe.side_data_list : [];
+  const masteringDisplay = sideDataList.find((item) =>
+    String(item.side_data_type || "").toLowerCase().includes("mastering display")
+  );
+  const contentLightLevel = sideDataList.find((item) =>
+    String(item.side_data_type || "").toLowerCase().includes("content light")
+  );
+
+  return {
+    masteringDisplay: masteringDisplay || null,
+    contentLightLevel: contentLightLevel || null,
+    masteringDisplayPresent: Boolean(masteringDisplay),
+    contentLightLevelPresent: Boolean(contentLightLevel)
+  };
+}
+
+function normalizeColorToken(value) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text || ["unknown", "unspecified", "reserved", "n/a", "na"].includes(text)) {
+    return null;
+  }
+
+  return text.replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizePrimaries(value) {
+  const token = normalizeColorToken(value);
+  if (!token) {
+    return { code: null, displayGamut: null, label: null };
+  }
+
+  if (token === "bt709" || token === "bt470bg" || token === "smpte170m") {
+    return { code: "bt709", displayGamut: "bt709", label: "BT.709" };
+  }
+
+  if (token === "bt2020" || token === "bt2020cl" || token === "bt2020nc") {
+    return { code: "bt2020", displayGamut: "bt2020", label: "BT.2020" };
+  }
+
+  if (token === "smpte432" || token === "p3d65" || token === "displayp3") {
+    return { code: "smpte432", displayGamut: "p3_d65", label: "P3-D65(smpte432)" };
+  }
+
+  if (token === "smpte431" || token === "dcip3") {
+    return { code: "smpte431", displayGamut: "dci_p3", label: "DCI-P3(smpte431)" };
+  }
+
+  return { code: token, displayGamut: "custom", label: value ? String(value) : "Custom" };
+}
+
+function normalizeTransfer(value) {
+  const token = normalizeColorToken(value);
+  if (!token) {
+    return { code: null, label: null, hlsVideoRange: null };
+  }
+
+  if (token === "smpte2084" || token === "pq" || token === "st2084") {
+    return { code: "smpte2084", label: "PQ / ST2084", hlsVideoRange: "PQ" };
+  }
+
+  if (token === "aribstdb67" || token === "hlg") {
+    return { code: "arib-std-b67", label: "HLG", hlsVideoRange: "HLG" };
+  }
+
+  if (token === "bt709" || token === "bt470m" || token === "smpte170m") {
+    return { code: "bt709", label: "BT.709", hlsVideoRange: "SDR" };
+  }
+
+  return { code: token, label: value ? String(value) : "Custom", hlsVideoRange: null };
+}
+
+function normalizeMatrix(value) {
+  const token = normalizeColorToken(value);
+  if (!token) {
+    return null;
+  }
+
+  if (token === "bt2020nc" || token === "bt2020ncl") {
+    return "bt2020nc";
+  }
+
+  if (token === "bt2020cl") {
+    return "bt2020cl";
+  }
+
+  if (token === "bt709") {
+    return "bt709";
+  }
+
+  if (token === "smpte170m" || token === "bt470bg") {
+    return "smpte170m";
+  }
+
+  return token;
+}
+
+function normalizeRange(value) {
+  const token = normalizeColorToken(value);
+  if (!token) {
+    return null;
+  }
+
+  if (token === "tv" || token === "mpeg" || token === "limited") {
+    return "limited";
+  }
+
+  if (token === "pc" || token === "jpeg" || token === "full") {
+    return "full";
+  }
+
+  return token;
+}
+
+function expectedVideoRange(metadata, contract = null) {
+  if (metadata.masterType === "hdr10") {
+    return "PQ";
+  }
+
+  if (metadata.masterType === "hlg") {
+    return "HLG";
+  }
+
+  if (metadata.masterType === "sdr") {
+    return "SDR";
+  }
+
+  return contract?.transferVideoRange || null;
+}
+
+function buildColorContract(probe, metadata, sidecar = {}, options = {}) {
+  const primaries = normalizePrimaries(probe.color_primaries);
+  const transfer = normalizeTransfer(probe.color_transfer);
+  const hdrStaticMetadata = extractHdrStaticMetadata(probe);
+  const dovi = extractDolbyVisionMetadata(probe);
+  const dolbyCompatibilityId = sidecar.compatibilityId || stringOrNull(dovi.compatibilityId);
+  const dolbyProfile = normalizeDolbyProfileVersion(
+    sidecar.profile || stringOrNull(dovi.profile),
+    dolbyCompatibilityId
+  );
+  const bitDepth = inferBitDepth(probe, metadata.masterType);
+  const hlsVideoRange =
+    normalizeHlsVideoRange(options.hlsVideoRange) ||
+    expectedVideoRange(metadata, { transferVideoRange: transfer.hlsVideoRange });
+
+  return {
+    codecName: stringOrNull(probe.codec_name),
+    codecProfile: stringOrNull(probe.profile),
+    width: probe.width || null,
+    height: probe.height || null,
+    bitRate: probe.bit_rate ? Number(probe.bit_rate) : null,
+    pixelFormat: stringOrNull(probe.pix_fmt),
+    bitDepth,
+    colorPrimaries: primaries.code,
+    colorPrimariesLabel: primaries.label,
+    displayGamut: primaries.displayGamut,
+    displayGamutLabel: primaries.label,
+    colorTransfer: transfer.code,
+    transferFunctionLabel: transfer.label,
+    transferVideoRange: transfer.hlsVideoRange,
+    matrixCoefficients: normalizeMatrix(probe.color_space),
+    colorRange: normalizeRange(probe.color_range),
+    chromaLocation: stringOrNull(probe.chroma_location),
+    hlsVideoRange,
+    hdrStaticMetadata,
+    dolbyMetadata: {
+      profile: dolbyProfile,
+      level: sidecar.level || stringOrNull(dovi.level),
+      compatibilityId: dolbyCompatibilityId,
+      rpuPresent: booleanOrFalse(dovi.rpuPresent),
+      elPresent: booleanOrFalse(dovi.elPresent),
+      blPresent: booleanOrFalse(dovi.blPresent),
+      sidecar: sidecar.sourceFile
+        ? {
+            sourceFile: sidecar.sourceFile,
+            rawKind: sidecar.rawKind,
+            matchedClipName: sidecar.matchedClipName || null
+          }
+        : null
+    }
+  };
+}
+
+function validateProcessingPolicy(metadata) {
+  const errors = [];
+
+  if (metadata.sourceKind === "hls_package" && metadata.mode !== "copy") {
+    errors.push("Prepackaged HLS uploads must use mode=copy.");
+  }
+
+  if (HDR_MASTER_TYPES.has(metadata.masterType) && metadata.mode !== "copy") {
+    errors.push(`${metadata.masterType} masters must use mode=copy to preserve HDR color metadata.`);
+  }
+
+  if (metadata.masterType === "dolby_vision" && metadata.mode !== "copy") {
+    errors.push("Dolby Vision masters cannot be transcoded.");
+  }
+
+  if (metadata.isDerivative && !metadata.derivedFromMasterId) {
+    errors.push("Derivative masters must include derivedFromMasterId.");
+  }
+
+  if ((metadata.conversionIntent || metadata.conversionLutOrFilter) && !metadata.isDerivative) {
+    errors.push("Conversion metadata can only be attached to derivative masters.");
+  }
+
+  if (errors.length) {
+    throwColorContractError(errors);
+  }
+}
+
+function validateColorContract(metadata, contract, context = "source") {
+  const errors = [];
+
+  for (const field of COLOR_REQUIRED_FIELDS) {
+    if (contract[field] === undefined || contract[field] === null || contract[field] === "") {
+      errors.push(`${context}: missing ${field}.`);
+    }
+  }
+
+  const expectedRange = expectedVideoRange(metadata, contract);
+  if (expectedRange && contract.hlsVideoRange !== expectedRange) {
+    errors.push(`${context}: HLS VIDEO-RANGE must be ${expectedRange}, got ${contract.hlsVideoRange || "missing"}.`);
+  }
+
+  if (metadata.masterType === "sdr") {
+    if (contract.colorPrimaries !== "bt709") {
+      errors.push(`${context}: SDR masters must use BT.709 primaries.`);
+    }
+    if (contract.colorTransfer !== "bt709") {
+      errors.push(`${context}: SDR masters must use BT.709 transfer.`);
+    }
+  }
+
+  if (metadata.masterType === "hdr10") {
+    validateHdrGamut(contract, context, errors);
+    if (contract.colorTransfer !== "smpte2084") {
+      errors.push(`${context}: HDR10 masters must use smpte2084/PQ transfer.`);
+    }
+    if (!contract.bitDepth || contract.bitDepth < 10) {
+      errors.push(`${context}: HDR10 masters must be 10-bit or higher.`);
+    }
+    if (!contract.hdrStaticMetadata.masteringDisplayPresent) {
+      errors.push(`${context}: HDR10 mastering display metadata is missing.`);
+    }
+    if (!contract.hdrStaticMetadata.contentLightLevelPresent) {
+      errors.push(`${context}: HDR10 MaxCLL/MaxFALL metadata is missing.`);
+    }
+  }
+
+  if (metadata.masterType === "hlg") {
+    validateHdrGamut(contract, context, errors);
+    if (contract.colorTransfer !== "arib-std-b67") {
+      errors.push(`${context}: HLG masters must use arib-std-b67/HLG transfer.`);
+    }
+    if (!contract.bitDepth || contract.bitDepth < 10) {
+      errors.push(`${context}: HLG masters must be 10-bit or higher.`);
+    }
+  }
+
+  if (metadata.masterType === "dolby_vision") {
+    validateHdrGamut(contract, context, errors);
+    if (!contract.bitDepth || contract.bitDepth < 10) {
+      errors.push(`${context}: Dolby Vision masters must be 10-bit or higher.`);
+    }
+    if (!contract.dolbyMetadata.profile && !contract.dolbyMetadata.rpuPresent) {
+      errors.push(`${context}: Dolby Vision profile or RPU metadata is missing.`);
+    }
+    if (!contract.hlsVideoRange) {
+      errors.push(`${context}: Dolby Vision VIDEO-RANGE could not be inferred from the base layer transfer.`);
+    }
+  }
+
+  return errors;
+}
+
+function validateHdrGamut(contract, context, errors) {
+  if (!["bt2020", "smpte432", "smpte431"].includes(contract.colorPrimaries)) {
+    errors.push(
+      `${context}: HDR primaries must be bt2020, smpte432/P3-D65, or smpte431/DCI-P3.`
+    );
+  }
+
+  if (contract.colorPrimaries === "smpte432" && contract.displayGamut !== "p3_d65") {
+    errors.push(`${context}: smpte432 must be stored as P3-D65(smpte432).`);
+  }
+
+  if (contract.colorPrimaries === "smpte431" && contract.displayGamut !== "dci_p3") {
+    errors.push(`${context}: smpte431 must be stored as DCI-P3(smpte431).`);
+  }
+}
+
+function compareColorContracts(sourceContract, outputContract) {
+  const fields = [
+    "codecName",
+    "pixelFormat",
+    "bitDepth",
+    "colorPrimaries",
+    "displayGamut",
+    "colorTransfer",
+    "matrixCoefficients",
+    "colorRange",
+    "chromaLocation",
+    "hlsVideoRange"
+  ];
+  const errors = [];
+
+  for (const field of fields) {
+    const sourceValue = sourceContract[field] ?? null;
+    const outputValue = outputContract[field] ?? null;
+    if (sourceValue !== outputValue) {
+      errors.push(`output: ${field} changed from ${sourceValue || "missing"} to ${outputValue || "missing"}.`);
+    }
+  }
+
+  return errors;
+}
+
+function throwColorContractError(errors) {
+  const error = httpError(422, `Color contract verification failed: ${errors.join(" ")}`);
+  error.verificationErrors = errors;
+  throw error;
 }
 
 async function parseDolbyProfileFile(file, clipName = "") {
@@ -998,33 +1774,13 @@ function prettyCodec(codecName, masterType) {
 }
 
 function prettyColorSpace(probe, masterType) {
-  const color = String(probe.color_space || probe.color_primaries || "").toLowerCase();
-  if (color.includes("bt2020") || color.includes("2020")) {
-    return "BT.2020";
-  }
-
-  if (color.includes("bt709") || color.includes("709")) {
-    return "BT.709";
-  }
-
-  return defaultColorSpace(masterType);
+  const primaries = normalizePrimaries(probe.color_primaries);
+  return primaries.label || defaultColorSpace(masterType);
 }
 
 function prettyTransferFunction(probe, masterType) {
-  const transfer = String(probe.color_transfer || "").toLowerCase();
-  if (transfer.includes("smpte2084") || transfer.includes("pq")) {
-    return "PQ / ST2084";
-  }
-
-  if (transfer.includes("arib-std-b67") || transfer.includes("hlg")) {
-    return "HLG";
-  }
-
-  if (transfer.includes("bt709") || transfer.includes("709")) {
-    return "BT.709";
-  }
-
-  return defaultTransferFunction(masterType);
+  const transfer = normalizeTransfer(probe.color_transfer);
+  return transfer.label || defaultTransferFunction(masterType);
 }
 
 function inferBitDepth(probe, masterType) {
@@ -1124,7 +1880,15 @@ async function findProjectBySlug(token, slug) {
   return data.data[0] || null;
 }
 
-async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath, probe, files, sidecar = {}) {
+async function createOrUpdateDirectusRecords(
+  metadata,
+  sourcePath,
+  playlistPath,
+  probe,
+  files,
+  sidecar = {},
+  verificationResult = {}
+) {
   const token = await directusLogin();
   const existingProject = await findProjectBySlug(token, metadata.slug);
   const coverImageId = await directusUploadFile(token, files.cover, `${metadata.title} cover`);
@@ -1166,18 +1930,29 @@ async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath,
     await clearDefaultMasters(token, project.id);
   }
 
+  const sourceContract = verificationResult.sourceContract || buildColorContract(probe, metadata, sidecar);
+  const outputContract = verificationResult.outputContract || sourceContract;
+  const verification = verificationResult.verification || {
+    status: "ready",
+    errors: [],
+    verifiedAt: new Date().toISOString()
+  };
+  const sourceHash = fs.existsSync(sourcePath) && fs.statSync(sourcePath).isFile()
+    ? await sha256File(sourcePath)
+    : null;
+
   const masterPayload = {
     project_id: project.id,
     label: metadata.label,
     type: metadata.masterType,
     hls_url: mediaUrlFromPath(playlistPath),
     file_url: mediaUrlFromPath(sourcePath),
-    codec: metadata.codec || prettyCodec(probe.codec_name, metadata.masterType),
-    resolution_width: metadata.resolutionWidth || probe.width,
-    resolution_height: metadata.resolutionHeight || probe.height,
-    color_space: metadata.colorSpace || prettyColorSpace(probe, metadata.masterType),
-    transfer_function: metadata.transferFunction || prettyTransferFunction(probe, metadata.masterType),
-    bit_depth: metadata.bitDepth || inferBitDepth(probe, metadata.masterType),
+    codec: prettyCodec(outputContract.codecName || probe.codec_name, metadata.masterType),
+    resolution_width: metadata.resolutionWidth || outputContract.width || probe.width,
+    resolution_height: metadata.resolutionHeight || outputContract.height || probe.height,
+    color_space: outputContract.displayGamutLabel || prettyColorSpace(probe, metadata.masterType),
+    transfer_function: outputContract.transferFunctionLabel || prettyTransferFunction(probe, metadata.masterType),
+    bit_depth: outputContract.bitDepth || inferBitDepth(probe, metadata.masterType),
     bitrate_mbps: metadata.bitrateMbps,
     dolby_profile: dolbyProfileVersion,
     dolby_level: sidecar.level || stringOrNull(dovi.level),
@@ -1188,6 +1963,27 @@ async function createOrUpdateDirectusRecords(metadata, sourcePath, playlistPath,
     is_default: metadata.isDefault,
     sort_order: 0,
     status: "ready",
+    processing_mode: metadata.processingMode,
+    is_derivative: metadata.isDerivative,
+    derived_from_master_id: metadata.derivedFromMasterId,
+    source_sha256: sourceHash,
+    display_gamut: outputContract.displayGamut,
+    color_primaries: outputContract.colorPrimaries,
+    color_transfer: outputContract.colorTransfer,
+    matrix_coefficients: outputContract.matrixCoefficients,
+    color_range: outputContract.colorRange,
+    pixel_format: outputContract.pixelFormat,
+    chroma_location: outputContract.chromaLocation,
+    hls_video_range: outputContract.hlsVideoRange,
+    hdr_static_metadata: outputContract.hdrStaticMetadata,
+    dolby_metadata: outputContract.dolbyMetadata,
+    source_probe_json: verificationResult.sourceProbe || probe,
+    output_probe_json: verificationResult.outputProbe || probe,
+    verification_status: verification.status,
+    verification_errors: verification.errors,
+    verified_at: verification.verifiedAt,
+    conversion_intent: metadata.conversionIntent,
+    conversion_lut_or_filter: metadata.conversionLutOrFilter,
     uploaded_at: new Date().toISOString(),
     notes: metadata.notes
   };
@@ -1255,28 +2051,60 @@ async function handleUpload(req, res) {
     requireUploadAuth(req);
     parsed = await parseMultipart(req);
     const metadata = normalizeUpload(parsed.fields);
+    validateProcessingPolicy(metadata);
     const packageInfo =
-      metadata.sourceKind === "master_package"
+      metadata.sourceKind === "master_package" || metadata.sourceKind === "hls_package"
         ? await moveMasterPackageFiles(parsed.files.masterPackage, metadata)
         : null;
     const sourcePath = packageInfo
       ? packageInfo.sourcePath
       : await moveSourceFile(parsed.file, metadata);
-    const outputDir = await prepareOutputDir(metadata);
-    const probe = await probeVideo(sourcePath);
     const dolbySidecar = await parseDolbyProfileFiles(
       packageInfo?.sidecars || [],
       parsed.fields.dolbyXmlClipName || parsed.fields.dolby_xml_clip_name || ""
     );
+    const hlsInspection =
+      metadata.sourceKind === "hls_package"
+        ? await inspectHlsPackage(packageInfo, metadata, dolbySidecar)
+        : null;
+    const probe = hlsInspection?.probe || await probeVideo(sourcePath);
     validateDolbyVisionUpload(metadata, probe, dolbySidecar);
-    const playlistPath = await generateHls(sourcePath, outputDir, metadata, probe);
+    const sourceContract =
+      hlsInspection?.contract ||
+      buildColorContract(probe, metadata, dolbySidecar, {
+        hlsVideoRange: expectedVideoRange(metadata)
+      });
+    const sourceErrors = validateColorContract(metadata, sourceContract, "source");
+    if (sourceErrors.length) {
+      throwColorContractError(sourceErrors);
+    }
+
+    const outputDir = await prepareOutputDir(metadata);
+    const hlsOutput =
+      metadata.sourceKind === "hls_package"
+        ? await prepareHlsPackageOutput(packageInfo, outputDir)
+        : await generateHls(sourcePath, outputDir, metadata, probe);
+    const finalized = await finalizeHlsOutput(
+      hlsOutput,
+      metadata,
+      sourceContract,
+      dolbySidecar,
+      probe
+    );
     const records = await createOrUpdateDirectusRecords(
       metadata,
       sourcePath,
-      playlistPath,
+      finalized.playlistPath,
       probe,
       parsed.files,
-      dolbySidecar
+      dolbySidecar,
+      {
+        sourceContract,
+        outputContract: finalized.outputContract,
+        sourceProbe: probe,
+        outputProbe: finalized.outputProbe,
+        verification: finalized.verification
+      }
     );
 
     sendJson(res, 201, {
@@ -1292,13 +2120,17 @@ async function handleUpload(req, res) {
           }
         : null,
       sourceUrl: mediaUrlFromPath(sourcePath),
-      hlsUrl: mediaUrlFromPath(playlistPath),
-      probe
+      hlsUrl: mediaUrlFromPath(finalized.playlistPath),
+      probe,
+      colorContract: finalized.outputContract,
+      verification: finalized.verification,
+      derivativeOf: metadata.isDerivative ? metadata.derivedFromMasterId : null
     });
   } catch (error) {
     sendJson(res, error.statusCode || 500, {
       status: "error",
-      error: error.message
+      error: error.message,
+      verificationErrors: error.verificationErrors || null
     });
   } finally {
     if (parsed?.tempDir) {

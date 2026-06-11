@@ -3,11 +3,21 @@
 import { FormEvent, useMemo, useState } from "react";
 
 type UploadState = "idle" | "uploading" | "success" | "error";
-type SourceKind = "embedded" | "master_package";
+type SourceKind = "embedded" | "master_package" | "hls_package";
 
 type UploadResponse = {
   status: string;
   hlsUrl?: string;
+  colorContract?: {
+    displayGamutLabel?: string | null;
+    colorPrimaries?: string | null;
+    colorTransfer?: string | null;
+    hlsVideoRange?: string | null;
+  };
+  verification?: {
+    status?: string;
+    verifiedAt?: string;
+  };
   sourceKind?: SourceKind;
   masterPackage?: {
     fileCount: number;
@@ -44,10 +54,16 @@ const sourceModes = [
     title: "DV Master / IMF / ProRes Package",
     detail: "Upload the full folder/package. XML sidecars, RPU files, MXF, IMF, and primary essence are scanned together.",
   },
+  {
+    value: "hls_package",
+    title: "Verified HLS Package",
+    detail: "Upload a complete HLS folder. The master playlist must include VIDEO-RANGE and all variants must share one color contract.",
+  },
 ] satisfies Array<{ value: SourceKind; title: string; detail: string }>;
 
 function defaultMasterLabel(sourceKind: SourceKind, masterType: string) {
   const baseLabel = masterTypes.find((item) => item.value === masterType)?.label || "Custom";
+  if (sourceKind === "hls_package") return `${baseLabel} HLS`;
   return sourceKind === "master_package" ? `${baseLabel} Master` : baseLabel;
 }
 
@@ -60,7 +76,7 @@ export function UploadVideoForm() {
   const [sourceKind, setSourceKind] = useState<SourceKind>("embedded");
   const [masterType, setMasterType] = useState("sdr");
   const [label, setLabel] = useState("SDR");
-  const [mode, setMode] = useState("transcode");
+  const [mode, setMode] = useState("copy");
   const [notes, setNotes] = useState("");
   const [published, setPublished] = useState(true);
   const [isDefault, setIsDefault] = useState(true);
@@ -90,13 +106,14 @@ export function UploadVideoForm() {
       setMasterPackageFiles([]);
       setMasterType("sdr");
       setLabel(defaultMasterLabel(value, "sdr"));
-      setMode("transcode");
+      setMode("copy");
       return;
     }
 
     setVideo(null);
-    setMasterType("dolby_vision");
-    setLabel(defaultMasterLabel(value, "dolby_vision"));
+    const nextMasterType = value === "hls_package" ? "hdr10" : "dolby_vision";
+    setMasterType(nextMasterType);
+    setLabel(defaultMasterLabel(value, nextMasterType));
     setMode("copy");
   }
 
@@ -105,11 +122,6 @@ export function UploadVideoForm() {
     setLabel(defaultMasterLabel(sourceKind, value));
     if (value === "dolby_vision") {
       setMode("copy");
-      return;
-    }
-
-    if (value === "sdr") {
-      setMode("transcode");
       return;
     }
 
@@ -131,7 +143,7 @@ export function UploadVideoForm() {
       form.append("video", video);
     }
 
-    if (sourceKind === "master_package") {
+    if (sourceKind === "master_package" || sourceKind === "hls_package") {
       for (const file of masterPackageFiles) {
         const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
         form.append("masterPackage", file, relativePath);
@@ -193,7 +205,9 @@ export function UploadVideoForm() {
   const packageSummary =
     masterPackageFiles.length > 0
       ? `${masterPackageFiles.length} files selected`
-      : "Select the complete Dolby Vision package folder.";
+      : sourceKind === "hls_package"
+        ? "Select the complete HLS package folder."
+        : "Select the complete Dolby Vision package folder.";
 
   return (
     <form className="upload-form" onSubmit={submit}>
@@ -247,7 +261,7 @@ export function UploadVideoForm() {
           ) : (
             <>
               <label className="upload-wide">
-                Complete master package folder
+                {sourceKind === "hls_package" ? "Complete HLS package folder" : "Complete master package folder"}
                 <input
                   type="file"
                   multiple
@@ -256,14 +270,16 @@ export function UploadVideoForm() {
                   required
                 />
               </label>
-              <label className="upload-wide">
-                XML clip name
-                <input
-                  value={dolbyXmlClipName}
-                  onChange={(event) => setDolbyXmlClipName(event.target.value)}
-                  placeholder="Optional clip/shot name inside Dolby XML"
-                />
-              </label>
+              {sourceKind === "master_package" ? (
+                <label className="upload-wide">
+                  XML clip name
+                  <input
+                    value={dolbyXmlClipName}
+                    onChange={(event) => setDolbyXmlClipName(event.target.value)}
+                    placeholder="Optional clip/shot name inside Dolby XML"
+                  />
+                </label>
+              ) : null}
             </>
           )}
 
@@ -273,7 +289,7 @@ export function UploadVideoForm() {
           </label>
           <div className="upload-source-note">
             <strong>{selectedSourceMode.title}</strong>
-            <span>{sourceKind === "embedded" ? "No manual Dolby metadata is accepted for this path." : packageSummary}</span>
+            <span>{sourceKind === "embedded" ? "Source stream metadata is preserved by default." : packageSummary}</span>
           </div>
         </div>
       </section>
@@ -325,9 +341,9 @@ export function UploadVideoForm() {
           </label>
           <label>
             HLS mode
-            <select value={mode} onChange={(event) => setMode(event.target.value)} disabled={masterType === "dolby_vision"}>
+            <select value={mode} onChange={(event) => setMode(event.target.value)} disabled={masterType !== "sdr" && masterType !== "custom"}>
               <option value="copy">Copy source stream</option>
-              <option value="transcode">Transcode to H.264 SDR</option>
+              <option value="transcode">Transcode SDR derivative</option>
             </select>
           </label>
           <label className="upload-wide">
@@ -371,6 +387,20 @@ export function UploadVideoForm() {
             </code>
           ) : null}
           {result?.hlsUrl ? <code>{result.hlsUrl}</code> : null}
+          {result?.colorContract ? (
+            <code>
+              gamut={result.colorContract.displayGamutLabel || "N/A"}, primaries=
+              {result.colorContract.colorPrimaries || "N/A"}, transfer=
+              {result.colorContract.colorTransfer || "N/A"}, video-range=
+              {result.colorContract.hlsVideoRange || "N/A"}
+            </code>
+          ) : null}
+          {result?.verification?.status ? (
+            <code>
+              verification={result.verification.status}
+              {result.verification.verifiedAt ? ` at ${result.verification.verifiedAt}` : ""}
+            </code>
+          ) : null}
           {projectHref ? <a href={projectHref}>Open video page</a> : null}
         </div>
       ) : null}
