@@ -16,8 +16,7 @@ function Get-ManagerOwners {
 }
 
 function Stop-Manager {
-  $owners = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
-    Select-Object -ExpandProperty OwningProcess -Unique
+  $owners = Get-ManagerOwners
 
   if (-not $owners) {
     Write-Host "Manager is not listening on port $Port."
@@ -27,7 +26,15 @@ function Stop-Manager {
   foreach ($owner in $owners) {
     if ($owner -and $owner -ne 0) {
       Write-Host "Stopping manager process $owner on port $Port..."
-      Stop-Process -Id $owner -Force
+      try {
+        Stop-Process -Id $owner -Force -ErrorAction Stop
+      } catch {
+        Write-Host "Stop-Process failed, trying taskkill for process tree $owner..."
+        & taskkill.exe /PID $owner /T /F | Write-Host
+        if ($LASTEXITCODE -ne 0) {
+          throw "Could not stop manager process $owner. Run this command from an Administrator PowerShell, or stop the process in Task Manager."
+        }
+      }
     }
   }
 }
