@@ -60,28 +60,9 @@ export default async function PostPage({ params }: PostPageProps) {
         />
       ) : null}
     <main className={hasToc ? "shell article-shell article-shell-with-toc" : "shell article-shell"}>
-      <header className="page-header">
-        <p className="eyebrow">{post.category || "Article"}</p>
-        <h1>{post.title}</h1>
-      </header>
-
-      {coverImageUrl && !hasToc ? (
-        <img
-          className="hero-media"
-          src={coverImageUrl}
-          alt={`Cover image for ${post.title}`}
-          loading="lazy"
-        />
-      ) : null}
-
-      <div className={hasToc ? "article-content-grid" : undefined}>
-        <article className="markdown-body">
-          <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-            {content}
-          </ReactMarkdown>
-        </article>
-
-        {hasToc ? (
+      {hasToc ? (
+        <div className="article-content-grid">
+          {/* TOC: standalone frosted glass card, sticky beside the article */}
           <aside className="article-toc" aria-label="Article table of contents">
             {coverImageUrl ? (
               <img
@@ -104,8 +85,43 @@ export default async function PostPage({ params }: PostPageProps) {
               ))}
             </nav>
           </aside>
-        ) : null}
-      </div>
+
+          <div className="content-glass">
+            <header className="page-header">
+              <p className="eyebrow">{post.category || "Article"}</p>
+              <h1>{post.title}</h1>
+            </header>
+
+            <article className="markdown-body">
+              <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+                {content}
+              </ReactMarkdown>
+            </article>
+          </div>
+        </div>
+      ) : (
+        <div className="content-glass">
+          <header className="page-header">
+            <p className="eyebrow">{post.category || "Article"}</p>
+            <h1>{post.title}</h1>
+          </header>
+
+          {coverImageUrl ? (
+            <img
+              className="hero-media"
+              src={coverImageUrl}
+              alt={`Cover image for ${post.title}`}
+              loading="lazy"
+            />
+          ) : null}
+
+          <article className="markdown-body">
+            <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+              {content}
+            </ReactMarkdown>
+          </article>
+        </div>
+      )}
     </main>
     </>
   );

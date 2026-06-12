@@ -38,7 +38,7 @@ export default async function AboutPage() {
           />
         ) : null}
         <main className="shell article-shell">
-          <div className="about-glass">
+          <div className="content-glass">
             <header className="page-header">
               <p className="eyebrow">
                 {cmsPost.category || siteConfig.about.eyebrow}
@@ -69,7 +69,7 @@ export default async function AboutPage() {
 
   return (
     <main className="shell article-shell">
-      <div className="about-glass">
+      <div className="content-glass">
         <header className="page-header">
           <p className="eyebrow">{about.eyebrow}</p>
           <h1>{about.title}</h1>

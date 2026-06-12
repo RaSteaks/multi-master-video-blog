@@ -127,6 +127,13 @@ html[data-bg-mode="image"] .liquid-bg {
   display: none;
 }
 
+/* A page that ships its own background image (post/about backgroundimage)
+   outranks the section liquid layer — otherwise the opaque liquid hides it.
+   Explicit liquid mode still wins. */
+html:not([data-bg-mode="liquid"]) body:has(.page-transition .site-bg) .page-transition .liquid-bg {
+  display: none;
+}
+
 /* Global liquid layer sits behind everything, like .site-bg */
 body > .liquid-bg {
   z-index: -1;
@@ -498,12 +505,6 @@ html.route-transition-pending
   max-width: 1120px;
 }
 
-.article-shell-with-toc .page-header,
-.article-shell-with-toc .hero-media {
-  max-width: 780px;
-  margin-left: calc(var(--article-toc-width) + var(--article-toc-gap));
-}
-
 /* ==========================================================================
    Typography
    ========================================================================== */
@@ -776,10 +777,10 @@ h3 {
 }
 
 /* ==========================================================================
-   About — frosted glass article panel
+   Content Glass — frosted panels that keep text readable over any backdrop
    ========================================================================== */
 
-.about-glass {
+.content-glass {
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 20px;
   background: rgba(16, 19, 23, 0.52);
@@ -791,8 +792,46 @@ h3 {
     0 24px 70px -28px rgba(0, 0, 0, 0.65);
 }
 
-.about-glass .hero-media {
+.content-glass .hero-media {
   margin: 32px 0;
+}
+
+/* Brighten long-form text inside glass for high contrast over photos */
+.content-glass .markdown-body {
+  color: #B6C4D2;
+}
+
+/* Compact variant: header chip on list pages */
+.content-glass-tight {
+  width: fit-content;
+  min-width: min(420px, 100%);
+  max-width: 100%;
+  border-radius: 16px;
+  padding: 22px 28px 24px;
+}
+
+/* ---- Glass content cards (list pages over photo / liquid backdrops) ---- */
+.glass-cards .content-card {
+  border-color: rgba(255, 255, 255, 0.10);
+  background: rgba(16, 19, 23, 0.55);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+}
+
+.glass-cards .content-card:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(20, 24, 29, 0.66);
+}
+
+.glass-cards .content-card p {
+  color: var(--text-secondary);
+}
+
+.glass-cards .empty-state {
+  background: rgba(16, 19, 23, 0.55);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  color: var(--text-secondary);
 }
 
 /* ==========================================================================
@@ -1128,16 +1167,18 @@ h3 {
 
 .article-content-grid {
   display: grid;
-  grid-template-columns: minmax(180px, var(--article-toc-width)) minmax(0, 780px);
+  grid-template-columns: minmax(180px, var(--article-toc-width)) minmax(0, 1fr);
   gap: var(--article-toc-gap);
   align-items: start;
 }
 
-.article-content-grid > .markdown-body {
+.article-content-grid > .content-glass {
   grid-column: 2;
   grid-row: 1;
+  min-width: 0;
 }
 
+/* ---- TOC: standalone frosted glass card, sticky beside the article ---- */
 .article-toc {
   grid-column: 1;
   grid-row: 1;
@@ -1145,8 +1186,15 @@ h3 {
   top: 88px;
   max-height: calc(100dvh - 120px);
   overflow: auto;
-  border-right: 1px solid var(--line);
-  padding: 4px 18px 4px 0;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 16px;
+  background: rgba(14, 17, 21, 0.58);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  padding: 16px 14px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 16px 44px -20px rgba(0, 0, 0, 0.6);
 }
 
 .article-toc-cover {
@@ -1177,7 +1225,7 @@ h3 {
   display: block;
   border-radius: var(--radius-sm);
   padding: 5px 8px;
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 0.82rem;
   font-weight: 600;
   line-height: 1.35;
@@ -1188,8 +1236,8 @@ h3 {
 }
 
 .article-toc a:hover {
-  background: var(--surface-raised);
-  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
 }
 
 .article-toc a:focus-visible {
@@ -3335,12 +3383,7 @@ h3 {
     gap: 32px;
   }
 
-  .article-shell-with-toc .page-header,
-  .article-shell-with-toc .hero-media {
-    margin-left: 0;
-  }
-
-  .article-content-grid > .markdown-body {
+  .article-content-grid > .content-glass {
     grid-column: 1;
     grid-row: 2;
   }
@@ -3351,11 +3394,6 @@ h3 {
     position: static;
     order: -1;
     max-height: none;
-    border-left: 0;
-    border-right: 0;
-    border-top: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
-    padding: 16px 0;
   }
 
   .article-toc nav {

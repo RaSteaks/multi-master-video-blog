@@ -5,8 +5,8 @@ export default async function PostsPage() {
   const posts = await getPosts();
 
   return (
-    <main className="shell page-stack">
-      <header className="page-header">
+    <main className="shell page-stack glass-cards">
+      <header className="page-header content-glass content-glass-tight">
         <p className="eyebrow">记录探索技术的路程</p>
         <h1>文章</h1>
       </header>
