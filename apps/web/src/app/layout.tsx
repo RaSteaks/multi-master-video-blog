@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { BackgroundControl } from "@/components/BackgroundControl";
 import { NavBar } from "@/components/NavBar";
 import { PageTransition } from "@/components/PageTransition";
-import { assetUrl, getSiteSettings } from "@/lib/directus";
+import { getSiteSettings, siteBackgroundUrls } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
 import "./globals.css";
 
@@ -28,7 +29,8 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const settings = await getSiteSettings();
-  const bgUrl = assetUrl(settings?.background_image ?? null);
+  const bgImages = siteBackgroundUrls(settings);
+  const bgUrl = bgImages[0] ?? null;
   const blur = settings?.background_blur ?? 8;
 
   return (
@@ -53,7 +55,10 @@ export default async function RootLayout({
           <Link className="brand" href="/" aria-label={`${siteConfig.title} - Home`}>
             {siteConfig.title}
           </Link>
-          <NavBar />
+          <div className="site-header-actions">
+            <NavBar />
+            <BackgroundControl images={bgImages} defaultBlur={blur} />
+          </div>
         </header>
 
         <div id="main-content" tabIndex={-1}>

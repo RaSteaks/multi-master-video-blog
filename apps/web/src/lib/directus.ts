@@ -249,17 +249,32 @@ export async function getVideoProject(slug: string) {
 export type SiteSettings = {
   background_image: DirectusFileId;
   background_blur: number | null;
+  background_images?: Array<{ directus_files_id: DirectusFileId }> | null;
 };
 
 export async function getSiteSettings(): Promise<SiteSettings | null> {
   try {
     const response = await directusFetch<{ data: SiteSettings }>(
-      "/items/site_settings?fields=background_image,background_blur"
+      "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id"
     );
     return response.data ?? null;
   } catch {
     return null;
   }
+}
+
+/** All configured background image URLs: default first, then the gallery. */
+export function siteBackgroundUrls(settings: SiteSettings | null): string[] {
+  if (!settings) return [];
+
+  const urls = [
+    assetUrl(settings.background_image),
+    ...(settings.background_images ?? []).map((row) =>
+      assetUrl(row.directus_files_id)
+    ),
+  ].filter((url): url is string => Boolean(url));
+
+  return [...new Set(urls)];
 }
 
 export async function getCounts() {

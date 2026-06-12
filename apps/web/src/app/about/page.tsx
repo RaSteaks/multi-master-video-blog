@@ -38,25 +38,27 @@ export default async function AboutPage() {
           />
         ) : null}
         <main className="shell article-shell">
-          <header className="page-header">
-            <p className="eyebrow">
-              {cmsPost.category || siteConfig.about.eyebrow}
-            </p>
-            <h1>{cmsPost.title}</h1>
-          </header>
+          <div className="about-glass">
+            <header className="page-header">
+              <p className="eyebrow">
+                {cmsPost.category || siteConfig.about.eyebrow}
+              </p>
+              <h1>{cmsPost.title}</h1>
+            </header>
 
-          {coverUrl ? (
-            <img
-              className="hero-media"
-              src={coverUrl}
-              alt={`Cover image for ${cmsPost.title}`}
-              loading="lazy"
-            />
-          ) : null}
+            {coverUrl ? (
+              <img
+                className="hero-media"
+                src={coverUrl}
+                alt={`Cover image for ${cmsPost.title}`}
+                loading="lazy"
+              />
+            ) : null}
 
-          <article className="markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-          </article>
+            <article className="markdown-body">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+            </article>
+          </div>
         </main>
       </>
     );
@@ -67,15 +69,17 @@ export default async function AboutPage() {
 
   return (
     <main className="shell article-shell">
-      <header className="page-header">
-        <p className="eyebrow">{about.eyebrow}</p>
-        <h1>{about.title}</h1>
-        {about.summary ? <p className="summary">{about.summary}</p> : null}
-      </header>
+      <div className="about-glass">
+        <header className="page-header">
+          <p className="eyebrow">{about.eyebrow}</p>
+          <h1>{about.title}</h1>
+          {about.summary ? <p className="summary">{about.summary}</p> : null}
+        </header>
 
-      <article className="markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{about.content}</ReactMarkdown>
-      </article>
+        <article className="markdown-body">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{about.content}</ReactMarkdown>
+        </article>
+      </div>
     </main>
   );
 }

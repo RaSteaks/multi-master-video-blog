@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 
-const animatedSections = new Set(["videos", "posts", "upload", "about"]);
+const animatedSections = new Set(["home", "videos", "posts", "upload", "about"]);
 const pendingClass = "route-transition-pending";
 
 export function PageTransition({ children }: { children: ReactNode }) {

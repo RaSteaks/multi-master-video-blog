@@ -106,10 +106,36 @@ body {
   content: "";
   position: absolute;
   inset: 0;
-  backdrop-filter: blur(var(--site-bg-blur, 8px));
-  -webkit-backdrop-filter: blur(var(--site-bg-blur, 8px));
+  /* --user-bg-blur is set on <html> by the navbar BackgroundControl and
+     overrides each layer's server-rendered --site-bg-blur default */
+  backdrop-filter: blur(var(--user-bg-blur, var(--site-bg-blur, 8px)));
+  -webkit-backdrop-filter: blur(var(--user-bg-blur, var(--site-bg-blur, 8px)));
   /* Dark overlay to keep text readable over any photo */
   background: rgba(10, 12, 14, 0.55);
+}
+
+/* ---- Background mode (navbar BackgroundControl) ---- */
+/* Liquid mode: hide every image layer; a gray liquid layer is portaled
+   onto <body> instead */
+html[data-bg-mode="liquid"] .site-bg {
+  display: none;
+}
+
+/* Image mode: hide every liquid layer (section + global) so the chosen
+   photo shows on home / posts / videos as well */
+html[data-bg-mode="image"] .liquid-bg {
+  display: none;
+}
+
+/* Global liquid layer sits behind everything, like .site-bg */
+body > .liquid-bg {
+  z-index: -1;
+}
+
+/* Pages with their own section-level liquid background keep it —
+   skip the global layer there to avoid double-rendering the blobs */
+body:has(.page-transition .liquid-bg) > .liquid-bg {
+  display: none;
 }
 
 img,
@@ -134,6 +160,28 @@ a {
 
 :focus:not(:focus-visible) {
   outline: none;
+}
+
+/* ---- Press feedback ----
+   Standalone `scale` composes with each element's own transform,
+   so it never fights hover lifts or layout transforms. */
+:is(
+  .site-header nav a,
+  .master-button,
+  .info-toggle,
+  .info-close,
+  .retry-button,
+  .upload-actions button:not(:disabled),
+  .lang-switcher button,
+  .source-mode,
+  .collection-links a,
+  .github-link,
+  .profile-about-link,
+  .orbit-upload,
+  .github-widget,
+  .bilibili-widget
+):active {
+  scale: 0.97;
 }
 
 /* ---- Reduced motion ---- */
@@ -232,6 +280,27 @@ body:has(.orbital-home) .orbital-home {
   transition: border-color var(--transition-base);
 }
 
+/* Header gains depth as the page scrolls (scroll-driven, zero JS) */
+@supports (animation-timeline: scroll()) {
+  .site-header {
+    animation: header-elevate linear both;
+    animation-timeline: scroll();
+    animation-range: 0 120px;
+  }
+}
+
+@keyframes header-elevate {
+  from {
+    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  to {
+    box-shadow:
+      inset 0 -1px 0 rgba(255, 255, 255, 0.05),
+      0 14px 36px -16px rgba(0, 0, 0, 0.6);
+  }
+}
+
 .brand {
   font-weight: 800;
   font-size: 1rem;
@@ -250,6 +319,7 @@ body:has(.orbital-home) .orbital-home {
 }
 
 .site-header nav a {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -260,6 +330,29 @@ body:has(.orbital-home) .orbital-home {
   font-weight: 500;
   letter-spacing: 0.01em;
   transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+/* Animated active-page underline */
+.site-header nav a::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 3px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  opacity: 0;
+  transform: scaleX(0);
+  transform-origin: 50% 50%;
+  transition:
+    transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease;
+}
+
+.site-header nav a[aria-current="page"]::after {
+  opacity: 1;
+  transform: scaleX(1);
 }
 
 .site-header nav a:hover {
@@ -282,10 +375,10 @@ body:has(.orbital-home) .orbital-home {
   min-height: calc(100dvh - 68px);
 }
 
+/* Frame: opacity only — a retained filter would turn the frame into a
+   backdrop root and break every backdrop-filter glass surface inside */
 .page-transition[data-animate-route="true"] > :is(.shell, .orbital-home) {
-  animation: route-content-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  transform-origin: 50% 24px;
-  will-change: opacity, transform, filter;
+  animation: route-frame-enter 400ms ease both;
 }
 
 .page-transition[data-animate-route="true"] > .liquid-bg {
@@ -304,28 +397,60 @@ html.route-transition-pending
     transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-@keyframes route-content-enter {
-  from {
-    opacity: 0;
-    filter: blur(8px);
-    transform: translate3d(0, 16px, 0) scale(0.992);
-  }
-
-  60% {
-    opacity: 1;
-  }
-
-  to {
-    opacity: 1;
-    filter: blur(0);
-    transform: translate3d(0, 0, 0) scale(1);
-  }
+@keyframes route-frame-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes route-background-enter {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* ---- Staggered section reveal ----
+   Page sections rise in one after another. Uses the standalone `translate`
+   property so it never fights `transform`-based hover/layout effects. */
+.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > *:not(.content-grid),
+.page-transition[data-animate-route="true"] .content-grid > *,
+.page-transition[data-animate-route="true"] .orbital-stage > *:not(.home-action-row),
+.page-transition[data-animate-route="true"] .home-action-row > * {
+  animation: route-item-enter 600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes route-item-enter {
+  from {
+    opacity: 0;
+    translate: 0 18px;
+  }
+
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+/* Section-level cascade */
+.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(2) { animation-delay: 70ms; }
+.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(3) { animation-delay: 140ms; }
+.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(4) { animation-delay: 210ms; }
+.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(n + 5) { animation-delay: 280ms; }
+
+/* Card-level cascade inside content grids */
+.page-transition[data-animate-route="true"] .content-grid > :nth-child(1) { animation-delay: 110ms; }
+.page-transition[data-animate-route="true"] .content-grid > :nth-child(2) { animation-delay: 160ms; }
+.page-transition[data-animate-route="true"] .content-grid > :nth-child(3) { animation-delay: 210ms; }
+.page-transition[data-animate-route="true"] .content-grid > :nth-child(4) { animation-delay: 260ms; }
+.page-transition[data-animate-route="true"] .content-grid > :nth-child(5) { animation-delay: 310ms; }
+.page-transition[data-animate-route="true"] .content-grid > :nth-child(6) { animation-delay: 360ms; }
+.page-transition[data-animate-route="true"] .content-grid > :nth-child(n + 7) { animation-delay: 410ms; }
+
+/* Home widget cascade: hub → collection → action pills */
+.page-transition[data-animate-route="true"] .orbital-stage > :nth-child(1) { animation-delay: 0ms; }
+.page-transition[data-animate-route="true"] .orbital-stage > :nth-child(2) { animation-delay: 90ms; }
+.page-transition[data-animate-route="true"] .home-action-row > :nth-child(1) { animation-delay: 180ms; }
+.page-transition[data-animate-route="true"] .home-action-row > :nth-child(2) { animation-delay: 240ms; }
+.page-transition[data-animate-route="true"] .home-action-row > :nth-child(3) { animation-delay: 300ms; }
+.page-transition[data-animate-route="true"] .home-action-row > :nth-child(4) { animation-delay: 360ms; }
 
 /* ---- Shell ---- */
 .shell {
@@ -474,6 +599,17 @@ h3 {
   width: 100%;
   aspect-ratio: 16 / 9;
   object-fit: cover;
+  transition: transform 650ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.content-card:hover img,
+.content-card:hover .media-placeholder {
+  transform: scale(1.045);
+}
+
+.content-card:active {
+  transform: translateY(-1px);
+  transition-duration: 90ms;
 }
 
 .media-placeholder {
@@ -536,6 +672,7 @@ h3 {
 }
 
 .list-panel a {
+  position: relative;
   display: grid;
   gap: 6px;
   padding: 18px 20px;
@@ -543,6 +680,29 @@ h3 {
   transition:
     background var(--transition-fast),
     border-color var(--transition-fast);
+}
+
+/* Amber cue bar slides in on hover */
+.list-panel a::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+  opacity: 0;
+  transform: scaleY(0.4);
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-base);
+}
+
+.list-panel a:hover::before,
+.list-panel a:focus-visible::before {
+  opacity: 1;
+  transform: scaleY(1);
 }
 
 .list-panel a + a {
@@ -576,7 +736,7 @@ h3 {
    ========================================================================== */
 
 .empty-state {
-  border: 1px solid var(--line);
+  border: 1px dashed var(--line-light);
   border-radius: var(--radius-lg);
   background: var(--surface);
   padding: 40px 24px;
@@ -584,6 +744,374 @@ h3 {
   text-align: center;
   font-size: 0.9rem;
   letter-spacing: 0.02em;
+}
+
+/* ==========================================================================
+   Skeleton (route loading)
+   ========================================================================== */
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-overlay);
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  translate: -100% 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.07),
+    transparent
+  );
+  animation: skeleton-shimmer 1.8s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  to { translate: 100% 0; }
+}
+
+/* ==========================================================================
+   About — frosted glass article panel
+   ========================================================================== */
+
+.about-glass {
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 20px;
+  background: rgba(16, 19, 23, 0.52);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  padding: clamp(24px, 5vw, 48px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 24px 70px -28px rgba(0, 0, 0, 0.65);
+}
+
+.about-glass .hero-media {
+  margin: 32px 0;
+}
+
+/* ==========================================================================
+   Background Control — navbar background settings (image / liquid + blur)
+   ========================================================================== */
+
+.site-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bg-control {
+  position: relative;
+}
+
+.bg-control-toggle {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.bg-control-toggle:hover {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
+.bg-control-toggle.active {
+  color: var(--accent);
+  border-color: rgba(212, 146, 42, 0.40);
+  background: var(--accent-soft);
+}
+
+.bg-control-toggle:active {
+  scale: 0.92;
+}
+
+/* ---- Home: floating bottom-right variant (header is hidden there) ---- */
+.bg-control-floating {
+  position: fixed;
+  right: max(20px, env(safe-area-inset-right));
+  bottom: max(20px, env(safe-area-inset-bottom));
+  z-index: 60;
+}
+
+.bg-control-floating .bg-control-toggle {
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  color: var(--text-secondary);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.bg-control-floating .bg-control-toggle:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.bg-control-floating .bg-control-toggle.active {
+  color: var(--accent);
+  border-color: rgba(212, 146, 42, 0.45);
+  background: var(--accent-soft);
+}
+
+/* Panel opens upward from the floating button */
+.bg-control-floating .bg-control-panel {
+  top: auto;
+  bottom: calc(100% + 14px);
+  translate: 0 6px;
+}
+
+.bg-control-floating .bg-control-panel.open {
+  translate: 0 0;
+}
+
+.bg-control-panel {
+  position: absolute;
+  top: calc(100% + 14px);
+  right: 0;
+  z-index: 60;
+  display: grid;
+  gap: 14px;
+  width: 248px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  /* Near-solid: the header's backdrop-filter bounds this panel's backdrop
+     root, so its own glass blur can't sample the page behind it */
+  background: rgba(20, 23, 27, 0.96);
+  padding: 14px 16px 16px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    0 18px 48px rgba(0, 0, 0, 0.45);
+  visibility: hidden;
+  opacity: 0;
+  translate: 0 -6px;
+  pointer-events: none;
+  transition:
+    opacity var(--transition-base),
+    translate var(--transition-base),
+    visibility 0s var(--transition-base);
+}
+
+.bg-control-panel.open {
+  visibility: visible;
+  opacity: 1;
+  translate: 0 0;
+  pointer-events: auto;
+  transition:
+    opacity var(--transition-base),
+    translate var(--transition-base),
+    visibility 0s 0s;
+}
+
+.bg-control-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Segmented mode switch */
+.bg-control-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  padding: 3px;
+}
+
+.bg-control-modes button {
+  min-height: 32px;
+  border: none;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  padding: 0 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.bg-control-modes button:hover:not(.active) {
+  color: var(--text);
+  background: var(--surface-overlay);
+}
+
+.bg-control-modes button.active {
+  background: var(--accent);
+  color: #0C0E10;
+}
+
+.bg-control-modes button:active {
+  scale: 0.97;
+}
+
+/* Background image thumbnails */
+.bg-control-thumbs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.bg-control-thumbs button {
+  aspect-ratio: 16 / 10;
+  padding: 0;
+  border: 1px solid var(--line-light);
+  border-radius: 6px;
+  background-color: var(--surface-raised);
+  background-size: cover;
+  background-position: center;
+  cursor: pointer;
+  opacity: 0.75;
+  transition:
+    opacity var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.bg-control-thumbs button:hover {
+  opacity: 1;
+}
+
+.bg-control-thumbs button.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+  opacity: 1;
+}
+
+.bg-control-thumbs button:active {
+  scale: 0.96;
+}
+
+.bg-control-slider {
+  display: grid;
+  gap: 10px;
+}
+
+.bg-control-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bg-control-header span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bg-control-header output {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.bg-control-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.bg-control input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--surface-overlay);
+  cursor: pointer;
+  outline-offset: 6px;
+}
+
+.bg-control input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #0C0E10;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(212, 146, 42, 0.45);
+  transition: transform 120ms ease;
+}
+
+.bg-control input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+.bg-control input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #0C0E10;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(212, 146, 42, 0.45);
+}
+
+.bg-control input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-overlay);
+}
+
+.bg-control-reset {
+  justify-self: start;
+  min-height: 30px;
+  border: 1px solid var(--line-light);
+  border-radius: 999px;
+  background: transparent;
+  padding: 0 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.bg-control-reset:hover {
+  color: var(--text);
+  border-color: rgba(212, 146, 42, 0.45);
+  background: var(--accent-soft);
+}
+
+.bg-control-reset:active {
+  scale: 0.96;
 }
 
 /* ==========================================================================
@@ -2859,6 +3387,22 @@ h3 {
   .site-header nav {
     width: 100%;
     justify-content: stretch;
+  }
+
+  .site-header-actions {
+    width: 100%;
+    gap: 6px;
+  }
+
+  .site-header-actions nav {
+    width: auto;
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Anchor the popover to the right screen edge on small screens */
+  .bg-control-panel {
+    right: -6px;
   }
 
   .site-header nav a {
