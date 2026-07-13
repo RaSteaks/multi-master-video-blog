@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 const NAV_LINKS = [
   {
     href: "/videos",
-    label: "Videos",
+    label: "视频",
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <rect x="2" y="4" width="20" height="16" rx="2" />
@@ -16,7 +16,7 @@ const NAV_LINKS = [
   },
   {
     href: "/posts",
-    label: "Posts",
+    label: "文章",
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M4 4h16v16H4z" rx="2" />
@@ -28,7 +28,7 @@ const NAV_LINKS = [
   },
   {
     href: "/upload",
-    label: "Upload",
+    label: "上传",
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -39,7 +39,7 @@ const NAV_LINKS = [
   },
   {
     href: "/about",
-    label: "About",
+    label: "关于",
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="10" />
@@ -53,7 +53,7 @@ const NAV_LINKS = [
 export function NavBar() {
   const pathname = usePathname();
   return (
-    <nav aria-label="Primary navigation">
+    <nav aria-label="主要导航">
       {NAV_LINKS.map(({ href, label, icon }) => (
         <Link
           key={href}

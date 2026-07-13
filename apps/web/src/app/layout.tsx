@@ -48,11 +48,11 @@ export default async function RootLayout({
         ) : null}
 
         <a href="#main-content" className="skip-link">
-          Skip to content
+          跳到主要内容
         </a>
 
         <header className="site-header" role="banner">
-          <Link className="brand" href="/" aria-label={`${siteConfig.title} - Home`}>
+          <Link className="brand" href="/" aria-label={`${siteConfig.title} - 首页`}>
             {siteConfig.title}
           </Link>
           <div className="site-header-actions">

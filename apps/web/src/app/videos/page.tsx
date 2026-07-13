@@ -7,8 +7,8 @@ export default async function VideosPage() {
   return (
     <main className="shell page-stack">
       <header className="page-header">
-        <p className="eyebrow">Video Library</p>
-        <h1>Video&Showreels</h1>
+        <p className="eyebrow">视频库</p>
+        <h1>视频与作品集</h1>
       </header>
 
       {videos.length > 0 ? (
@@ -32,7 +32,7 @@ export default async function VideosPage() {
                   />
                 ) : (
                   <div className="media-placeholder" aria-hidden="true">
-                    Video
+                    视频
                   </div>
                 )}
                 <div>
@@ -49,7 +49,7 @@ export default async function VideosPage() {
         </div>
       ) : (
         <div className="empty-state" role="status">
-          No videos have been created yet.
+          暂无视频内容。
         </div>
       )}
     </main>

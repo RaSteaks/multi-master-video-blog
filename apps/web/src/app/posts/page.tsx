@@ -6,7 +6,7 @@ export default async function PostsPage() {
 
   return (
     <main className="shell page-stack glass-cards">
-      <header className="page-header content-glass content-glass-tight">
+      <header className="page-header">
         <p className="eyebrow">记录探索技术的路程</p>
         <h1>文章</h1>
       </header>
@@ -31,7 +31,7 @@ export default async function PostsPage() {
                   />
                 ) : (
                   <div className="media-placeholder" aria-hidden="true">
-                    Article
+                    文章
                   </div>
                 )}
                 <div>
@@ -44,7 +44,7 @@ export default async function PostsPage() {
         </div>
       ) : (
         <div className="empty-state" role="status">
-          No posts have been created yet.
+          暂无文章内容。
         </div>
       )}
     </main>

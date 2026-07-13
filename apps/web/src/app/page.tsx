@@ -41,7 +41,7 @@ export default async function Home() {
               className="floating-widget home-free-widget orbit-card orbit-upload orbit-blog-upload"
               href="/upload"
               layout={homeLayout.widgets.uploadBlog}
-              title="Upload Blog"
+              title="上传视频"
             />
 
             <UploadWidget
@@ -77,7 +77,14 @@ function ProfileHub({
     >
       <div className="profile-avatar">
         {siteConfig.home.avatarUrl ? (
-          <img src={siteConfig.home.avatarUrl} alt={`${siteConfig.home.profileName} avatar`} />
+          <img
+            src={siteConfig.home.avatarUrl}
+            alt={`${siteConfig.home.profileName} avatar`}
+            width={256}
+            height={256}
+            loading="eager"
+            fetchPriority="high"
+          />
         ) : (
           <span>{siteConfig.home.profileInitials}</span>
         )}

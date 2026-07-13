@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import { LiquidBackground } from "./LiquidBackground";
@@ -53,6 +53,10 @@ export function BackgroundControl({
   const [hasUserBlur, setHasUserBlur] = useState(false);
   const [image, setImageState] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef(true);
+  const panelId = useId();
 
   const currentImage = image ?? images[0] ?? null;
 
@@ -101,12 +105,14 @@ export function BackgroundControl({
 
     function onPointerDown(event: PointerEvent) {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        restoreFocusRef.current = false;
         setOpen(false);
       }
     }
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
+        restoreFocusRef.current = true;
         setOpen(false);
       }
     }
@@ -117,6 +123,21 @@ export function BackgroundControl({
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const firstControl = panelRef.current?.querySelector<HTMLElement>(
+      "button:not(:disabled), input:not(:disabled)"
+    );
+    firstControl?.focus();
+
+    return () => {
+      if (restoreFocusRef.current) {
+        toggleRef.current?.focus();
+      }
     };
   }, [open]);
 
@@ -162,21 +183,29 @@ export function BackgroundControl({
       ref={rootRef}
     >
       <button
+        ref={toggleRef}
         type="button"
         className={`bg-control-toggle${open ? " active" : ""}`}
         aria-expanded={open}
         aria-haspopup="dialog"
+        aria-controls={panelId}
         aria-label="背景设置"
         title="背景设置"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          restoreFocusRef.current = true;
+          setOpen((value) => !value);
+        }}
       >
         <SlidersIcon />
       </button>
 
       <div
+        ref={panelRef}
+        id={panelId}
         className={`bg-control-panel${open ? " open" : ""}`}
         role="dialog"
         aria-label="背景设置"
+        aria-hidden={!open}
       >
         <p className="bg-control-title">背景样式</p>
 
@@ -260,7 +289,9 @@ export function BackgroundControl({
         </button>
       </div>
 
-      {mounted && effectiveMode === "liquid"
+      {mounted &&
+      effectiveMode === "liquid" &&
+      !liquidSections.has(section)
         ? createPortal(<LiquidBackground variant="gray" />, document.body)
         : null}
 
@@ -282,7 +313,7 @@ export function BackgroundControl({
     </div>
   );
 
-  // Home hides the site header, so float the control at the bottom-right
+  // Home hides the site header, so float the control at the bottom-right.
   if (isHome) {
     return mounted ? createPortal(control, document.body) : null;
   }

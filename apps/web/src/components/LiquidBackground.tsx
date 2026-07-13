@@ -3,7 +3,9 @@
 type Variant = "teal" | "blue" | "gray";
 
 /**
- * Animated liquid-blob background using CSS transforms + SVG turbulence filter.
+ * Liquid-blob background using compositor-friendly CSS motion and a static
+ * SVG turbulence filter. Keeping the turbulence static avoids continuous
+ * main-thread SVG filter updates while the blobs still drift naturally.
  *
  * Variants:
  * - `teal`   — homepage:  teal-green + purple + amber
@@ -13,28 +15,21 @@ type Variant = "teal" | "blue" | "gray";
 export function LiquidBackground({ variant = "teal" }: { variant?: Variant }) {
   return (
     <div className={`liquid-bg liquid-bg--${variant}`} aria-hidden="true">
-      {/* SVG filter definitions — stronger displacement for more visible liquid edges */}
+      {/* Static SVG filter definition; motion comes from the blob wrappers. */}
       <svg xmlns="http://www.w3.org/2000/svg" style={{ position: "absolute", width: 0, height: 0 }}>
         <defs>
           <filter id="liquid-filter" colorInterpolationFilters="sRGB">
             <feTurbulence
               type="fractalNoise"
               baseFrequency="0.010 0.013"
-              numOctaves="6"
+              numOctaves="3"
               seed="7"
               result="noise"
-            >
-              <animate
-                attributeName="baseFrequency"
-                values="0.010 0.013; 0.014 0.018; 0.010 0.013"
-                dur="22s"
-                repeatCount="indefinite"
-              />
-            </feTurbulence>
+            />
             <feDisplacementMap
               in="SourceGraphic"
               in2="noise"
-              scale="260"
+              scale="150"
               xChannelSelector="R"
               yChannelSelector="G"
             />

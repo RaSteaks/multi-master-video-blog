@@ -51,7 +51,10 @@ export default async function AboutPage() {
                 className="hero-media"
                 src={coverUrl}
                 alt={`Cover image for ${cmsPost.title}`}
-                loading="lazy"
+                width={1600}
+                height={900}
+                loading="eager"
+                fetchPriority="high"
               />
             ) : null}
 

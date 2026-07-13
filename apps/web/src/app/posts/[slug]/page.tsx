@@ -69,7 +69,10 @@ export default async function PostPage({ params }: PostPageProps) {
                 className="article-toc-cover"
                 src={coverImageUrl}
                 alt={`Cover image for ${post.title}`}
-                loading="lazy"
+                width={640}
+                height={360}
+                loading="eager"
+                fetchPriority="high"
               />
             ) : null}
             <p>{siteConfig.articleTocLabel}</p>
@@ -111,7 +114,10 @@ export default async function PostPage({ params }: PostPageProps) {
               className="hero-media"
               src={coverImageUrl}
               alt={`Cover image for ${post.title}`}
-              loading="lazy"
+              width={1600}
+              height={900}
+              loading="eager"
+              fetchPriority="high"
             />
           ) : null}
 

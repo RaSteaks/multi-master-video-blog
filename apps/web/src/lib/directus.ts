@@ -101,6 +101,7 @@ const VIDEO_DETAIL_FIELDS =
 
 /* ---- Config ---- */
 let cachedToken: string | null = null;
+let pendingToken: Promise<string | null> | null = null;
 
 const directusUrl = stripTrailingSlash(
   process.env.DIRECTUS_URL ||
@@ -128,9 +129,7 @@ function addPublishedFilter(params: URLSearchParams) {
   }
 }
 
-async function getToken() {
-  if (cachedToken) return cachedToken;
-
+async function login() {
   const email = process.env.DIRECTUS_EMAIL;
   const password = process.env.DIRECTUS_PASSWORD;
   if (!email || !password) return null;
@@ -151,6 +150,18 @@ async function getToken() {
   return cachedToken;
 }
 
+async function getToken() {
+  if (cachedToken) return cachedToken;
+
+  if (!pendingToken) {
+    pendingToken = login().finally(() => {
+      pendingToken = null;
+    });
+  }
+
+  return pendingToken;
+}
+
 async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
   const token = await getToken();
   const cacheOptions =
@@ -163,7 +174,9 @@ async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
   });
 
   if (response.status === 401 && token && !retried) {
-    cachedToken = null;
+    if (cachedToken === token) {
+      cachedToken = null;
+    }
     return directusFetch<T>(pathname, true);
   }
 

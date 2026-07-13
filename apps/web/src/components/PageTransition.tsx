@@ -7,6 +7,8 @@ import { usePathname } from "next/navigation";
 const animatedSections = new Set(["home", "videos", "posts", "upload", "about"]);
 const pendingClass = "route-transition-pending";
 
+const TRANSITION_SAFETY_TIMEOUT_MS = 5_000;
+
 export function PageTransition({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "/";
   const timeoutRef = useRef<number | null>(null);
@@ -44,7 +46,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
       timeoutRef.current = window.setTimeout(() => {
         document.documentElement.classList.remove(pendingClass);
         timeoutRef.current = null;
-      }, 320);
+      }, TRANSITION_SAFETY_TIMEOUT_MS);
     }
 
     document.addEventListener("click", onClick, true);
@@ -91,6 +93,10 @@ function isInternalPageNavigation(anchor: HTMLAnchorElement) {
   }
 
   if (url.pathname === window.location.pathname && url.search === window.location.search) {
+    return false;
+  }
+
+  if (anchor.hasAttribute('download')) {
     return false;
   }
 
