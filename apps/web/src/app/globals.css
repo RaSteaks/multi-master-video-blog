@@ -1301,7 +1301,6 @@ h3 {
 .article-toc-cover {
   width: 100%;
   height: auto;
-  aspect-ratio: auto;
   object-fit: contain;
   border: 1px solid var(--line);
   border-radius: var(--radius);

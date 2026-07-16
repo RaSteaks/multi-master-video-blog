@@ -92,7 +92,7 @@ function isInternalPageNavigation(anchor: HTMLAnchorElement) {
     return false;
   }
 
-  if (url.pathname === window.location.pathname && url.search === window.location.search) {
+  if (url.pathname === window.location.pathname) {
     return false;
   }
 
