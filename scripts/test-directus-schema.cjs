@@ -5,6 +5,12 @@ const {
 } = require("./directus-db-utils.cjs");
 
 const expectedTables = {
+  site_settings: [
+    "id",
+    "background_image",
+    "background_blur",
+    "accent_color"
+  ],
   posts: [
     "id",
     "title",
@@ -112,6 +118,7 @@ const expectedTables = {
 };
 
 const expectedRelations = [
+  ["site_settings", "background_image", "directus_files"],
   ["posts", "cover_image", "directus_files"],
   ["posts", "backgroundimage", "directus_files"],
   ["video_projects", "cover_image", "directus_files"],
@@ -205,6 +212,46 @@ async function main() {
       )
     ) {
       throw new Error("Missing Directus alias field: video_projects.masters");
+    }
+
+    const publicPolicy = await db.get(
+      [
+        "select",
+        quoteIdent("id"),
+        `from ${db.tableRef("directus_policies")}`,
+        `where ${quoteIdent("name")} = ${db.type === "pg" ? "$1" : "?"}`
+      ].join(" "),
+      ["$t:public_label"]
+    );
+
+    if (!publicPolicy) {
+      throw new Error("Missing Directus public policy");
+    }
+
+    const publicSitePermission = await db.get(
+      [
+        "select",
+        quoteIdent("fields"),
+        `from ${db.tableRef("directus_permissions")}`,
+        `where ${quoteIdent("collection")} = ${
+          db.type === "pg" ? "$1" : "?"
+        }`,
+        `and ${quoteIdent("action")} = ${db.type === "pg" ? "$2" : "?"}`,
+        `and ${quoteIdent("policy")} = ${db.type === "pg" ? "$3" : "?"}`
+      ].join(" "),
+      ["site_settings", "read", publicPolicy.id]
+    );
+
+    const publicFields = String(publicSitePermission?.fields || "")
+      .split(",")
+      .map((field) => field.trim());
+    if (
+      !publicSitePermission ||
+      (!publicFields.includes("*") && !publicFields.includes("accent_color"))
+    ) {
+      throw new Error(
+        "Public site_settings.read permission is missing accent_color"
+      );
     }
 
     console.log(`database=${db.path}`);

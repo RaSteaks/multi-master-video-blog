@@ -316,6 +316,29 @@ function jsonField(field) {
   };
 }
 
+function colorField(field, defaultValue) {
+  return {
+    field,
+    type: "string",
+    meta: {
+      interface: "select-color",
+      width: "half",
+      required: true,
+      note: "sRGB color in #RRGGBB format.",
+      validation: {
+        _regex: "^#[0-9A-Fa-f]{6}$"
+      },
+      validation_message: "Use a six-digit sRGB value such as #7A7A7A."
+    },
+    schema: {
+      default_value: defaultValue,
+      is_nullable: false,
+      max_length: 7,
+      is_unique: false
+    }
+  };
+}
+
 function hiddenStringField(field, options = {}) {
   return {
     field,
@@ -402,6 +425,16 @@ function selectField(field, choices, required = false) {
 }
 
 const collections = [
+  {
+    collection: "site_settings",
+    meta: {
+      collection: "site_settings",
+      icon: "palette",
+      note: "Singleton site appearance and background settings.",
+      singleton: true
+    },
+    schema: {}
+  },
   {
     collection: "posts",
     meta: {
@@ -500,6 +533,11 @@ const analyticsEventTypes = [
 ];
 
 const fields = {
+  site_settings: [
+    fileField("background_image"),
+    integerField("background_blur", { defaultValue: 8 }),
+    colorField("accent_color", "#7A7A7A")
+  ],
   posts: [
     stringField("title", true),
     stringField("slug", true, { unique: true }),
@@ -649,6 +687,7 @@ function itemRelation(collection, field, relatedCollection) {
 }
 
 const relations = [
+  fileRelation("site_settings", "background_image"),
   fileRelation("posts", "cover_image"),
   fileRelation("posts", "backgroundimage"),
   fileRelation("video_projects", "cover_image"),
@@ -842,6 +881,107 @@ async function execDb(db, sql, params = []) {
   await db.all(sql, params);
 }
 
+async function ensureSiteSettingsAccentDefault(token) {
+  const response = await request(
+    "/items/site_settings?fields=id,accent_color",
+    { token }
+  );
+  const settings = response?.data;
+
+  if (
+    settings &&
+    (settings.accent_color == null ||
+      String(settings.accent_color).trim() === "")
+  ) {
+    await request("/items/site_settings", {
+      method: "PATCH",
+      token,
+      body: { accent_color: "#7A7A7A" }
+    });
+    console.log("site_settings.accent_color default backfilled");
+  }
+}
+
+function permissionFields(value) {
+  if (Array.isArray(value)) {
+    return value.map(String);
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((field) => field.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+async function ensurePublicSiteSettingsPermission(token) {
+  const policyQuery = new URLSearchParams({
+    "filter[name][_eq]": "$t:public_label",
+    fields: "id",
+    limit: "1"
+  });
+  const policies = await request(`/policies?${policyQuery}`, { token });
+  const publicPolicyId = policies?.data?.[0]?.id;
+
+  if (!publicPolicyId) {
+    throw new Error("Directus public policy was not found.");
+  }
+
+  const permissionQuery = new URLSearchParams({
+    "filter[collection][_eq]": "site_settings",
+    "filter[action][_eq]": "read",
+    "filter[policy][_eq]": publicPolicyId,
+    fields: "id,fields",
+    limit: "1"
+  });
+  const permissions = await request(`/permissions?${permissionQuery}`, {
+    token
+  });
+  const permission = permissions?.data?.[0];
+  const requiredFields = [
+    "background_image",
+    "background_blur",
+    "accent_color"
+  ];
+
+  if (!permission) {
+    await request("/permissions", {
+      method: "POST",
+      token,
+      body: {
+        collection: "site_settings",
+        action: "read",
+        permissions: {},
+        validation: {},
+        presets: null,
+        fields: requiredFields,
+        policy: publicPolicyId
+      }
+    });
+    console.log("public permission created: site_settings.read");
+    return;
+  }
+
+  const currentFields = permissionFields(permission.fields);
+  if (currentFields.includes("*")) {
+    console.log("public permission exists: site_settings.read fields=*");
+    return;
+  }
+
+  const mergedFields = [...new Set([...currentFields, ...requiredFields])];
+  await request(`/permissions/${permission.id}`, {
+    method: "PATCH",
+    token,
+    body: { fields: mergedFields }
+  });
+  console.log(
+    `public permission ready: site_settings.read fields=${mergedFields.join(",")}`
+  );
+}
+
 function placeholder(db, index) {
   return db.type === "pg" ? `$${index}` : "?";
 }
@@ -867,6 +1007,8 @@ async function main() {
     await ensureRelation(token, relation);
   }
 
+  await ensureSiteSettingsAccentDefault(token);
+  await ensurePublicSiteSettingsPermission(token);
   await ensureAnalyticsDashboardInDatabase();
 
   console.log("Directus content schema is ready.");

@@ -5,6 +5,11 @@ import { NavBar } from "@/components/NavBar";
 import { PageTransition } from "@/components/PageTransition";
 import { getSiteSettings, siteBackgroundUrls } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
+import {
+  THEME_BOOTSTRAP_SCRIPT,
+  resolveThemeColor,
+  rgbChannels,
+} from "@/lib/theme-color";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -32,9 +37,25 @@ export default async function RootLayout({
   const bgImages = siteBackgroundUrls(settings);
   const bgUrl = bgImages[0] ?? null;
   const blur = settings?.background_blur ?? 8;
+  const siteTheme = resolveThemeColor(settings?.accent_color);
 
   return (
-    <html lang="zh-CN" data-scroll-behavior="smooth" suppressHydrationWarning>
+    <html
+      lang="zh-CN"
+      data-scroll-behavior="smooth"
+      suppressHydrationWarning
+      style={
+        {
+          "--site-accent-base": siteTheme.base,
+          "--site-accent-readable": siteTheme.readable,
+          "--site-on-accent": siteTheme.onAccent,
+          "--site-accent-rgb": rgbChannels(siteTheme.rgb),
+        } as React.CSSProperties
+      }
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
+      </head>
       <body>
         {bgUrl ? (
           <div
@@ -57,7 +78,11 @@ export default async function RootLayout({
           </Link>
           <div className="site-header-actions">
             <NavBar />
-            <BackgroundControl images={bgImages} defaultBlur={blur} />
+            <BackgroundControl
+              images={bgImages}
+              defaultBlur={blur}
+              siteAccentColor={siteTheme.base}
+            />
           </div>
         </header>
 

@@ -263,16 +263,25 @@ export type SiteSettings = {
   background_image: DirectusFileId;
   background_blur: number | null;
   background_images?: Array<{ directus_files_id: DirectusFileId }> | null;
+  accent_color?: string | null;
 };
 
 export async function getSiteSettings(): Promise<SiteSettings | null> {
   try {
     const response = await directusFetch<{ data: SiteSettings }>(
-      "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id"
+      "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id,accent_color"
     );
     return response.data ?? null;
   } catch {
-    return null;
+    // Preserve background settings while accent_color is rolling out.
+    try {
+      const response = await directusFetch<{ data: SiteSettings }>(
+        "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id"
+      );
+      return response.data ?? null;
+    } catch {
+      return null;
+    }
   }
 }
 

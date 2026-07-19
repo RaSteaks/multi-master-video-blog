@@ -20,6 +20,7 @@
     "test:api": "npm --workspace @multi-master-video-blog/api run test",
     "dev:web": "npm --workspace @multi-master-video-blog/web run dev",
     "build:web": "npm --workspace @multi-master-video-blog/web run build",
+    "test:web": "npm --workspace @multi-master-video-blog/web run test",
     "start:web": "npm --workspace @multi-master-video-blog/web run start",
     "web:start": "powershell -ExecutionPolicy Bypass -File deployment/windows/web-service.ps1 start",
     "web:stop": "powershell -ExecutionPolicy Bypass -File deployment/windows/web-service.ps1 stop",

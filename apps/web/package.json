@@ -6,7 +6,8 @@
     "dev": "next dev -H 127.0.0.1 -p 3000",
     "build": "next build",
     "start": "next start -H 127.0.0.1 -p 3000",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "vitest run"
   },
   "dependencies": {
     "@types/node": "^22.0.0",
@@ -19,5 +20,8 @@
     "remark-gfm": "^4.0.1",
     "shaka-player": "^5.1.6",
     "typescript": "^5.8.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
   }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-type Variant = "teal" | "blue" | "gray";
+type Variant = "accent" | "teal" | "blue" | "gray";
 
 /**
  * Liquid-blob background using compositor-friendly CSS motion and a static
@@ -8,11 +8,12 @@ type Variant = "teal" | "blue" | "gray";
  * main-thread SVG filter updates while the blobs still drift naturally.
  *
  * Variants:
- * - `teal`   — homepage:  teal-green + purple + amber
- * - `blue`   — blog:       deep navy + indigo + cyan
- * - `gray`   — videos:     18% neutral gray monochrome
+ * - `accent` — homepage: selected global accent
+ * - `teal`   — upload: fixed neutral grading-room palette
+ * - `blue`   — blog: deep navy + indigo + cyan
+ * - `gray`   — videos: 18% neutral gray monochrome
  */
-export function LiquidBackground({ variant = "teal" }: { variant?: Variant }) {
+export function LiquidBackground({ variant = "accent" }: { variant?: Variant }) {
   return (
     <div className={`liquid-bg liquid-bg--${variant}`} aria-hidden="true">
       {/* Static SVG filter definition; motion comes from the blob wrappers. */}
