@@ -390,6 +390,33 @@ function aliasO2mField(field) {
   };
 }
 
+function aliasFilesField(field) {
+  return {
+    field,
+    type: "alias",
+    meta: {
+      interface: "files",
+      special: ["files"],
+      width: "full"
+    },
+    schema: null
+  };
+}
+
+function hiddenJunctionField(field, type) {
+  return {
+    field,
+    type,
+    meta: {
+      hidden: true,
+      width: "full"
+    },
+    schema: {
+      is_nullable: true
+    }
+  };
+}
+
 function fileField(field) {
   return {
     field,
@@ -432,6 +459,16 @@ const collections = [
       icon: "palette",
       note: "Singleton site appearance and background settings.",
       singleton: true
+    },
+    schema: {}
+  },
+  {
+    collection: "site_settings_files",
+    meta: {
+      collection: "site_settings_files",
+      icon: "import_export",
+      note: "Junction records for site background images.",
+      hidden: true
     },
     schema: {}
   },
@@ -536,7 +573,12 @@ const fields = {
   site_settings: [
     fileField("background_image"),
     integerField("background_blur", { defaultValue: 8 }),
-    colorField("accent_color", "#7A7A7A")
+    colorField("accent_color", "#7A7A7A"),
+    aliasFilesField("background_images")
+  ],
+  site_settings_files: [
+    hiddenJunctionField("site_settings_id", "integer"),
+    hiddenJunctionField("directus_files_id", "uuid")
   ],
   posts: [
     stringField("title", true),
@@ -688,6 +730,48 @@ function itemRelation(collection, field, relatedCollection) {
 
 const relations = [
   fileRelation("site_settings", "background_image"),
+  {
+    collection: "site_settings_files",
+    field: "directus_files_id",
+    related_collection: "directus_files",
+    meta: {
+      many_collection: "site_settings_files",
+      many_field: "directus_files_id",
+      one_collection: "directus_files",
+      one_field: null,
+      one_deselect_action: "nullify",
+      junction_field: "site_settings_id"
+    },
+    schema: {
+      table: "site_settings_files",
+      column: "directus_files_id",
+      foreign_key_table: "directus_files",
+      foreign_key_column: "id",
+      on_update: "NO ACTION",
+      on_delete: "SET NULL"
+    }
+  },
+  {
+    collection: "site_settings_files",
+    field: "site_settings_id",
+    related_collection: "site_settings",
+    meta: {
+      many_collection: "site_settings_files",
+      many_field: "site_settings_id",
+      one_collection: "site_settings",
+      one_field: "background_images",
+      one_deselect_action: "nullify",
+      junction_field: "directus_files_id"
+    },
+    schema: {
+      table: "site_settings_files",
+      column: "site_settings_id",
+      foreign_key_table: "site_settings",
+      foreign_key_column: "id",
+      on_update: "NO ACTION",
+      on_delete: "SET NULL"
+    }
+  },
   fileRelation("posts", "cover_image"),
   fileRelation("posts", "backgroundimage"),
   fileRelation("video_projects", "cover_image"),
@@ -917,6 +1001,59 @@ function permissionFields(value) {
   return [];
 }
 
+async function ensurePublicReadPermission(
+  token,
+  publicPolicyId,
+  collection,
+  requiredFields
+) {
+  const permissionQuery = new URLSearchParams({
+    "filter[collection][_eq]": collection,
+    "filter[action][_eq]": "read",
+    "filter[policy][_eq]": publicPolicyId,
+    fields: "id,fields",
+    limit: "1"
+  });
+  const permissions = await request(`/permissions?${permissionQuery}`, {
+    token
+  });
+  const permission = permissions?.data?.[0];
+
+  if (!permission) {
+    await request("/permissions", {
+      method: "POST",
+      token,
+      body: {
+        collection,
+        action: "read",
+        permissions: {},
+        validation: {},
+        presets: null,
+        fields: requiredFields,
+        policy: publicPolicyId
+      }
+    });
+    console.log(`public permission created: ${collection}.read`);
+    return;
+  }
+
+  const currentFields = permissionFields(permission.fields);
+  if (currentFields.includes("*")) {
+    console.log(`public permission exists: ${collection}.read fields=*`);
+    return;
+  }
+
+  const mergedFields = [...new Set([...currentFields, ...requiredFields])];
+  await request(`/permissions/${permission.id}`, {
+    method: "PATCH",
+    token,
+    body: { fields: mergedFields }
+  });
+  console.log(
+    `public permission ready: ${collection}.read fields=${mergedFields.join(",")}`
+  );
+}
+
 async function ensurePublicSiteSettingsPermission(token) {
   const policyQuery = new URLSearchParams({
     "filter[name][_eq]": "$t:public_label",
@@ -930,55 +1067,22 @@ async function ensurePublicSiteSettingsPermission(token) {
     throw new Error("Directus public policy was not found.");
   }
 
-  const permissionQuery = new URLSearchParams({
-    "filter[collection][_eq]": "site_settings",
-    "filter[action][_eq]": "read",
-    "filter[policy][_eq]": publicPolicyId,
-    fields: "id,fields",
-    limit: "1"
-  });
-  const permissions = await request(`/permissions?${permissionQuery}`, {
-    token
-  });
-  const permission = permissions?.data?.[0];
-  const requiredFields = [
-    "background_image",
-    "background_blur",
-    "accent_color"
-  ];
-
-  if (!permission) {
-    await request("/permissions", {
-      method: "POST",
-      token,
-      body: {
-        collection: "site_settings",
-        action: "read",
-        permissions: {},
-        validation: {},
-        presets: null,
-        fields: requiredFields,
-        policy: publicPolicyId
-      }
-    });
-    console.log("public permission created: site_settings.read");
-    return;
-  }
-
-  const currentFields = permissionFields(permission.fields);
-  if (currentFields.includes("*")) {
-    console.log("public permission exists: site_settings.read fields=*");
-    return;
-  }
-
-  const mergedFields = [...new Set([...currentFields, ...requiredFields])];
-  await request(`/permissions/${permission.id}`, {
-    method: "PATCH",
+  await ensurePublicReadPermission(
     token,
-    body: { fields: mergedFields }
-  });
-  console.log(
-    `public permission ready: site_settings.read fields=${mergedFields.join(",")}`
+    publicPolicyId,
+    "site_settings",
+    [
+      "background_image",
+      "background_blur",
+      "background_images",
+      "accent_color"
+    ]
+  );
+  await ensurePublicReadPermission(
+    token,
+    publicPolicyId,
+    "site_settings_files",
+    ["site_settings_id", "directus_files_id"]
   );
 }
 

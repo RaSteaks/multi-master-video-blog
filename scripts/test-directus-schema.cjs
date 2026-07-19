@@ -11,6 +11,11 @@ const expectedTables = {
     "background_blur",
     "accent_color"
   ],
+  site_settings_files: [
+    "id",
+    "site_settings_id",
+    "directus_files_id"
+  ],
   posts: [
     "id",
     "title",
@@ -119,6 +124,8 @@ const expectedTables = {
 
 const expectedRelations = [
   ["site_settings", "background_image", "directus_files"],
+  ["site_settings_files", "directus_files_id", "directus_files"],
+  ["site_settings_files", "site_settings_id", "site_settings"],
   ["posts", "cover_image", "directus_files"],
   ["posts", "backgroundimage", "directus_files"],
   ["video_projects", "cover_image", "directus_files"],
@@ -170,7 +177,9 @@ async function main() {
     const fields = await db.all(
       [
         "select",
-        `${quoteIdent("collection")}, ${quoteIdent("field")}`,
+        `${quoteIdent("collection")}, ${quoteIdent("field")}, ${quoteIdent(
+          "special"
+        )}`,
         `from ${db.tableRef("directus_fields")}`,
         `where ${quoteIdent("collection")} in (${collectionPlaceholders(db.type)})`,
         `order by ${quoteIdent("collection")}, ${quoteIdent("field")}`
@@ -182,7 +191,9 @@ async function main() {
         "select",
         `${quoteIdent("many_collection")}, ${quoteIdent(
           "many_field"
-        )}, ${quoteIdent("one_collection")}`,
+        )}, ${quoteIdent("one_collection")}, ${quoteIdent(
+          "one_field"
+        )}, ${quoteIdent("junction_field")}`,
         `from ${db.tableRef("directus_relations")}`,
         `order by ${quoteIdent("many_collection")}, ${quoteIdent(
           "many_field"
@@ -214,6 +225,43 @@ async function main() {
       throw new Error("Missing Directus alias field: video_projects.masters");
     }
 
+    const backgroundImagesField = fields.find(
+      (field) =>
+        field.collection === "site_settings" &&
+        field.field === "background_images"
+    );
+    if (
+      !backgroundImagesField ||
+      !String(backgroundImagesField.special || "")
+        .split(",")
+        .map((value) => value.trim())
+        .includes("files")
+    ) {
+      throw new Error(
+        "Missing Directus files alias field: site_settings.background_images"
+      );
+    }
+
+    const siteSettingsFilesRelation = relations.find(
+      (relation) =>
+        relation.many_collection === "site_settings_files" &&
+        relation.many_field === "site_settings_id"
+    );
+    const directusFilesRelation = relations.find(
+      (relation) =>
+        relation.many_collection === "site_settings_files" &&
+        relation.many_field === "directus_files_id"
+    );
+    if (
+      siteSettingsFilesRelation?.one_field !== "background_images" ||
+      siteSettingsFilesRelation?.junction_field !== "directus_files_id" ||
+      directusFilesRelation?.junction_field !== "site_settings_id"
+    ) {
+      throw new Error(
+        "Invalid Directus M2M relation metadata for site_settings.background_images"
+      );
+    }
+
     const publicPolicy = await db.get(
       [
         "select",
@@ -228,29 +276,45 @@ async function main() {
       throw new Error("Missing Directus public policy");
     }
 
-    const publicSitePermission = await db.get(
+    const publicPermissions = await db.all(
       [
         "select",
-        quoteIdent("fields"),
+        `${quoteIdent("collection")}, ${quoteIdent("fields")}`,
         `from ${db.tableRef("directus_permissions")}`,
-        `where ${quoteIdent("collection")} = ${
-          db.type === "pg" ? "$1" : "?"
-        }`,
-        `and ${quoteIdent("action")} = ${db.type === "pg" ? "$2" : "?"}`,
-        `and ${quoteIdent("policy")} = ${db.type === "pg" ? "$3" : "?"}`
+        `where ${quoteIdent("action")} = ${db.type === "pg" ? "$1" : "?"}`,
+        `and ${quoteIdent("policy")} = ${db.type === "pg" ? "$2" : "?"}`
       ].join(" "),
-      ["site_settings", "read", publicPolicy.id]
+      ["read", publicPolicy.id]
     );
 
-    const publicFields = String(publicSitePermission?.fields || "")
-      .split(",")
-      .map((field) => field.trim());
+    const publicSitePermission = publicPermissions.find(
+      (permission) => permission.collection === "site_settings"
+    );
+    const publicSiteSettingsFilesPermission = publicPermissions.find(
+      (permission) => permission.collection === "site_settings_files"
+    );
+    const publicFields = permissionFields(publicSitePermission?.fields);
+    const publicJunctionFields = permissionFields(
+      publicSiteSettingsFilesPermission?.fields
+    );
     if (
       !publicSitePermission ||
-      (!publicFields.includes("*") && !publicFields.includes("accent_color"))
+      (!publicFields.includes("*") &&
+        (!publicFields.includes("accent_color") ||
+          !publicFields.includes("background_images")))
     ) {
       throw new Error(
-        "Public site_settings.read permission is missing accent_color"
+        "Public site_settings.read permission is missing appearance fields"
+      );
+    }
+    if (
+      !publicSiteSettingsFilesPermission ||
+      (!publicJunctionFields.includes("*") &&
+        (!publicJunctionFields.includes("site_settings_id") ||
+          !publicJunctionFields.includes("directus_files_id")))
+    ) {
+      throw new Error(
+        "Public site_settings_files.read permission is missing junction fields"
       );
     }
 
@@ -274,4 +338,15 @@ function collectionPlaceholders(dbType) {
   return Object.keys(expectedTables)
     .map((_, index) => (dbType === "pg" ? `$${index + 1}` : "?"))
     .join(", ");
+}
+
+function permissionFields(value) {
+  if (Array.isArray(value)) {
+    return value.map(String);
+  }
+
+  return String(value || "")
+    .split(",")
+    .map((field) => field.trim())
+    .filter(Boolean);
 }

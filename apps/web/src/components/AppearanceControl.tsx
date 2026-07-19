@@ -47,6 +47,46 @@ const COLLAPSED_COLOR_CHECKER_COUNT = 12;
 /** Sections that ship their own liquid background layer. */
 const liquidSections = new Set(["home", "videos", "posts", "upload"]);
 
+function handleTabKeyDown(
+  event: ReactKeyboardEvent<HTMLButtonElement>
+) {
+  if (
+    event.key !== "ArrowLeft" &&
+    event.key !== "ArrowRight" &&
+    event.key !== "Home" &&
+    event.key !== "End"
+  ) {
+    return;
+  }
+
+  const tabList = event.currentTarget.parentElement;
+  if (!tabList?.matches('[role="tablist"]')) return;
+
+  const tabs = Array.from(tabList.children).filter(
+    (element): element is HTMLButtonElement =>
+      element instanceof HTMLButtonElement &&
+      element.getAttribute("role") === "tab"
+  );
+  const currentIndex = tabs.indexOf(event.currentTarget);
+  if (currentIndex < 0) return;
+
+  let nextIndex = currentIndex;
+  if (event.key === "ArrowLeft") {
+    nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+  } else if (event.key === "ArrowRight") {
+    nextIndex = (currentIndex + 1) % tabs.length;
+  } else if (event.key === "Home") {
+    nextIndex = 0;
+  } else if (event.key === "End") {
+    nextIndex = tabs.length - 1;
+  }
+
+  event.preventDefault();
+  const nextTab = tabs[nextIndex];
+  nextTab?.focus();
+  nextTab?.click();
+}
+
 function clampBlur(value: number) {
   return Math.min(MAX_BLUR, Math.max(MIN_BLUR, Math.round(value)));
 }
@@ -125,6 +165,14 @@ export function AppearanceControl({
   const colorSectionId = useId();
   const colorCheckerId = useId();
   const backgroundSectionId = useId();
+  const colorTabId = useId();
+  const backgroundTabId = useId();
+  const colorPanelId = useId();
+  const backgroundPanelId = useId();
+  const presetsTabId = useId();
+  const customTabId = useId();
+  const presetsPanelId = useId();
+  const customPanelId = useId();
 
   const currentImage = image ?? images[0] ?? null;
   const effectiveMode: BgMode =
@@ -445,20 +493,28 @@ export function AppearanceControl({
           aria-label="设置类别"
         >
           <button
+            id={colorTabId}
             type="button"
             role="tab"
             aria-selected={appearanceView === "color"}
+            aria-controls={colorPanelId}
+            tabIndex={appearanceView === "color" ? 0 : -1}
             className={appearanceView === "color" ? "active" : ""}
             onClick={() => setAppearanceView("color")}
+            onKeyDown={handleTabKeyDown}
           >
             颜色
           </button>
           <button
+            id={backgroundTabId}
             type="button"
             role="tab"
             aria-selected={appearanceView === "background"}
+            aria-controls={backgroundPanelId}
+            tabIndex={appearanceView === "background" ? 0 : -1}
             className={appearanceView === "background" ? "active" : ""}
             onClick={() => setAppearanceView("background")}
+            onKeyDown={handleTabKeyDown}
           >
             背景
           </button>
@@ -466,8 +522,10 @@ export function AppearanceControl({
 
         {appearanceView === "color" ? (
           <section
+            id={colorPanelId}
             className="appearance-section theme-color-section"
-            aria-labelledby={colorSectionId}
+            role="tabpanel"
+            aria-labelledby={`${colorTabId} ${colorSectionId}`}
           >
           <div className="appearance-section-heading">
             <div>
@@ -515,27 +573,40 @@ export function AppearanceControl({
             aria-label="颜色选择方式"
           >
             <button
+              id={presetsTabId}
               type="button"
               role="tab"
               aria-selected={colorEditor === "presets"}
+              aria-controls={presetsPanelId}
+              tabIndex={colorEditor === "presets" ? 0 : -1}
               className={colorEditor === "presets" ? "active" : ""}
               onClick={() => setColorEditor("presets")}
+              onKeyDown={handleTabKeyDown}
             >
               ColorChecker
             </button>
             <button
+              id={customTabId}
               type="button"
               role="tab"
               aria-selected={colorEditor === "custom"}
+              aria-controls={customPanelId}
+              tabIndex={colorEditor === "custom" ? 0 : -1}
               className={colorEditor === "custom" ? "active" : ""}
               onClick={openCustomEditor}
+              onKeyDown={handleTabKeyDown}
             >
               HSV 自定义
             </button>
           </div>
 
           {colorEditor === "presets" ? (
-            <div className="color-checker-picker">
+            <div
+              id={presetsPanelId}
+              className="color-checker-picker"
+              role="tabpanel"
+              aria-labelledby={presetsTabId}
+            >
               <div
                 className="color-checker-grid"
                 id={colorCheckerId}
@@ -611,7 +682,12 @@ export function AppearanceControl({
               </div>
             </div>
           ) : (
-            <div className="hsv-picker">
+            <div
+              id={customPanelId}
+              className="hsv-picker"
+              role="tabpanel"
+              aria-labelledby={customTabId}
+            >
               <div
                 className="color-encoding-preview"
                 role="group"
@@ -641,8 +717,10 @@ export function AppearanceControl({
                     className="color-encoding-window"
                     style={
                       {
-                        "--encoding-color": rec709Hex,
-                        "--encoding-ink": chooseOnAccent(rec709Hex),
+                        // CSS HEX is always sRGB. Keep the swatch visually
+                        // equivalent while exposing the Rec.709 code below.
+                        "--encoding-color": customHex,
+                        "--encoding-ink": chooseOnAccent(customHex),
                       } as CSSProperties
                     }
                     aria-hidden="true"
@@ -656,7 +734,8 @@ export function AppearanceControl({
                 </div>
               </div>
               <p className="color-encoding-note">
-                同一线性 RGB 的编码值对照；REC.709 由浏览器近似显示。
+                色块显示同一目标颜色；下方分别给出 sRGB 与全范围 Rec.709
+                编码值。
               </p>
 
               <button
@@ -751,8 +830,10 @@ export function AppearanceControl({
           </section>
         ) : (
           <section
+            id={backgroundPanelId}
             className="appearance-section background-section"
-            aria-labelledby={backgroundSectionId}
+            role="tabpanel"
+            aria-labelledby={`${backgroundTabId} ${backgroundSectionId}`}
           >
           <div className="appearance-section-heading">
             <p className="bg-control-title" id={backgroundSectionId}>

@@ -1046,6 +1046,7 @@ h3 {
   max-height: min(680px, calc(100dvh - 84px));
   overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 16px;
   /* Near-solid: the header's backdrop-filter bounds this panel's backdrop
