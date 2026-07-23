@@ -2466,7 +2466,14 @@ function contentType(filePath) {
       ".ts": "video/mp2t",
       ".m4s": "video/iso.segment",
       ".mp4": "video/mp4",
-      ".mov": "video/quicktime"
+      ".mov": "video/quicktime",
+      ".sog": "application/octet-stream",
+      ".ply": "application/octet-stream",
+      ".json": "application/json; charset=utf-8",
+      ".webp": "image/webp",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg"
     }[ext] || "application/octet-stream"
   );
 }

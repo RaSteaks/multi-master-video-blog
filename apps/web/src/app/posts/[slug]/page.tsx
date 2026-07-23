@@ -1,10 +1,17 @@
 import { notFound } from "next/navigation";
-import type { ComponentPropsWithoutRef, ReactNode } from "react";
+import {
+  Children,
+  isValidElement,
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
+import { GaussianSplatEmbed } from "@/components/GaussianSplatEmbed";
 import { assetUrl, getPost } from "@/lib/directus";
+import { parseGaussianSplatConfig } from "@/lib/gaussian-splat";
 import { siteConfig } from "@/lib/site-config";
 
 type PostPageProps = {
@@ -143,7 +150,40 @@ function createMarkdownComponents(): Components {
     h4: headingComponent("h4", 4, slugHeading),
     h5: headingComponent("h5", 5, slugHeading),
     h6: headingComponent("h6", 6, slugHeading),
+    pre: markdownPreComponent,
   };
+}
+
+function markdownPreComponent({
+  children,
+  node: _node,
+  ...props
+}: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
+  const childNodes = Children.toArray(children);
+  const codeNode = childNodes.length === 1 ? childNodes[0] : null;
+
+  if (
+    isValidElement<{ className?: string; children?: ReactNode }>(codeNode) &&
+    codeNode.props.className?.split(/\s+/).includes("language-3dgs")
+  ) {
+    const result = parseGaussianSplatConfig(
+      textFromChildren(codeNode.props.children).trim(),
+    );
+
+    if (!result.ok) {
+      return (
+        <div className="gaussian-splat-config-error" role="note">
+          <p className="eyebrow">3DGS configuration</p>
+          <strong>This interactive scene could not be rendered.</strong>
+          <small>{result.error}</small>
+        </div>
+      );
+    }
+
+    return <GaussianSplatEmbed config={result.config} />;
+  }
+
+  return <pre {...props}>{children}</pre>;
 }
 
 function headingComponent(
