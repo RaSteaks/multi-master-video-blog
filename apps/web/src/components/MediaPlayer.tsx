@@ -330,7 +330,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
 
   return (
     <section className="player-shell" aria-label="Video player">
-      <div className={infoOpen ? "player-layout info-open" : "player-layout"}>
+      <div className="player-layout">
         <div className="player-main">
           <div className="player-frame" data-state={playbackState}>
             <video
@@ -369,16 +369,113 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
               ))}
             </div>
 
-            <button
-              className={infoOpen ? "info-toggle active" : "info-toggle"}
-              onClick={() => setInfoOpen((open) => !open)}
-              type="button"
-              aria-expanded={infoOpen}
-              aria-controls="player-info-panel"
-            >
-              {infoOpen ? "Hide Info" : "Show Info"}
-            </button>
+            <div className="info-toggle-row">
+              <button
+                className={infoOpen ? "info-toggle active" : "info-toggle"}
+                onClick={() => setInfoOpen((open) => !open)}
+                type="button"
+                aria-expanded={infoOpen}
+                aria-controls="player-info-panel"
+              >
+                <span>{infoOpen ? "Hide Info" : "Show Info"}</span>
+                <span className="info-toggle-state" aria-hidden="true">
+                  {infoOpen ? "\u2212" : "+"}
+                </span>
+              </button>
+            </div>
           </div>
+
+          <aside
+            className={infoOpen ? "player-info-panel open" : "player-info-panel"}
+            id="player-info-panel"
+            aria-hidden={!infoOpen}
+          >
+            <div className="info-panel-header">
+              <div>
+                <p className="eyebrow">Playback Info</p>
+                <h2>{activeMaster.label}</h2>
+              </div>
+              <button
+                className="info-close"
+                onClick={() => setInfoOpen(false)}
+                type="button"
+                aria-label="Close info panel"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="info-panel-body">
+              <div className="info-section info-section-master">
+                <h3>Current Master</h3>
+                <dl className="tech-grid" aria-label="Current master technical details">
+                  <div><dt>Type</dt><dd>{activeMaster.type.replace(/_/g, " ")}</dd></div>
+                  <div><dt>Codec</dt><dd>{activeMaster.codec || "N/A"}</dd></div>
+                  <div><dt>Resolution</dt><dd>{resolutionLabel || "N/A"}</dd></div>
+                  <div><dt>Gamut</dt><dd>{formatDisplayGamut(activeMaster)}</dd></div>
+                  <div><dt>Color Space</dt><dd>{activeMaster.color_space || "N/A"}</dd></div>
+                  <div><dt>Primaries</dt><dd>{activeMaster.color_primaries || "N/A"}</dd></div>
+                  <div><dt>Transfer</dt><dd>{activeMaster.color_transfer || activeMaster.transfer_function || "N/A"}</dd></div>
+                  <div><dt>Matrix</dt><dd>{activeMaster.matrix_coefficients || "N/A"}</dd></div>
+                  <div><dt>Range</dt><dd>{activeMaster.color_range || "N/A"}</dd></div>
+                  <div><dt>HLS Range</dt><dd>{activeMaster.hls_video_range || "N/A"}</dd></div>
+                  <div><dt>Pixel Format</dt><dd>{activeMaster.pixel_format || "N/A"}</dd></div>
+                  <div><dt>Chroma</dt><dd>{activeMaster.chroma_location || "N/A"}</dd></div>
+                  <div>
+                    <dt>Bit Depth</dt>
+                    <dd>{activeMaster.bit_depth ? `${activeMaster.bit_depth}-bit` : "N/A"}</dd>
+                  </div>
+                  <div><dt>Processing</dt><dd>{activeMaster.processing_mode || "N/A"}</dd></div>
+                  <div><dt>Verified</dt><dd>{activeMaster.verification_status || "N/A"}</dd></div>
+                  <div><dt>Derivative</dt><dd>{formatPresent(activeMaster.is_derivative)}</dd></div>
+                  {activeMaster.is_derivative ? (
+                    <>
+                      <div><dt>Source Master</dt><dd>{activeMaster.derived_from_master_id || "N/A"}</dd></div>
+                      <div><dt>Intent</dt><dd>{activeMaster.conversion_intent || "N/A"}</dd></div>
+                    </>
+                  ) : null}
+                  {activeMaster.type === "dolby_vision" ? (
+                    <>
+                      <div><dt>DV Profile Version</dt><dd>{dolbyProfileVersion || "N/A"}</dd></div>
+                      <div><dt>DV Level</dt><dd>{activeMaster.dolby_level || "N/A"}</dd></div>
+                      <div><dt>Compat.</dt><dd>{activeMaster.dolby_compatibility_id || "N/A"}</dd></div>
+                      <div><dt>RPU</dt><dd>{formatPresent(activeMaster.dolby_rpu_present)}</dd></div>
+                      <div><dt>EL</dt><dd>{formatPresent(activeMaster.dolby_el_present)}</dd></div>
+                      <div><dt>BL</dt><dd>{formatPresent(activeMaster.dolby_bl_present)}</dd></div>
+                    </>
+                  ) : null}
+                </dl>
+              </div>
+
+              {capabilities ? (
+                <div className="info-section info-section-device">
+                  <h3>Device</h3>
+                  <dl className="capability-grid" aria-label="Device playback capability detection">
+                    <div>
+                      <dt>HDR Display</dt>
+                      <dd>{capabilities.hdr ? "Likely" : "Not detected"}</dd>
+                    </div>
+                    <div>
+                      <dt>P3 Gamut</dt>
+                      <dd>{capabilities.p3 ? "Yes" : "No"}</dd>
+                    </div>
+                    <div>
+                      <dt>Rec.2020</dt>
+                      <dd>{capabilities.rec2020 ? "Yes" : "No"}</dd>
+                    </div>
+                    <div>
+                      <dt>HEVC</dt>
+                      <dd>{capabilities.hevc ? "Maybe" : "Unknown"}</dd>
+                    </div>
+                    <div>
+                      <dt>Native HLS</dt>
+                      <dd>{capabilities.nativeHls ? "Yes" : "No"}</dd>
+                    </div>
+                  </dl>
+                </div>
+              ) : null}
+            </div>
+          </aside>
 
           {hdrWarning ? (
             <p className="player-warning" role="alert">
@@ -406,97 +503,6 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
           ) : null}
         </div>
 
-        <div className="player-info-sidebar">
-        <aside
-          className={infoOpen ? "player-info-panel open" : "player-info-panel"}
-          id="player-info-panel"
-          aria-hidden={!infoOpen}
-        >
-          <div className="info-panel-header">
-            <div>
-              <p className="eyebrow">Playback Info</p>
-              <h2>{activeMaster.label}</h2>
-            </div>
-            <button
-              className="info-close"
-              onClick={() => setInfoOpen(false)}
-              type="button"
-              aria-label="Close info panel"
-            >
-              Close
-            </button>
-          </div>
-
-          <div className="info-section">
-            <h3>Current Master</h3>
-            <dl className="tech-grid" aria-label="Current master technical details">
-              <div><dt>Type</dt><dd>{activeMaster.type.replace(/_/g, " ")}</dd></div>
-              <div><dt>Codec</dt><dd>{activeMaster.codec || "N/A"}</dd></div>
-              <div><dt>Resolution</dt><dd>{resolutionLabel || "N/A"}</dd></div>
-              <div><dt>Gamut</dt><dd>{formatDisplayGamut(activeMaster)}</dd></div>
-              <div><dt>Color Space</dt><dd>{activeMaster.color_space || "N/A"}</dd></div>
-              <div><dt>Primaries</dt><dd>{activeMaster.color_primaries || "N/A"}</dd></div>
-              <div><dt>Transfer</dt><dd>{activeMaster.color_transfer || activeMaster.transfer_function || "N/A"}</dd></div>
-              <div><dt>Matrix</dt><dd>{activeMaster.matrix_coefficients || "N/A"}</dd></div>
-              <div><dt>Range</dt><dd>{activeMaster.color_range || "N/A"}</dd></div>
-              <div><dt>HLS Range</dt><dd>{activeMaster.hls_video_range || "N/A"}</dd></div>
-              <div><dt>Pixel Format</dt><dd>{activeMaster.pixel_format || "N/A"}</dd></div>
-              <div><dt>Chroma</dt><dd>{activeMaster.chroma_location || "N/A"}</dd></div>
-              <div>
-                <dt>Bit Depth</dt>
-                <dd>{activeMaster.bit_depth ? `${activeMaster.bit_depth}-bit` : "N/A"}</dd>
-              </div>
-              <div><dt>Processing</dt><dd>{activeMaster.processing_mode || "N/A"}</dd></div>
-              <div><dt>Verified</dt><dd>{activeMaster.verification_status || "N/A"}</dd></div>
-              <div><dt>Derivative</dt><dd>{formatPresent(activeMaster.is_derivative)}</dd></div>
-              {activeMaster.is_derivative ? (
-                <>
-                  <div><dt>Source Master</dt><dd>{activeMaster.derived_from_master_id || "N/A"}</dd></div>
-                  <div><dt>Intent</dt><dd>{activeMaster.conversion_intent || "N/A"}</dd></div>
-                </>
-              ) : null}
-              {activeMaster.type === "dolby_vision" ? (
-                <>
-                  <div><dt>DV Profile Version</dt><dd>{dolbyProfileVersion || "N/A"}</dd></div>
-                  <div><dt>DV Level</dt><dd>{activeMaster.dolby_level || "N/A"}</dd></div>
-                  <div><dt>Compat.</dt><dd>{activeMaster.dolby_compatibility_id || "N/A"}</dd></div>
-                  <div><dt>RPU</dt><dd>{formatPresent(activeMaster.dolby_rpu_present)}</dd></div>
-                  <div><dt>EL</dt><dd>{formatPresent(activeMaster.dolby_el_present)}</dd></div>
-                  <div><dt>BL</dt><dd>{formatPresent(activeMaster.dolby_bl_present)}</dd></div>
-                </>
-              ) : null}
-            </dl>
-          </div>
-
-          {capabilities ? (
-            <div className="info-section">
-              <h3>Device</h3>
-              <dl className="capability-grid" aria-label="Device playback capability detection">
-                <div>
-                  <dt>HDR Display</dt>
-                  <dd>{capabilities.hdr ? "Likely" : "Not detected"}</dd>
-                </div>
-                <div>
-                  <dt>P3 Gamut</dt>
-                  <dd>{capabilities.p3 ? "Yes" : "No"}</dd>
-                </div>
-                <div>
-                  <dt>Rec.2020</dt>
-                  <dd>{capabilities.rec2020 ? "Yes" : "No"}</dd>
-                </div>
-                <div>
-                  <dt>HEVC</dt>
-                  <dd>{capabilities.hevc ? "Maybe" : "Unknown"}</dd>
-                </div>
-                <div>
-                  <dt>Native HLS</dt>
-                  <dd>{capabilities.nativeHls ? "Yes" : "No"}</dd>
-                </div>
-              </dl>
-            </div>
-          ) : null}
-        </aside>
-        </div>
       </div>
     </section>
   );
