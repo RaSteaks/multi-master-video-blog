@@ -213,11 +213,20 @@ a {
 
   html.route-transition-pending
     .page-transition[data-animate-route="true"]
-    > :is(.shell, .orbital-home),
-  .page-transition[data-animate-route="true"] > :is(.shell, .orbital-home) {
+    > :not(.liquid-bg):not(.site-bg),
+  .page-transition[data-animate-route="true"]
+    > :not(.liquid-bg):not(.site-bg) {
     opacity: 1 !important;
     filter: none !important;
+    translate: none !important;
     transform: none !important;
+    animation: none !important;
+  }
+
+  html.route-transition-pending body::after {
+    opacity: 0.65;
+    transform: scaleX(1);
+    animation: none !important;
   }
 
   .liquid-blobs {
@@ -400,50 +409,87 @@ body:has(.orbital-home) .orbital-home {
   min-height: calc(100dvh - 68px);
 }
 
-/* Frame: opacity only — a retained filter would turn the frame into a
-   backdrop root and break every backdrop-filter glass surface inside */
-.page-transition[data-animate-route="true"] > :is(.shell, .orbital-home) {
-  animation: route-frame-enter 240ms ease both;
+body::after {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 200;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    var(--accent-base),
+    var(--accent-2),
+    var(--accent-readable)
+  );
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: opacity 120ms ease;
+}
+
+html.route-transition-pending body::after {
+  opacity: 0.9;
+  animation: route-progress 1.8s cubic-bezier(.16, 1, .3, 1) forwards;
+}
+
+/* Animate one page surface instead of every nested card. `backwards` keeps
+   the entry frame for any delay, then releases the compositor layer. */
+.page-transition[data-animate-route="true"]
+  > :not(.liquid-bg):not(.site-bg) {
+  animation: route-frame-enter 220ms cubic-bezier(.22, 1, .36, 1) backwards;
 }
 
 .page-transition[data-animate-route="true"] > .liquid-bg {
-  animation: route-background-enter 320ms ease both;
+  animation: route-background-enter 180ms ease-out backwards;
 }
 
 html.route-transition-pending
   .page-transition[data-animate-route="true"]
-  > :is(.shell, .orbital-home) {
-  opacity: 0.84;
-  transform: translate3d(0, -2px, 0) scale(0.998);
+  > :not(.liquid-bg):not(.site-bg) {
+  opacity: 0.9;
+  translate: 0 -3px;
   transition:
-    opacity 140ms ease,
-    transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 110ms ease,
+    translate 150ms cubic-bezier(.22, 1, .36, 1);
 }
 
 @keyframes route-frame-enter {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0.42;
+    translate: 0 7px;
+  }
+
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
 }
 
 @keyframes route-background-enter {
-  from { opacity: 0; }
+  from { opacity: 0.72; }
   to { opacity: 1; }
+}
+
+@keyframes route-progress {
+  from { transform: scaleX(.06); }
+  55% { transform: scaleX(.7); }
+  to { transform: scaleX(.92); }
 }
 
 /* ---- Staggered section reveal ----
    Page sections rise in one after another. Uses the standalone `translate`
    property so it never fights `transform`-based hover/layout effects. */
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > *:not(.content-grid),
-.page-transition[data-animate-route="true"] .content-grid > *,
+.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > *,
 .page-transition[data-animate-route="true"] .orbital-stage > *:not(.home-action-row),
 .page-transition[data-animate-route="true"] .home-action-row > * {
-  animation: route-item-enter 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: route-item-enter 240ms cubic-bezier(.22, 1, .36, 1) backwards;
 }
 
 @keyframes route-item-enter {
   from {
-    opacity: 0;
-    translate: 0 8px;
+    opacity: 0.68;
+    translate: 0 5px;
   }
 
   to {
@@ -453,20 +499,15 @@ html.route-transition-pending
 }
 
 /* Section-level cascade */
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(2) { animation-delay: 40ms; }
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(3) { animation-delay: 80ms; }
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(n + 4) { animation-delay: 120ms; }
-
-/* Card-level cascade inside content grids */
-.page-transition[data-animate-route="true"] .content-grid > :nth-child(1) { animation-delay: 40ms; }
-.page-transition[data-animate-route="true"] .content-grid > :nth-child(2) { animation-delay: 80ms; }
-.page-transition[data-animate-route="true"] .content-grid > :nth-child(n + 3) { animation-delay: 120ms; }
+.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(2) { animation-delay: 32ms; }
+.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(3) { animation-delay: 64ms; }
+.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(n + 4) { animation-delay: 96ms; }
 
 /* Home widget cascade: hub → collection → action pills */
 .page-transition[data-animate-route="true"] .orbital-stage > :nth-child(1) { animation-delay: 0ms; }
-.page-transition[data-animate-route="true"] .orbital-stage > :nth-child(2) { animation-delay: 40ms; }
-.page-transition[data-animate-route="true"] .home-action-row > :nth-child(1) { animation-delay: 80ms; }
-.page-transition[data-animate-route="true"] .home-action-row > :nth-child(n + 2) { animation-delay: 120ms; }
+.page-transition[data-animate-route="true"] .orbital-stage > :nth-child(2) { animation-delay: 32ms; }
+.page-transition[data-animate-route="true"] .home-action-row > :nth-child(1) { animation-delay: 64ms; }
+.page-transition[data-animate-route="true"] .home-action-row > :nth-child(n + 2) { animation-delay: 96ms; }
 
 /* ---- Shell ---- */
 .shell {

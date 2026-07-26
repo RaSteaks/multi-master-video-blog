@@ -4,10 +4,17 @@ import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 
-const animatedSections = new Set(["home", "videos", "posts", "upload", "about"]);
+const animatedSections = new Set([
+  "home",
+  "videos",
+  "posts",
+  "write",
+  "upload",
+  "about",
+]);
 const pendingClass = "route-transition-pending";
 
-const TRANSITION_SAFETY_TIMEOUT_MS = 5_000;
+const TRANSITION_RECOVERY_TIMEOUT_MS = 15_000;
 
 export function PageTransition({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "/";
@@ -18,10 +25,16 @@ export function PageTransition({ children }: { children: ReactNode }) {
   useEffect(() => {
     clearPending(timeoutRef.current);
     timeoutRef.current = null;
-    document.documentElement.classList.remove(pendingClass);
+    setNavigationPending(false);
   }, [pathname]);
 
   useEffect(() => {
+    function clearTransition() {
+      clearPending(timeoutRef.current);
+      timeoutRef.current = null;
+      setNavigationPending(false);
+    }
+
     function onClick(event: MouseEvent) {
       if (shouldIgnoreClick(event)) {
         return;
@@ -41,19 +54,24 @@ export function PageTransition({ children }: { children: ReactNode }) {
         return;
       }
 
-      document.documentElement.classList.add(pendingClass);
+      setNavigationPending(true);
       clearPending(timeoutRef.current);
+      // Path changes are the source of truth for completion. This timeout only
+      // recovers from a cancelled or failed navigation that emits no route update.
       timeoutRef.current = window.setTimeout(() => {
-        document.documentElement.classList.remove(pendingClass);
-        timeoutRef.current = null;
-      }, TRANSITION_SAFETY_TIMEOUT_MS);
+        clearTransition();
+      }, TRANSITION_RECOVERY_TIMEOUT_MS);
     }
 
-    document.addEventListener("click", onClick, true);
+    // Listen at the end of the bubbling phase. The editor's unsaved-change
+    // guard stops cancelled navigations before they can reach this handler.
+    window.addEventListener("click", onClick);
+    window.addEventListener("pageshow", clearTransition);
 
     return () => {
-      document.removeEventListener("click", onClick, true);
-      clearPending(timeoutRef.current);
+      window.removeEventListener("click", onClick);
+      window.removeEventListener("pageshow", clearTransition);
+      clearTransition();
     };
   }, []);
 
@@ -71,7 +89,6 @@ export function PageTransition({ children }: { children: ReactNode }) {
 
 function shouldIgnoreClick(event: MouseEvent) {
   return (
-    event.defaultPrevented ||
     event.metaKey ||
     event.ctrlKey ||
     event.shiftKey ||
@@ -107,4 +124,11 @@ function clearPending(timeout: number | null) {
   if (timeout != null) {
     window.clearTimeout(timeout);
   }
+}
+
+function setNavigationPending(pending: boolean) {
+  document.documentElement.classList.toggle(pendingClass, pending);
+  document
+    .getElementById("main-content")
+    ?.toggleAttribute("aria-busy", pending);
 }

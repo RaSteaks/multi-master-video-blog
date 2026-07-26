@@ -53,6 +53,21 @@ type ArticleResponse = {
 
 type SelectionRange = { start: number; end: number };
 
+type EditorFingerprint = {
+  title: string;
+  slug: string;
+  category: string;
+  tags: string[];
+  tagInput: string;
+  content: string;
+  cover: string;
+  images: Array<{
+    key: string;
+    alt: string;
+    file: string;
+  }>;
+};
+
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_ARTICLE_UPLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024;
@@ -62,6 +77,7 @@ const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTICLE_IMAGE_PREFIX = "article-image://";
 const ARTICLE_IMAGE_MARKDOWN_PATTERN =
   /!\[[^\]\r\n]*\]\(article-image:\/\/([a-zA-Z0-9_-]+)\)/g;
+const MARKDOWN_PLUGINS = [remarkGfm];
 
 function slugify(value: string) {
   return value
@@ -137,16 +153,57 @@ function editorFingerprint(input: {
   content: string;
   cover?: File;
   images: PendingImage[];
-}) {
-  return JSON.stringify({
-    ...input,
+}): EditorFingerprint {
+  return {
+    title: input.title,
+    slug: input.slug,
+    category: input.category,
+    tags: input.tags,
+    tagInput: input.tagInput,
+    content: input.content,
     cover: fileIdentity(input.cover),
     images: input.images.map((image) => ({
       key: image.key,
       alt: image.alt,
       file: fileIdentity(image.file),
     })),
-  });
+  };
+}
+
+function editorFingerprintsEqual(
+  left: EditorFingerprint,
+  right: EditorFingerprint,
+) {
+  if (
+    left.title !== right.title ||
+    left.slug !== right.slug ||
+    left.category !== right.category ||
+    left.tagInput !== right.tagInput ||
+    left.content !== right.content ||
+    left.cover !== right.cover ||
+    left.tags.length !== right.tags.length ||
+    left.images.length !== right.images.length
+  ) {
+    return false;
+  }
+
+  for (let index = 0; index < left.tags.length; index += 1) {
+    if (left.tags[index] !== right.tags[index]) return false;
+  }
+
+  for (let index = 0; index < left.images.length; index += 1) {
+    const leftImage = left.images[index];
+    const rightImage = right.images[index];
+    if (
+      leftImage.key !== rightImage.key ||
+      leftImage.alt !== rightImage.alt ||
+      leftImage.file !== rightImage.file
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function isSafeLink(value: string) {
@@ -247,7 +304,7 @@ const ArticlePreview = memo(function ArticlePreview({
     <article className={styles.previewBody}>
       <ReactMarkdown
         components={components}
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={MARKDOWN_PLUGINS}
         urlTransform={previewUrlTransform}
       >
         {content}
@@ -329,6 +386,12 @@ export function ArticleEditor() {
   }, [images, referencedKeys]);
   const deferredContent = useDeferredValue(content);
   const wordCount = useMemo(() => countWords(content), [content]);
+  const readingMinutes =
+    wordCount === 0 ? 0 : Math.max(1, Math.ceil(wordCount / 400));
+  const documentName = useMemo(
+    () => `${slug.trim() || slugify(title) || "untitled"}.md`,
+    [slug, title],
+  );
   const contentBytes = useMemo(
     () => new TextEncoder().encode(content).byteLength,
     [content],
@@ -372,7 +435,7 @@ export function ArticleEditor() {
       images: [],
     }),
   );
-  const isDirty = currentFingerprint !== savedFingerprint;
+  const isDirty = !editorFingerprintsEqual(currentFingerprint, savedFingerprint);
 
   const commonValidationErrors = useMemo(() => {
     const errors: string[] = [];
@@ -854,8 +917,10 @@ export function ArticleEditor() {
           submitted.cover && responseCover?.id
             ? { ...submitted.cover, persistedId: responseCover.id }
             : null;
-        const noEditsSinceSubmit =
-          latestFingerprintRef.current === submittedFingerprint;
+        const noEditsSinceSubmit = editorFingerprintsEqual(
+          latestFingerprintRef.current,
+          submittedFingerprint,
+        );
         const persistedFingerprint = editorFingerprint({
           title: submitted.title,
           slug: submitted.slug,
@@ -1162,6 +1227,7 @@ export function ArticleEditor() {
             </div>
             <div className={styles.documentStats} aria-label="文章统计">
               <span><strong>{wordCount}</strong> 字词</span>
+              <span><strong>{readingMinutes}</strong> 分钟阅读</span>
               <span><strong>{images.length}</strong> 附件</span>
             </div>
           </header>
@@ -1188,7 +1254,12 @@ export function ArticleEditor() {
               />
             </div>
 
-            <div className={styles.viewSwitch} role="group" aria-label="编辑器视图">
+            <div
+              className={styles.viewSwitch}
+              data-view={viewMode}
+              role="group"
+              aria-label="编辑器视图"
+            >
               {(["write", "split", "preview"] as ViewMode[]).map((mode) => (
                 <button
                   key={mode}
@@ -1251,7 +1322,7 @@ export function ArticleEditor() {
           <div className={styles.workspace} data-view={viewMode}>
             <div className={styles.writePane}>
               <div className={styles.paneLabel}>
-                <span>MARKDOWN.md</span>
+                <span title={documentName}>{documentName}</span>
                 <small>可粘贴或拖入图片</small>
               </div>
               <label className={styles.visuallyHidden} htmlFor="article-content">Markdown 正文</label>
@@ -1278,7 +1349,10 @@ export function ArticleEditor() {
               </div>
             </div>
 
-            <div className={styles.previewPane}>
+            <div
+              className={styles.previewPane}
+              data-stale={deferredContent !== content}
+            >
               <div className={styles.paneLabel}>
                 <span>实时预览</span>
                 <small>{deferredContent !== content ? "正在排版…" : "GFM"}</small>
@@ -1296,7 +1370,7 @@ export function ArticleEditor() {
                   <strong>正文图片</strong>
                   <span>仅上传正文仍在引用的附件</span>
                 </div>
-                <span>{images.filter((image) => referencedKeys.has(image.key)).length} / {images.length} 已引用</span>
+                <span>{referencedImages.length} / {images.length} 已引用</span>
               </div>
               <div className={styles.attachmentList}>
                 {images.map((image) => {
