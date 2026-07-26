@@ -16,9 +16,33 @@ const PORT = Number(env.PORT || 8060);
 const DIRECTUS_URL = stripTrailingSlash(env.DIRECTUS_URL || "http://127.0.0.1:8055");
 const DIRECTUS_EMAIL = env.DIRECTUS_EMAIL || "admin@example.com";
 const DIRECTUS_PASSWORD = env.DIRECTUS_PASSWORD || "change-this-local-password";
-const UPLOAD_API_TOKEN = env.UPLOAD_API_TOKEN || "";
+const UPLOAD_API_TOKEN_PLACEHOLDER = "__REPLACE_WITH_RANDOM_UPLOAD_TOKEN__";
+const configuredUploadApiToken = String(env.UPLOAD_API_TOKEN || "").trim();
+const UPLOAD_API_TOKEN =
+  configuredUploadApiToken === UPLOAD_API_TOKEN_PLACEHOLDER
+    ? ""
+    : configuredUploadApiToken;
+const ARTICLE_API_TOKEN_PLACEHOLDER = "__REPLACE_WITH_RANDOM_ARTICLE_TOKEN__";
+const configuredArticleApiToken = String(env.ARTICLE_API_TOKEN || "").trim();
+const ARTICLE_API_TOKEN =
+  configuredArticleApiToken === ARTICLE_API_TOKEN_PLACEHOLDER
+    ? ""
+    : configuredArticleApiToken || UPLOAD_API_TOKEN;
 const MEDIA_ROOT = path.resolve(ROOT, env.MEDIA_ROOT || "../../media");
 const MAX_UPLOAD_BYTES = Number(env.MAX_UPLOAD_BYTES || 2 * 1024 * 1024 * 1024);
+const MAX_ARTICLE_UPLOAD_BYTES = positiveInteger(
+  env.MAX_ARTICLE_UPLOAD_BYTES,
+  64 * 1024 * 1024
+);
+const MAX_ARTICLE_IMAGE_BYTES = positiveInteger(
+  env.MAX_ARTICLE_IMAGE_BYTES,
+  12 * 1024 * 1024
+);
+const MAX_ARTICLE_MARKDOWN_BYTES = positiveInteger(
+  env.MAX_ARTICLE_MARKDOWN_BYTES,
+  2 * 1024 * 1024
+);
+const MAX_ARTICLE_IMAGES = positiveInteger(env.MAX_ARTICLE_IMAGES, 24);
 const FFMPEG_PATH = env.FFMPEG_PATH || resolveOptionalPackage("ffmpeg-static") || "ffmpeg";
 const FFPROBE_PATH =
   env.FFPROBE_PATH || resolveOptionalPackage("ffprobe-static", "path") || "ffprobe";
@@ -29,6 +53,16 @@ const TRANSCODE_TYPES = new Set(["sdr", "hdr10", "hlg", "custom"]);
 const HDR_MASTER_TYPES = new Set(["hdr10", "hlg", "dolby_vision"]);
 const ANALYTICS_ITEM_TYPES = new Set(["post", "video"]);
 const ANALYTICS_EVENT_TYPES = new Set(["view", "play"]);
+const ARTICLE_IMAGE_MIME_EXTENSIONS = new Map([
+  ["image/jpeg", new Set([".jpg", ".jpeg"])],
+  ["image/png", new Set([".png"])],
+  ["image/webp", new Set([".webp"])],
+  ["image/gif", new Set([".gif"])],
+  ["image/avif", new Set([".avif"])]
+]);
+const ARTICLE_IMAGE_PREFIX = "article-image://";
+const ARTICLE_IMAGE_TARGET_PATTERN =
+  /!\[([^\]\r\n]*)\]\(article-image:\/\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,127})\)/g;
 const COLOR_REQUIRED_FIELDS = [
   "colorPrimaries",
   "colorTransfer",
@@ -78,6 +112,11 @@ function stripTrailingSlash(value) {
   return value.replace(/\/$/, "");
 }
 
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
@@ -89,7 +128,7 @@ function sendJson(res, statusCode, payload) {
 
 function requireUploadAuth(req) {
   if (!UPLOAD_API_TOKEN) {
-    return;
+    throw httpError(503, "Video uploading is disabled until UPLOAD_API_TOKEN is configured.");
   }
 
   const authorization = req.headers.authorization || "";
@@ -101,6 +140,39 @@ function requireUploadAuth(req) {
   }
 
   throw httpError(401, "Missing or invalid upload API token.");
+}
+
+function tokenMatches(actual, expected) {
+  const actualBuffer = Buffer.from(String(actual || ""));
+  const expectedBuffer = Buffer.from(String(expected || ""));
+
+  return (
+    actualBuffer.length === expectedBuffer.length &&
+    actualBuffer.length > 0 &&
+    crypto.timingSafeEqual(actualBuffer, expectedBuffer)
+  );
+}
+
+function requireArticleAuth(req) {
+  if (!ARTICLE_API_TOKEN) {
+    throw httpError(503, "Article publishing is disabled until ARTICLE_API_TOKEN is configured.");
+  }
+
+  const authorization = String(req.headers.authorization || "");
+  const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
+  const bearer = bearerMatch ? bearerMatch[1].trim() : "";
+  const articleToken = String(req.headers["x-article-token"] || "").trim();
+  const compatibleUploadToken = String(req.headers["x-upload-token"] || "").trim();
+
+  if (
+    tokenMatches(bearer, ARTICLE_API_TOKEN) ||
+    tokenMatches(articleToken, ARTICLE_API_TOKEN) ||
+    tokenMatches(compatibleUploadToken, ARTICLE_API_TOKEN)
+  ) {
+    return;
+  }
+
+  throw httpError(401, "Missing or invalid article API token.");
 }
 
 function parseBoolean(value, fallback = false) {
@@ -354,6 +426,610 @@ async function parseMultipart(req) {
 
     req.pipe(busboy);
   });
+}
+
+async function parseArticleMultipart(req) {
+  const contentTypeHeader = String(req.headers["content-type"] || "");
+  if (!contentTypeHeader.toLowerCase().startsWith("multipart/form-data")) {
+    throw httpError(415, "Article requests must use multipart/form-data.");
+  }
+
+  const declaredLength = Number(req.headers["content-length"] || 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_ARTICLE_UPLOAD_BYTES) {
+    throw httpError(413, `Article upload exceeds ${MAX_ARTICLE_UPLOAD_BYTES} bytes.`);
+  }
+
+  const tempDir = path.join(ROOT, "tmp", `article-${crypto.randomUUID()}`);
+  await fsp.mkdir(tempDir, { recursive: true });
+
+  return new Promise((resolve, reject) => {
+    const fields = Object.create(null);
+    const files = { cover: null, inlineImages: [] };
+    const pendingWrites = [];
+    const activeWrites = new Set();
+    let fileSequence = 0;
+    let requestBytes = 0;
+    let settled = false;
+    let busboy;
+
+    try {
+      busboy = Busboy({
+        headers: req.headers,
+        limits: {
+          files: MAX_ARTICLE_IMAGES + 1,
+          fields: 16,
+          fileSize: MAX_ARTICLE_IMAGE_BYTES,
+          fieldSize: MAX_ARTICLE_MARKDOWN_BYTES,
+          parts: MAX_ARTICLE_IMAGES + 17
+        }
+      });
+    } catch (error) {
+      fsp.rm(tempDir, { recursive: true, force: true }).finally(() => {
+        reject(httpError(400, `Invalid multipart request: ${error.message}`));
+      });
+      return;
+    }
+
+    const removeRequestListeners = () => {
+      req.off("data", onRequestData);
+      req.off("aborted", onRequestAborted);
+    };
+
+    const rejectOnce = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      req.unpipe(busboy);
+      removeRequestListeners();
+      for (const writeStream of activeWrites) {
+        writeStream.destroy(error);
+      }
+      if (!req.complete) {
+        req.resume();
+      }
+
+      Promise.allSettled(pendingWrites)
+        .then(() => fsp.rm(tempDir, { recursive: true, force: true }))
+        .finally(() => reject(error));
+    };
+
+    function onRequestData(chunk) {
+      requestBytes += chunk.length;
+      if (requestBytes > MAX_ARTICLE_UPLOAD_BYTES) {
+        rejectOnce(httpError(413, `Article upload exceeds ${MAX_ARTICLE_UPLOAD_BYTES} bytes.`));
+      }
+    }
+
+    function onRequestAborted() {
+      rejectOnce(httpError(400, "Article upload was interrupted."));
+    }
+
+    busboy.on("field", (name, value, info) => {
+      if (info.valueTruncated) {
+        rejectOnce(httpError(413, `Article field ${name} is too large.`));
+        return;
+      }
+
+      if (
+        [
+          "title",
+          "slug",
+          "content",
+          "category",
+          "tags",
+          "published",
+          "inlineImageManifest",
+          "articleId",
+          "removeCover"
+        ].includes(name)
+      ) {
+        fields[name] = value;
+      }
+    });
+
+    busboy.on("file", (name, file, info) => {
+      if (settled) {
+        file.resume();
+        return;
+      }
+
+      if (name !== "cover" && name !== "inlineImages") {
+        file.resume();
+        return;
+      }
+
+      if (name === "cover" && files.cover) {
+        file.resume();
+        rejectOnce(httpError(400, "Only one cover image is allowed."));
+        return;
+      }
+
+      if (name === "inlineImages" && files.inlineImages.length >= MAX_ARTICLE_IMAGES) {
+        file.resume();
+        rejectOnce(httpError(413, `At most ${MAX_ARTICLE_IMAGES} inline images are allowed.`));
+        return;
+      }
+
+      try {
+        validateArticleImageMetadata(info);
+      } catch (error) {
+        file.resume();
+        rejectOnce(error);
+        return;
+      }
+
+      fileSequence += 1;
+      const originalName = path.basename(String(info.filename || "image"));
+      const filename = safeFileName(originalName);
+      const tempPath = path.join(tempDir, `${fileSequence}-${filename}`);
+      assertInside(tempDir, tempPath);
+      const writeStream = fs.createWriteStream(tempPath);
+      activeWrites.add(writeStream);
+
+      const currentFile = {
+        field: name,
+        filename,
+        originalName,
+        mimeType: String(info.mimeType || "").toLowerCase(),
+        tempPath,
+        tempDir,
+        size: 0
+      };
+
+      if (name === "cover") {
+        files.cover = currentFile;
+      } else {
+        files.inlineImages.push(currentFile);
+      }
+
+      file.on("data", (chunk) => {
+        currentFile.size += chunk.length;
+      });
+      file.on("limit", () => {
+        rejectOnce(httpError(413, `Image ${originalName} exceeds ${MAX_ARTICLE_IMAGE_BYTES} bytes.`));
+      });
+      file.on("error", rejectOnce);
+      writeStream.on("error", rejectOnce);
+      writeStream.on("close", () => activeWrites.delete(writeStream));
+
+      pendingWrites.push(
+        new Promise((resolveWrite, rejectWrite) => {
+          writeStream.on("finish", resolveWrite);
+          writeStream.on("error", rejectWrite);
+        })
+      );
+
+      file.pipe(writeStream);
+    });
+
+    busboy.on("filesLimit", () => {
+      rejectOnce(httpError(413, `At most ${MAX_ARTICLE_IMAGES} inline images and one cover are allowed.`));
+    });
+    busboy.on("fieldsLimit", () => rejectOnce(httpError(413, "Too many article fields.")));
+    busboy.on("partsLimit", () => rejectOnce(httpError(413, "Too many multipart parts.")));
+    busboy.on("error", (error) => {
+      rejectOnce(httpError(400, `Invalid multipart request: ${error.message}`));
+    });
+    busboy.on("finish", async () => {
+      if (settled) {
+        return;
+      }
+
+      try {
+        await Promise.all(pendingWrites);
+        const articleFiles = [files.cover, ...files.inlineImages].filter(Boolean);
+        await Promise.all(articleFiles.map(assertArticleImageContents));
+        settled = true;
+        removeRequestListeners();
+        resolve({ fields, files, tempDir });
+      } catch (error) {
+        rejectOnce(error);
+      }
+    });
+
+    req.on("data", onRequestData);
+    req.once("aborted", onRequestAborted);
+    req.pipe(busboy);
+  });
+}
+
+function validateArticleImageMetadata(info) {
+  const mimeType = String(info.mimeType || "").toLowerCase();
+  const extension = path.extname(String(info.filename || "")).toLowerCase();
+  const allowedExtensions = ARTICLE_IMAGE_MIME_EXTENSIONS.get(mimeType);
+
+  if (!allowedExtensions || !allowedExtensions.has(extension)) {
+    throw httpError(
+      415,
+      `Unsupported article image ${info.filename || "upload"}. Use JPEG, PNG, WebP, GIF, or AVIF.`
+    );
+  }
+}
+
+async function assertArticleImageContents(file) {
+  if (!file.size) {
+    throw httpError(400, `Image ${file.originalName} is empty.`);
+  }
+
+  const handle = await fsp.open(file.tempPath, "r");
+  const signature = Buffer.alloc(64);
+  let bytesRead = 0;
+  try {
+    ({ bytesRead } = await handle.read(signature, 0, signature.length, 0));
+  } finally {
+    await handle.close();
+  }
+
+  const detectedMimeType = detectArticleImageMime(signature.subarray(0, bytesRead));
+  if (detectedMimeType !== file.mimeType) {
+    throw httpError(415, `Image ${file.originalName} does not match its declared MIME type.`);
+  }
+}
+
+function detectArticleImageMime(buffer) {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) {
+    return "image/png";
+  }
+
+  const ascii = buffer.toString("ascii");
+  if (ascii.startsWith("GIF87a") || ascii.startsWith("GIF89a")) {
+    return "image/gif";
+  }
+  if (ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WEBP") {
+    return "image/webp";
+  }
+  if (ascii.slice(4, 8) === "ftyp" && /(?:avif|avis)/.test(ascii.slice(8))) {
+    return "image/avif";
+  }
+
+  return null;
+}
+
+function normalizeArticleUpload(fields, files) {
+  const title = String(fields.title || "").trim();
+  const slug = String(fields.slug || "").trim();
+  const content = String(fields.content || "");
+  const category = String(fields.category || "").trim() || null;
+  const published = parseArticlePublished(fields.published);
+  const articleId = parseArticleId(fields.articleId);
+  const removeCover = parseArticleFlag(fields.removeCover, "removeCover");
+
+  if (!title) {
+    throw httpError(400, "title is required.");
+  }
+  if (title.length > 200) {
+    throw httpError(400, "title must be 200 characters or fewer.");
+  }
+  if (!slug) {
+    throw httpError(400, "slug is required.");
+  }
+  if (slug.length > 200) {
+    throw httpError(400, "slug must be 200 characters or fewer.");
+  }
+  validateSlug(slug);
+  if (Buffer.byteLength(content, "utf8") > MAX_ARTICLE_MARKDOWN_BYTES) {
+    throw httpError(413, `Markdown exceeds ${MAX_ARTICLE_MARKDOWN_BYTES} bytes.`);
+  }
+  if (published && !content.trim()) {
+    throw httpError(400, "content is required when publishing an article.");
+  }
+  if (category && category.length > 100) {
+    throw httpError(400, "category must be 100 characters or fewer.");
+  }
+  if (files.cover && removeCover) {
+    throw httpError(400, "cover and removeCover cannot be submitted together.");
+  }
+
+  const tags = parseArticleTags(fields.tags);
+  const inlineImages = normalizeInlineImageManifest(
+    fields.inlineImageManifest,
+    files.inlineImages,
+    content
+  );
+
+  return {
+    title,
+    slug,
+    content,
+    category,
+    tags,
+    published,
+    articleId,
+    removeCover,
+    cover: files.cover,
+    inlineImages
+  };
+}
+
+function parseArticleId(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  if (!/^[1-9]\d*$/.test(normalized)) {
+    throw httpError(400, "articleId must be a positive integer.");
+  }
+
+  const articleId = Number(normalized);
+  if (!Number.isSafeInteger(articleId)) {
+    throw httpError(400, "articleId is outside the supported range.");
+  }
+
+  return articleId;
+}
+
+function parseArticleFlag(value, fieldName) {
+  if (value === undefined || value === null || value === "") {
+    return false;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw httpError(400, `${fieldName} must be true or false.`);
+}
+
+function parseArticlePublished(value) {
+  if (value === undefined || value === null || value === "") {
+    return false;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "published"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off", "draft"].includes(normalized)) {
+    return false;
+  }
+
+  throw httpError(400, "published must be true or false.");
+}
+
+function parseArticleTags(value) {
+  if (!value) {
+    return [];
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw httpError(400, "tags must be a JSON array of strings.");
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw httpError(400, "tags must be a JSON array of strings.");
+  }
+  if (parsed.length > 30) {
+    throw httpError(400, "At most 30 tags are allowed.");
+  }
+
+  const tags = [];
+  const seen = new Set();
+  for (const valueItem of parsed) {
+    if (typeof valueItem !== "string") {
+      throw httpError(400, "Every tag must be a string.");
+    }
+    const tag = valueItem.trim();
+    if (!tag) {
+      continue;
+    }
+    if (tag.length > 64) {
+      throw httpError(400, "Each tag must be 64 characters or fewer.");
+    }
+    if (!seen.has(tag)) {
+      seen.add(tag);
+      tags.push(tag);
+    }
+  }
+
+  return tags;
+}
+
+function normalizeInlineImageManifest(rawManifest, inlineFiles, content) {
+  let manifest = [];
+  if (rawManifest) {
+    try {
+      manifest = JSON.parse(rawManifest);
+    } catch {
+      throw httpError(400, "inlineImageManifest must be valid JSON.");
+    }
+  }
+
+  if (!Array.isArray(manifest)) {
+    throw httpError(400, "inlineImageManifest must be a JSON array.");
+  }
+  if (manifest.length !== inlineFiles.length) {
+    throw httpError(400, "inlineImageManifest must contain one entry per inlineImages file.");
+  }
+
+  const normalized = [];
+  const manifestKeys = new Set();
+  for (const [index, item] of manifest.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw httpError(400, `inlineImageManifest entry ${index + 1} is invalid.`);
+    }
+
+    const key = String(item.key || "").trim();
+    const name = String(item.name || inlineFiles[index].originalName).trim();
+    const alt = String(item.alt || "").trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(key)) {
+      throw httpError(400, `inline image key ${key || index + 1} is invalid.`);
+    }
+    if (manifestKeys.has(key)) {
+      throw httpError(400, `inline image key ${key} is duplicated.`);
+    }
+    if (name.length > 255 || alt.length > 300) {
+      throw httpError(400, `inline image metadata for ${key} is too long.`);
+    }
+
+    manifestKeys.add(key);
+    normalized.push({ key, name, alt, file: inlineFiles[index] });
+  }
+
+  const targets = markdownArticleImageTargets(content);
+  const referencedKeys = new Set();
+  for (const target of targets) {
+    referencedKeys.add(target.key);
+    if (!manifestKeys.has(target.key)) {
+      throw httpError(400, `Markdown references unknown inline image key ${target.key}.`);
+    }
+  }
+
+  const codeRanges = markdownCodeRanges(content);
+  let placeholderIndex = content.indexOf(ARTICLE_IMAGE_PREFIX);
+  const validTargetStarts = new Set(targets.map((target) => target.targetStart));
+  while (placeholderIndex !== -1) {
+    if (
+      !indexIsInRanges(placeholderIndex, codeRanges) &&
+      !validTargetStarts.has(placeholderIndex)
+    ) {
+      throw httpError(
+        400,
+        "article-image placeholders are only allowed as generated Markdown image targets."
+      );
+    }
+    placeholderIndex = content.indexOf(
+      ARTICLE_IMAGE_PREFIX,
+      placeholderIndex + ARTICLE_IMAGE_PREFIX.length
+    );
+  }
+
+  for (const key of manifestKeys) {
+    if (!referencedKeys.has(key)) {
+      throw httpError(400, `Inline image ${key} is not referenced by the Markdown content.`);
+    }
+  }
+
+  return normalized;
+}
+
+function replaceInlineImagePlaceholders(content, uploadedImages) {
+  const imageUrls = new Map(uploadedImages.map((image) => [image.key, image.url]));
+  const targets = markdownArticleImageTargets(content);
+  let replaced = content;
+
+  for (const target of [...targets].reverse()) {
+    const imageUrl = imageUrls.get(target.key);
+    if (!imageUrl) {
+      throw httpError(400, `Inline image ${target.key} could not be resolved.`);
+    }
+    replaced =
+      replaced.slice(0, target.targetStart) + imageUrl + replaced.slice(target.targetEnd);
+  }
+
+  return replaced;
+}
+
+function markdownArticleImageTargets(markdown) {
+  const codeRanges = markdownCodeRanges(markdown);
+  const targets = [];
+  const pattern = new RegExp(ARTICLE_IMAGE_TARGET_PATTERN.source, "g");
+  let match;
+
+  while ((match = pattern.exec(markdown))) {
+    if (indexIsInRanges(match.index, codeRanges)) {
+      continue;
+    }
+
+    const relativeTargetStart = match[0].indexOf(ARTICLE_IMAGE_PREFIX);
+    const targetStart = match.index + relativeTargetStart;
+    targets.push({
+      key: match[2],
+      targetStart,
+      targetEnd: targetStart + ARTICLE_IMAGE_PREFIX.length + match[2].length
+    });
+  }
+
+  return targets;
+}
+
+function markdownCodeRanges(markdown) {
+  const ranges = [];
+  const linePattern = /.*(?:\r\n|\n|\r|$)/g;
+  let fence = null;
+  let fenceStart = 0;
+  let lineMatch;
+
+  while ((lineMatch = linePattern.exec(markdown))) {
+    const rawLine = lineMatch[0];
+    if (!rawLine) {
+      break;
+    }
+
+    const lineStart = lineMatch.index;
+    const lineEnd = lineStart + rawLine.length;
+    const line = rawLine.replace(/[\r\n]+$/, "");
+
+    if (fence) {
+      const closePattern = new RegExp(
+        `^ {0,3}${fence.character}{${fence.length},}[\\t ]*$`
+      );
+      if (closePattern.test(line)) {
+        ranges.push([fenceStart, lineEnd]);
+        fence = null;
+      }
+      continue;
+    }
+
+    const openingFence = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (openingFence) {
+      fence = {
+        character: openingFence[1][0],
+        length: openingFence[1].length
+      };
+      fenceStart = lineStart;
+      continue;
+    }
+
+    const backtickRuns = Array.from(line.matchAll(/`+/g));
+    let runIndex = 0;
+    while (runIndex < backtickRuns.length) {
+      const openingRun = backtickRuns[runIndex];
+      let closingIndex = runIndex + 1;
+      while (
+        closingIndex < backtickRuns.length &&
+        backtickRuns[closingIndex][0].length !== openingRun[0].length
+      ) {
+        closingIndex += 1;
+      }
+
+      if (closingIndex < backtickRuns.length) {
+        const closingRun = backtickRuns[closingIndex];
+        ranges.push([
+          lineStart + openingRun.index,
+          lineStart + closingRun.index + closingRun[0].length
+        ]);
+        runIndex = closingIndex + 1;
+      } else {
+        runIndex += 1;
+      }
+    }
+  }
+
+  if (fence) {
+    ranges.push([fenceStart, markdown.length]);
+  }
+
+  return ranges;
+}
+
+function indexIsInRanges(index, ranges) {
+  return ranges.some(([start, end]) => index >= start && index < end);
 }
 
 function normalizeUpload(fields) {
@@ -1801,28 +2477,100 @@ function inferBitDepth(probe, masterType) {
 }
 
 async function directusRequest(pathname, token, options = {}) {
-  const response = await fetch(`${DIRECTUS_URL}${pathname}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {})
-    },
-    body:
-      options.body && typeof options.body !== "string"
-        ? JSON.stringify(options.body)
-        : options.body
-  });
+  const method = String(options.method || "GET").toUpperCase();
+  let response;
+  try {
+    response = await fetch(`${DIRECTUS_URL}${pathname}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers || {})
+      },
+      body:
+        options.body && typeof options.body !== "string"
+          ? JSON.stringify(options.body)
+          : options.body
+    });
+  } catch (cause) {
+    throw directusTransportError(method, pathname, cause);
+  }
 
-  const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let text;
+  try {
+    text = await response.text();
+  } catch (cause) {
+    if (!response.ok) {
+      const error = httpError(
+        response.status,
+        `Directus ${method} ${pathname} failed: ${response.statusText}`
+      );
+      error.directusHttpStatus = response.status;
+      error.directusRequestSent = true;
+      error.cause = cause;
+      throw error;
+    }
+    const error = directusTransportError(method, pathname, cause);
+    error.directusResponseStatus = response.status;
+    throw error;
+  }
+
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (cause) {
+      if (!response.ok) {
+        const error = httpError(
+          response.status,
+          `Directus ${method} ${pathname} failed: ${text || response.statusText}`
+        );
+        error.directusHttpStatus = response.status;
+        error.directusRequestSent = true;
+        throw error;
+      }
+
+      const error = httpError(502, `Directus ${method} ${pathname} returned invalid JSON.`);
+      error.directusRequestSent = true;
+      error.directusResponseStatus = response.status;
+      error.directusAmbiguous = isDirectusMutationMethod(method);
+      error.cause = cause;
+      throw error;
+    }
+  }
 
   if (!response.ok) {
     const message = data?.errors?.[0]?.message || text || response.statusText;
-    throw httpError(response.status, `Directus ${options.method || "GET"} ${pathname} failed: ${message}`);
+    const error = httpError(
+      response.status,
+      `Directus ${method} ${pathname} failed: ${message}`
+    );
+    error.directusHttpStatus = response.status;
+    error.directusRequestSent = true;
+    throw error;
+  }
+
+  if (!text && method !== "DELETE" && method !== "HEAD") {
+    const error = httpError(502, `Directus ${method} ${pathname} returned an empty response.`);
+    error.directusRequestSent = true;
+    error.directusResponseStatus = response.status;
+    error.directusAmbiguous = isDirectusMutationMethod(method);
+    throw error;
   }
 
   return data;
+}
+
+function isDirectusMutationMethod(method) {
+  return ["POST", "PATCH", "PUT"].includes(method);
+}
+
+function directusTransportError(method, pathname, cause) {
+  const error = httpError(502, `Directus ${method} ${pathname} did not return a response.`);
+  error.directusRequestSent = true;
+  error.directusAmbiguous = isDirectusMutationMethod(method);
+  error.cause = cause;
+  return error;
 }
 
 async function directusUploadFile(token, file, title) {
@@ -1842,35 +2590,361 @@ async function directusUploadFile(token, file, title) {
     form.append("title", title);
   }
 
-  const response = await fetch(`${DIRECTUS_URL}/files`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`
-    },
-    body: form
-  });
+  let response;
+  try {
+    response = await fetch(`${DIRECTUS_URL}/files`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`
+      },
+      body: form
+    });
+  } catch (cause) {
+    throw directusTransportError("POST", "/files", cause);
+  }
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (cause) {
+    const error = httpError(502, "Directus file upload returned invalid JSON.");
+    error.directusRequestSent = true;
+    error.directusResponseStatus = response.status;
+    error.cause = cause;
+    throw error;
+  }
 
   if (!response.ok) {
     const message = data?.errors?.[0]?.message || text || response.statusText;
-    throw httpError(response.status, `Directus file upload failed: ${message}`);
+    const error = httpError(response.status, `Directus file upload failed: ${message}`);
+    error.directusHttpStatus = response.status;
+    error.directusRequestSent = true;
+    throw error;
+  }
+
+  if (!data?.data?.id) {
+    throw httpError(502, "Directus file upload response did not include a file id.");
   }
 
   return data.data.id;
 }
 
 async function directusLogin() {
-  const data = await directusRequest("/auth/login", null, {
-    method: "POST",
-    body: {
-      email: DIRECTUS_EMAIL,
-      password: DIRECTUS_PASSWORD
-    }
-  });
+  try {
+    const data = await directusRequest("/auth/login", null, {
+      method: "POST",
+      body: {
+        email: DIRECTUS_EMAIL,
+        password: DIRECTUS_PASSWORD
+      }
+    });
 
-  return data.data.access_token;
+    if (!data?.data?.access_token) {
+      throw httpError(502, "Directus login response did not include an access token.");
+    }
+    return data.data.access_token;
+  } catch (error) {
+    if ([401, 403].includes(error.directusHttpStatus || error.statusCode)) {
+      const upstreamError = httpError(502, "Directus service authentication failed.");
+      upstreamError.cause = error;
+      throw upstreamError;
+    }
+    throw error;
+  }
+}
+
+async function findPostBySlug(token, slug) {
+  const params = new URLSearchParams({
+    "filter[slug][_eq]": slug,
+    fields: "id,title,slug,content,cover_image,tags,category,published,created_at,updated_at",
+    limit: "1"
+  });
+  const data = await directusRequest(`/items/posts?${params.toString()}`, token);
+  return data.data?.[0] || null;
+}
+
+async function getPostById(token, articleId) {
+  const fields = [
+    "id",
+    "title",
+    "slug",
+    "content",
+    "cover_image",
+    "tags",
+    "category",
+    "published",
+    "created_at",
+    "updated_at"
+  ].join(",");
+  const data = await directusRequest(
+    `/items/posts/${encodeURIComponent(articleId)}?fields=${fields}`,
+    token
+  );
+  return data.data;
+}
+
+function directusFileId(value) {
+  if (value && typeof value === "object") {
+    return value.id ? String(value.id) : null;
+  }
+  return value === undefined || value === null || value === "" ? null : String(value);
+}
+
+function normalizedDirectusTags(value) {
+  if (Array.isArray(value)) {
+    return value.map(String);
+  }
+  if (typeof value === "string" && value) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function postMatchesMutation(record, payload, articleId) {
+  if (!record || (articleId && String(record.id) !== String(articleId))) {
+    return false;
+  }
+
+  return (
+    String(record.title || "") === String(payload.title || "") &&
+    String(record.slug || "") === String(payload.slug || "") &&
+    String(record.content || "") === String(payload.content || "") &&
+    directusFileId(record.cover_image) === directusFileId(payload.cover_image) &&
+    String(record.category || "") === String(payload.category || "") &&
+    JSON.stringify(normalizedDirectusTags(record.tags)) ===
+      JSON.stringify(normalizedDirectusTags(payload.tags)) &&
+    parseBoolean(record.published, false) === Boolean(payload.published) &&
+    Number.isFinite(Date.parse(record.updated_at)) &&
+    Date.parse(record.updated_at) === Date.parse(payload.updated_at)
+  );
+}
+
+async function reconcilePostMutation(token, article, payload) {
+  try {
+    const record = article.articleId
+      ? await getPostById(token, article.articleId)
+      : await findPostBySlug(token, article.slug);
+    return postMatchesMutation(record, payload, article.articleId) ? record : null;
+  } catch (error) {
+    console.warn(`[articles] Could not reconcile an ambiguous Directus write: ${error.message}`);
+    return null;
+  }
+}
+
+async function normalizePostMutationError(error, token, article) {
+  const directusStatus = error.directusHttpStatus || error.statusCode;
+  if (![400, 409, 422].includes(directusStatus)) {
+    return error;
+  }
+
+  let conflictingPost = null;
+  try {
+    conflictingPost = await findPostBySlug(token, article.slug);
+  } catch {
+    // Keep the original Directus error if the conflict lookup is unavailable.
+  }
+
+  const conflictsWithAnotherPost =
+    conflictingPost &&
+    (!article.articleId || String(conflictingPost.id) !== String(article.articleId));
+  const reportsUniqueConstraint = /(?:unique|duplicate)/i.test(error.message || "");
+
+  if (conflictsWithAnotherPost || reportsUniqueConstraint) {
+    return httpError(409, `An article with slug ${article.slug} already exists.`);
+  }
+
+  return error;
+}
+
+function ambiguousPostMutationError(cause) {
+  const error = httpError(
+    502,
+    "Directus did not return a verifiable article write result; uploaded files were retained for safety."
+  );
+  error.preserveUploadedFiles = true;
+  error.cause = cause;
+  return error;
+}
+
+async function rollbackDirectusFiles(token, fileIds) {
+  for (const fileId of [...fileIds].reverse()) {
+    try {
+      await directusRequest(`/files/${encodeURIComponent(fileId)}`, token, {
+        method: "DELETE"
+      });
+    } catch (error) {
+      console.error(`[articles] Could not roll back Directus file ${fileId}: ${error.message}`);
+    }
+  }
+}
+
+async function handleArticleCreate(req, res) {
+  let parsed = null;
+  let directusToken = null;
+  let articleCommitted = false;
+  let preserveUploadedFiles = false;
+  const uploadedFileIds = [];
+
+  try {
+    requireArticleAuth(req);
+    parsed = await parseArticleMultipart(req);
+    const article = normalizeArticleUpload(parsed.fields, parsed.files);
+    directusToken = await directusLogin();
+
+    let existingPost = null;
+    if (article.articleId) {
+      try {
+        existingPost = await getPostById(directusToken, article.articleId);
+      } catch (error) {
+        if ((error.directusHttpStatus || error.statusCode) === 404) {
+          throw httpError(404, `Article ${article.articleId} was not found.`);
+        }
+        throw error;
+      }
+    }
+
+    const slugOwner = await findPostBySlug(directusToken, article.slug);
+    if (
+      slugOwner &&
+      (!existingPost || String(slugOwner.id) !== String(existingPost.id))
+    ) {
+      throw httpError(409, `An article with slug ${article.slug} already exists.`);
+    }
+
+    let coverImageId = directusFileId(existingPost?.cover_image);
+    if (article.cover) {
+      coverImageId = await directusUploadFile(
+        directusToken,
+        article.cover,
+        `${article.title} cover`
+      );
+      uploadedFileIds.push(coverImageId);
+    } else if (article.removeCover) {
+      coverImageId = null;
+    }
+
+    const uploadedImages = [];
+    for (const inlineImage of article.inlineImages) {
+      const fileId = await directusUploadFile(
+        directusToken,
+        inlineImage.file,
+        inlineImage.alt || inlineImage.name || `${article.title} image`
+      );
+      uploadedFileIds.push(fileId);
+      uploadedImages.push({
+        key: inlineImage.key,
+        name: inlineImage.name,
+        alt: inlineImage.alt,
+        id: fileId,
+        url: `/api/assets/${fileId}`
+      });
+    }
+
+    const now = new Date().toISOString();
+    const storedContent = replaceInlineImagePlaceholders(article.content, uploadedImages);
+    const postPayload = {
+      title: article.title,
+      slug: article.slug,
+      content: storedContent,
+      cover_image: coverImageId,
+      tags: article.tags,
+      category: article.category,
+      published: article.published,
+      updated_at: now,
+      ...(!article.articleId ? { created_at: now } : {})
+    };
+    const mutationPath = article.articleId
+      ? `/items/posts/${encodeURIComponent(article.articleId)}`
+      : "/items/posts";
+    const mutationMethod = article.articleId ? "PATCH" : "POST";
+    let savedPost;
+
+    try {
+      const mutationResponse = await directusRequest(mutationPath, directusToken, {
+        method: mutationMethod,
+        body: postPayload
+      });
+      if (!mutationResponse?.data?.id) {
+        const missingResultError = httpError(
+          502,
+          "Directus article write response did not include the saved item."
+        );
+        missingResultError.directusAmbiguous = true;
+        throw missingResultError;
+      }
+      savedPost = mutationResponse.data;
+    } catch (error) {
+      if (error.directusAmbiguous) {
+        preserveUploadedFiles = true;
+        const reconciledPost = await reconcilePostMutation(
+          directusToken,
+          article,
+          postPayload
+        );
+        if (!reconciledPost) {
+          throw ambiguousPostMutationError(error);
+        }
+        savedPost = reconciledPost;
+      } else {
+        throw await normalizePostMutationError(error, directusToken, article);
+      }
+    }
+
+    articleCommitted = true;
+    const currentCoverImageId = directusFileId(
+      Object.prototype.hasOwnProperty.call(savedPost, "cover_image")
+        ? savedPost.cover_image
+        : postPayload.cover_image
+    );
+    const savedSlug = savedPost.slug || article.slug;
+
+    sendJson(res, article.articleId ? 200 : 201, {
+      status: "ok",
+      operation: article.articleId ? "updated" : "created",
+      article: {
+        id: savedPost.id || article.articleId,
+        title: savedPost.title || article.title,
+        slug: savedSlug,
+        published: parseBoolean(savedPost.published, article.published),
+        url: `/posts/${savedSlug}`,
+        coverImage: currentCoverImageId
+          ? { id: currentCoverImageId, url: `/api/assets/${currentCoverImageId}` }
+          : null
+      },
+      uploadedImages
+    });
+  } catch (error) {
+    preserveUploadedFiles = preserveUploadedFiles || Boolean(error.preserveUploadedFiles);
+    if (
+      directusToken &&
+      !articleCommitted &&
+      !preserveUploadedFiles &&
+      uploadedFileIds.length
+    ) {
+      await rollbackDirectusFiles(directusToken, uploadedFileIds);
+    }
+
+    if (!res.headersSent) {
+      const clientError =
+        directusToken && [401, 403].includes(error.directusHttpStatus || 0)
+          ? httpError(502, "Directus service authorization failed.")
+          : error;
+      sendJson(res, clientError.statusCode || 500, {
+        status: "error",
+        error: clientError.message
+      });
+    }
+  } finally {
+    if (parsed?.tempDir) {
+      await fsp.rm(parsed.tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 async function readJsonBody(req, maxBytes = 64 * 1024) {
@@ -2342,6 +3416,13 @@ async function handleHealth(res) {
     mediaRoot: MEDIA_ROOT,
     directusUrl: DIRECTUS_URL,
     uploadAuthRequired: Boolean(UPLOAD_API_TOKEN),
+    articlePublishingEnabled: Boolean(ARTICLE_API_TOKEN),
+    articleLimits: {
+      requestBytes: MAX_ARTICLE_UPLOAD_BYTES,
+      imageBytes: MAX_ARTICLE_IMAGE_BYTES,
+      markdownBytes: MAX_ARTICLE_MARKDOWN_BYTES,
+      inlineImages: MAX_ARTICLE_IMAGES
+    },
     ffmpeg: {
       path: FFMPEG_PATH,
       available: ffmpegAvailable
@@ -2373,6 +3454,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && url.pathname === "/uploads/videos") {
     await handleUpload(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/articles") {
+    await handleArticleCreate(req, res);
     return;
   }
 

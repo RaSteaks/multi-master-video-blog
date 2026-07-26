@@ -27,6 +27,7 @@ Directus CMS 内容管理，Windows 本地服务 + Nginx + HTTPS 全栈部署
 | **自动转码** | 上传即触发 FFmpeg / FFprobe，自动生成 HLS 并提取技术元数据 |
 | **Headless CMS** | Directus 11，REST + GraphQL，结构化管理文章与视频项目 |
 | **文章博客** | Markdown 正文、封面、标签、分类、草稿/发布状态 |
+| **站内写作台** | `/write` 直接编写与预览 Markdown，统一上传封面和正文图片后由 Directus 入库 |
 
 ---
 
@@ -46,7 +47,7 @@ Directus CMS 内容管理，Windows 本地服务 + Nginx + HTTPS 全栈部署
 
 | 技术 | 用途 |
 |------|------|
-| **Node.js ≥ 22** | 上传 · 转码 · 媒体代理服务 |
+| **Node.js ≥ 22** | 视频上传 · 转码 · 文章发布 · 媒体代理服务 |
 | **Busboy** | 流式 multipart 文件接收 |
 | **FFmpeg** | HLS 切片封装、转码 |
 | **FFprobe** | 读取色彩空间、位深、码率等技术元数据 |
@@ -108,11 +109,16 @@ DIRECTUS_SHOW_DRAFTS=false
 <summary><strong>apps/api/.env</strong></summary>
 
 ```env
-UPLOAD_API_TOKEN=
+UPLOAD_API_TOKEN=__REPLACE_WITH_RANDOM_UPLOAD_TOKEN__
+ARTICLE_API_TOKEN=__REPLACE_WITH_RANDOM_ARTICLE_TOKEN__
 MEDIA_ROOT=
 DIRECTUS_URL=
 DIRECTUS_EMAIL=
 DIRECTUS_PASSWORD=
+MAX_ARTICLE_UPLOAD_BYTES=67108864
+MAX_ARTICLE_IMAGE_BYTES=12582912
+MAX_ARTICLE_MARKDOWN_BYTES=2097152
+MAX_ARTICLE_IMAGES=24
 FFMPEG_PATH=
 FFPROBE_PATH=
 ```
@@ -193,10 +199,10 @@ npm run manager                # 启动本地服务管理面板
 |------|------|
 | `title` | 标题 |
 | `slug` | URL 标识 |
-| `body` | Markdown 正文 |
-| `cover` | 封面图 |
+| `content` | Markdown 正文 |
+| `cover_image` | Directus 封面文件 UUID |
 | `tags` · `category` | 标签与分类 |
-| `status` | `draft` / `published` |
+| `published` | `false` 草稿 / `true` 发布 |
 
 ### `video_projects` — 视频项目
 
@@ -222,7 +228,26 @@ npm run manager                # 启动本地服务管理面板
 
 ---
 
-## 上传与播放流程
+## 文章编写流程
+
+```text
+① /write 页面  ──▶  编写 Markdown，选择封面与正文图片，实时预览
+         │
+         ▼
+② Article API   ──▶  校验 ARTICLE_API_TOKEN、字段和图片
+         │
+         ▼
+③ Directus      ──▶  上传 Files，替换正文图片占位符，创建或更新 posts 记录
+         │
+         ▼
+④ /posts        ──▶  已发布文章自动出现在列表与详情页
+```
+
+完整配置、表单契约与故障排查见 [docs/article-writing.md](docs/article-writing.md)。
+
+---
+
+## 视频上传与播放流程
 
 ```
 ① /upload 页面  ──▶  输入令牌 + 元数据，选择视频文件或 DV Master Package
@@ -246,6 +271,7 @@ npm run manager                # 启动本地服务管理面板
 
 详细部署步骤请参考 [docs/](docs/) 目录：
 
+- **网站内写文章** — [docs/article-writing.md](docs/article-writing.md)，包含 `/write`、文章图片与 Directus 发布链路
 - **Windows 服务** — `deployment/windows/` PowerShell 脚本，注册为系统服务开机自启
 - **Nginx** — `deployment/nginx/` 反向代理配置，支持 HLS 静态服务与 HTTPS
 
