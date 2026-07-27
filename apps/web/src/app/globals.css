@@ -530,6 +530,65 @@ html.route-transition-pending
   max-width: 800px;
 }
 
+.list-page-header {
+  display: flex;
+  max-width: none;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.list-page-header > div {
+  min-width: 0;
+  max-width: 800px;
+}
+
+.list-page-header h1 {
+  margin-bottom: 0;
+}
+
+.page-action-link {
+  display: inline-flex;
+  min-height: 44px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px solid rgb(var(--accent-rgb) / 0.55);
+  border-radius: 999px;
+  background: var(--accent-base);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.16),
+    0 10px 26px rgb(var(--accent-rgb) / 0.14);
+  color: var(--on-accent);
+  padding: 10px 18px;
+  font-size: 0.86rem;
+  font-weight: 750;
+  line-height: 1;
+  white-space: nowrap;
+  touch-action: manipulation;
+  transition: translate var(--transition-fast);
+}
+
+.page-action-link:hover {
+  border-color: var(--accent-readable);
+  background: var(--accent-hover);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.18),
+    0 13px 30px rgb(var(--accent-rgb) / 0.22);
+  translate: 0 -2px;
+}
+
+.page-action-link:active {
+  scale: 0.97;
+  translate: 0;
+}
+
+.page-action-link:focus-visible {
+  outline-color: var(--accent-readable);
+  outline-offset: 4px;
+}
+
 /* ---- Video title (two-column header) ---- */
 .video-title {
   display: grid;
@@ -6150,6 +6209,10 @@ h3 {
 }
 
 @media (max-width: 900px) {
+  .list-page-header {
+    align-items: flex-start;
+  }
+
   .album-page-header,
   .album-detail-header {
     grid-template-columns: 1fr;
@@ -6201,7 +6264,7 @@ h3 {
 }
 
 @media (max-width: 640px) {
-  /* Six links remain usable without compressing labels into unreadable pills. */
+  /* Navigation remains usable without compressing labels into unreadable pills. */
   .site-header-actions nav {
     flex: 1 1 auto;
     justify-content: flex-start;
@@ -6220,6 +6283,16 @@ h3 {
     min-width: max-content;
     padding-inline: 11px;
     white-space: nowrap;
+  }
+
+  .list-page-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .page-action-link {
+    width: 100%;
   }
 
   .album-index,

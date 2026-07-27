@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const NAV_LINKS = [
   {
     href: "/videos",
+    activeHrefs: ["/videos", "/upload"],
     label: "视频",
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -15,18 +16,8 @@ const NAV_LINKS = [
     ),
   },
   {
-    href: "/albums",
-    label: "相簿",
-    icon: (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="3" y="4" width="18" height="16" rx="2" />
-        <circle cx="9" cy="10" r="2" />
-        <path d="m4 17 4-4 3 3 2-2 6 6" />
-      </svg>
-    ),
-  },
-  {
     href: "/posts",
+    activeHrefs: ["/posts", "/write"],
     label: "文章",
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -38,28 +29,20 @@ const NAV_LINKS = [
     ),
   },
   {
-    href: "/write",
-    label: "写作",
+    href: "/albums",
+    activeHrefs: ["/albums"],
+    label: "相簿",
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M12 20h9" />
-        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
-      </svg>
-    ),
-  },
-  {
-    href: "/upload",
-    label: "上传",
-    icon: (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="17 8 12 3 7 8" />
-        <line x1="12" y1="3" x2="12" y2="15" />
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <circle cx="9" cy="10" r="2" />
+        <path d="m4 17 4-4 3 3 2-2 6 6" />
       </svg>
     ),
   },
   {
     href: "/about",
+    activeHrefs: ["/about"],
     label: "关于",
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -75,11 +58,15 @@ export function NavBar() {
   const pathname = usePathname();
   return (
     <nav aria-label="主要导航">
-      {NAV_LINKS.map(({ href, label, icon }) => (
+      {NAV_LINKS.map(({ href, activeHrefs, label, icon }) => (
         <Link
           key={href}
           href={href}
-          aria-current={pathname.startsWith(href) ? "page" : undefined}
+          aria-current={
+            activeHrefs.some((activeHref) => pathname.startsWith(activeHref))
+              ? "page"
+              : undefined
+          }
         >
           {icon}
           {label}

@@ -6,9 +6,28 @@ export default async function PostsPage() {
 
   return (
     <main className="shell page-stack glass-cards">
-      <header className="page-header">
-        <p className="eyebrow">记录探索技术的路程</p>
-        <h1>文章</h1>
+      <header className="page-header list-page-header">
+        <div>
+          <p className="eyebrow">记录探索技术的路程</p>
+          <h1>文章</h1>
+        </div>
+        <Link className="page-action-link" href="/write">
+          <svg
+            width="17"
+            height="17"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
+          </svg>
+          写文章
+        </Link>
       </header>
 
       {posts.length > 0 ? (
