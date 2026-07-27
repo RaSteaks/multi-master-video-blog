@@ -18,6 +18,7 @@
     "api:status": "powershell -ExecutionPolicy Bypass -File deployment/windows/api-service.ps1 status",
     "api:health": "powershell -ExecutionPolicy Bypass -File deployment/windows/api-service.ps1 health",
     "test:api": "npm --workspace @multi-master-video-blog/api run test",
+    "test:album-api": "node scripts/test-album-api.cjs",
     "dev:web": "npm --workspace @multi-master-video-blog/web run dev",
     "build:web": "npm --workspace @multi-master-video-blog/web run build",
     "test:web": "npm --workspace @multi-master-video-blog/web run test",

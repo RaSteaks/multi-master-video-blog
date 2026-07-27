@@ -21,6 +21,13 @@ http://127.0.0.1:8060
 - `GET /health`
 - `POST /uploads/videos`
 - `POST /articles`
+- `GET /albums/manage`
+- `POST /albums`
+- `PATCH /albums/:id`
+- `POST /albums/:id/photos`
+- `PATCH|DELETE /albums/:id/photos/:photoId`
+- `POST /albums/:id/photos/reorder`
+- `PUT /albums/:id/cover`
 
 `POST /uploads/videos` expects `multipart/form-data`. Configure a long random `UPLOAD_API_TOKEN`, then include either `Authorization: Bearer <token>` or `X-Upload-Token: <token>`. If the token is omitted or still uses the disabled `.env.example` placeholder, video uploading returns HTTP 503 instead of accepting anonymous uploads.
 
@@ -96,3 +103,36 @@ Successful creates return HTTP 201; successful updates return HTTP 200. Both use
 ```
 
 Duplicate slugs return HTTP 409, including Directus unique-constraint responses reported as 400, 409, or 422. Authentication, validation, type, and size errors use 401, 400, 415, and 413 respectively. Directus service-login failures are reported as 502, not as an article-token 401. If a definite image upload or post write failure occurs, the API makes a best-effort rollback of files uploaded by that request. If a POST/PATCH loses its response or returns invalid JSON, the API reads the post back and compares its id/slug, title, content, cover, tags, category, and published state. A confirmed write succeeds; an unconfirmed result returns 502 and retains uploaded files rather than risk deleting assets referenced by a committed article.
+
+## Album management and HDR photos
+
+The browser-facing endpoints use `/api/albums...`; the Next.js and Nginx
+rewrites remove `/api` before forwarding to this service. Every album
+management request requires `UPLOAD_API_TOKEN` through
+`Authorization: Bearer <token>` or `X-Upload-Token`.
+
+`POST /albums/:id/photos` is a `multipart/form-data` request with:
+
+- `manifest`: JSON containing a `photos` array. Every entry has `key`,
+  optional `caption`, optional `altText`, and `published`.
+- `sdrFiles`: repeated required SDR files.
+- `hdrFiles`: repeated optional HDR renditions.
+
+The API pairs files by the case-insensitive filename stem. Duplicate stems,
+an HDR file without an SDR partner, an unknown manifest key, or a missing
+manifest entry rejects the entire batch. SDR accepts JPEG, PNG, WebP, and
+non-HDR AVIF. HDR accepts static AV1 AVIF with PQ or HLG transfer metadata
+and exactly 10- or 12-bit samples. File signatures, FFprobe metadata, frame
+count, and paired aspect ratios are validated before the first Directus write.
+
+Defaults are 24 photos, 64 MiB per file, and 512 MiB for the complete request.
+Override them with `MAX_ALBUM_PHOTOS`, `MAX_ALBUM_IMAGE_BYTES`, and
+`MAX_ALBUM_UPLOAD_BYTES`. Album files receive a unique reconciliation tag.
+If Directus commits a file or photo but loses the response, the API resolves
+the tag and SDR relation before rollback, then removes photo records first and
+files second. Photo deletion returns HTTP 202 with `cleanupRequired` and
+`orphanFileIds` if the record is gone but one or more file deletions fail.
+
+Original assets are available at `/api/assets/:id`. The proxy accepts only
+the named query presets `?key=album-cover` and `?key=album-thumb`; arbitrary
+width, height, quality, or Sharp transforms are rejected.

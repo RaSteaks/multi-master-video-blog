@@ -373,7 +373,7 @@ function jsonObjectField(field) {
   };
 }
 
-function aliasO2mField(field) {
+function aliasO2mField(field, displayFields = ["label", "type", "hls_url", "is_default", "sort_order"]) {
   return {
     field,
     type: "alias",
@@ -382,7 +382,7 @@ function aliasO2mField(field) {
       special: ["o2m"],
       options: {
         layout: "table",
-        fields: ["label", "type", "hls_url", "is_default", "sort_order"]
+        fields: displayFields
       },
       width: "full"
     },
@@ -417,17 +417,18 @@ function hiddenJunctionField(field, type) {
   };
 }
 
-function fileField(field) {
+function fileField(field, options = {}) {
   return {
     field,
     type: "uuid",
     meta: {
       interface: "file-image",
       special: ["file"],
-      width: "half"
+      width: options.width || "half",
+      required: options.required || false
     },
     schema: {
-      is_nullable: true
+      is_nullable: !options.required
     }
   };
 }
@@ -503,6 +504,26 @@ const collections = [
     schema: {}
   },
   {
+    collection: "albums",
+    meta: {
+      collection: "albums",
+      icon: "photo_library",
+      note: "Published photo albums shown on the frontend.",
+      display_template: "{{title}}"
+    },
+    schema: {}
+  },
+  {
+    collection: "album_photos",
+    meta: {
+      collection: "album_photos",
+      icon: "photo",
+      note: "SDR photos with an optional paired HDR AVIF rendition.",
+      display_template: "{{caption}}"
+    },
+    schema: {}
+  },
+  {
     collection: "analytics_events",
     meta: {
       collection: "analytics_events",
@@ -557,6 +578,11 @@ const displayGamutTypes = [
   { text: "P3-D65(smpte432)", value: "p3_d65" },
   { text: "DCI-P3(smpte431)", value: "dci_p3" },
   { text: "Custom", value: "custom" }
+];
+
+const photoHdrTransferTypes = [
+  { text: "PQ (ST 2084)", value: "pq" },
+  { text: "HLG (ARIB STD-B67)", value: "hlg" }
 ];
 
 const analyticsItemTypes = [
@@ -653,6 +679,36 @@ const fields = {
     dateTimeField("created_at"),
     dateTimeField("updated_at")
   ],
+  albums: [
+    stringField("title", true, { maxLength: 200 }),
+    stringField("slug", true, { unique: true, maxLength: 200 }),
+    textField("description"),
+    fileField("cover_image"),
+    booleanField("published", true),
+    dateTimeField("created_at"),
+    dateTimeField("updated_at"),
+    aliasO2mField("photos", [
+      "sdr_image",
+      "hdr_image",
+      "caption",
+      "published",
+      "sort_order"
+    ])
+  ],
+  album_photos: [
+    integerField("album_id", { required: true }),
+    fileField("sdr_image", { required: true }),
+    fileField("hdr_image"),
+    textField("caption"),
+    stringField("alt_text", false, { width: "full", maxLength: 500 }),
+    selectField("hdr_transfer", photoHdrTransferTypes, false),
+    stringField("hdr_primaries", false, { width: "half", maxLength: 64 }),
+    integerField("hdr_bit_depth"),
+    booleanField("published", false),
+    integerField("sort_order", { defaultValue: 0 }),
+    dateTimeField("created_at"),
+    dateTimeField("updated_at")
+  ],
   analytics_events: [
     selectField("event_type", analyticsEventTypes, true),
     selectField("item_type", analyticsItemTypes, true),
@@ -682,7 +738,7 @@ const fields = {
   ]
 };
 
-function fileRelation(collection, field) {
+function fileRelation(collection, field, options = {}) {
   return {
     collection,
     field,
@@ -700,7 +756,7 @@ function fileRelation(collection, field) {
       foreign_key_table: "directus_files",
       foreign_key_column: "id",
       on_update: "NO ACTION",
-      on_delete: "SET NULL"
+      on_delete: options.onDelete || "SET NULL"
     }
   };
 }
@@ -775,11 +831,34 @@ const relations = [
   fileRelation("posts", "cover_image"),
   fileRelation("posts", "backgroundimage"),
   fileRelation("video_projects", "cover_image"),
+  fileRelation("albums", "cover_image"),
+  fileRelation("album_photos", "sdr_image", { onDelete: "RESTRICT" }),
+  fileRelation("album_photos", "hdr_image"),
   itemRelation("analytics_events", "post_id", "posts"),
   itemRelation("analytics_events", "video_project_id", "video_projects"),
   itemRelation("analytics_events", "video_master_id", "video_masters"),
   itemRelation("analytics_items", "post_id", "posts"),
   itemRelation("analytics_items", "video_project_id", "video_projects"),
+  {
+    collection: "album_photos",
+    field: "album_id",
+    related_collection: "albums",
+    meta: {
+      many_collection: "album_photos",
+      many_field: "album_id",
+      one_collection: "albums",
+      one_field: "photos",
+      one_deselect_action: "delete"
+    },
+    schema: {
+      table: "album_photos",
+      column: "album_id",
+      foreign_key_table: "albums",
+      foreign_key_column: "id",
+      on_update: "NO ACTION",
+      on_delete: "CASCADE"
+    }
+  },
   {
     collection: "video_masters",
     field: "project_id",
@@ -875,6 +954,27 @@ const analyticsPanels = [
       fillType: "gradient",
       color: "#5fa8d3"
     }
+  }
+];
+
+const albumAssetPresets = [
+  {
+    key: "album-cover",
+    fit: "cover",
+    width: 960,
+    height: 640,
+    quality: 84,
+    withoutEnlargement: true,
+    format: "webp"
+  },
+  {
+    key: "album-thumb",
+    fit: "contain",
+    width: 720,
+    height: 720,
+    quality: 86,
+    withoutEnlargement: true,
+    format: "webp"
   }
 ];
 
@@ -984,6 +1084,70 @@ async function ensureSiteSettingsAccentDefault(token) {
     });
     console.log("site_settings.accent_color default backfilled");
   }
+}
+
+async function ensureAlbumAssetPresets(token) {
+  const response = await request(
+    "/settings?fields=storage_asset_transform,storage_asset_presets",
+    { token }
+  );
+  const settings = response?.data || {};
+  const currentPresets = Array.isArray(settings.storage_asset_presets)
+    ? settings.storage_asset_presets
+    : [];
+  const managedKeys = new Set(albumAssetPresets.map((preset) => preset.key));
+  const unmanagedPresets = currentPresets.filter(
+    (preset) => !managedKeys.has(preset?.key)
+  );
+  const nextPresets = [...unmanagedPresets, ...albumAssetPresets];
+  const currentManaged = currentPresets.filter((preset) =>
+    managedKeys.has(preset?.key)
+  );
+  const presetsChanged =
+    currentManaged.length !== albumAssetPresets.length ||
+    albumAssetPresets.some((expected) => {
+      const current = currentManaged.find((preset) => preset.key === expected.key);
+      return !current || !assetPresetMatches(current, expected);
+    });
+  const nextTransformMode =
+    settings.storage_asset_transform === "all" ? "all" : "presets";
+
+  if (
+    !presetsChanged &&
+    settings.storage_asset_transform === nextTransformMode
+  ) {
+    console.log("album asset presets exist");
+    return;
+  }
+
+  await request("/settings", {
+    method: "PATCH",
+    token,
+    body: {
+      storage_asset_transform: nextTransformMode,
+      storage_asset_presets: nextPresets
+    }
+  });
+  console.log("album asset presets ready");
+}
+
+async function ensureAlbumFieldDefaults(token) {
+  await request("/fields/albums/published", {
+    method: "PATCH",
+    token,
+    body: {
+      schema: {
+        default_value: true
+      }
+    }
+  });
+  console.log("album field defaults ready");
+}
+
+function assetPresetMatches(current, expected) {
+  return Object.entries(expected).every(
+    ([key, value]) => current?.[key] === value
+  );
 }
 
 function permissionFields(value) {
@@ -1111,6 +1275,8 @@ async function main() {
     await ensureRelation(token, relation);
   }
 
+  await ensureAlbumFieldDefaults(token);
+  await ensureAlbumAssetPresets(token);
   await ensureSiteSettingsAccentDefault(token);
   await ensurePublicSiteSettingsPermission(token);
   await ensureAnalyticsDashboardInDatabase();

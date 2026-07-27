@@ -91,6 +91,31 @@ const expectedTables = {
     "created_at",
     "updated_at"
   ],
+  albums: [
+    "id",
+    "title",
+    "slug",
+    "description",
+    "cover_image",
+    "published",
+    "created_at",
+    "updated_at"
+  ],
+  album_photos: [
+    "id",
+    "album_id",
+    "sdr_image",
+    "hdr_image",
+    "caption",
+    "alt_text",
+    "hdr_transfer",
+    "hdr_primaries",
+    "hdr_bit_depth",
+    "published",
+    "sort_order",
+    "created_at",
+    "updated_at"
+  ],
   analytics_events: [
     "id",
     "event_type",
@@ -129,6 +154,10 @@ const expectedRelations = [
   ["posts", "cover_image", "directus_files"],
   ["posts", "backgroundimage", "directus_files"],
   ["video_projects", "cover_image", "directus_files"],
+  ["albums", "cover_image", "directus_files"],
+  ["album_photos", "sdr_image", "directus_files"],
+  ["album_photos", "hdr_image", "directus_files"],
+  ["album_photos", "album_id", "albums"],
   ["video_masters", "project_id", "video_projects"],
   ["analytics_events", "post_id", "posts"],
   ["analytics_events", "video_project_id", "video_projects"],
@@ -225,6 +254,23 @@ async function main() {
       throw new Error("Missing Directus alias field: video_projects.masters");
     }
 
+    if (
+      !fields.some(
+        (field) => field.collection === "albums" && field.field === "photos"
+      )
+    ) {
+      throw new Error("Missing Directus alias field: albums.photos");
+    }
+
+    const albumPhotosRelation = relations.find(
+      (relation) =>
+        relation.many_collection === "album_photos" &&
+        relation.many_field === "album_id"
+    );
+    if (albumPhotosRelation?.one_field !== "photos") {
+      throw new Error("Invalid Directus O2M relation metadata for albums.photos");
+    }
+
     const backgroundImagesField = fields.find(
       (field) =>
         field.collection === "site_settings" &&
@@ -318,6 +364,44 @@ async function main() {
       );
     }
 
+    const directusSettings = await db.get(
+      [
+        "select",
+        `${quoteIdent("storage_asset_transform")}, ${quoteIdent(
+          "storage_asset_presets"
+        )}`,
+        `from ${db.tableRef("directus_settings")}`,
+        "limit 1"
+      ].join(" ")
+    );
+    const assetPresets = jsonArray(directusSettings?.storage_asset_presets);
+    for (const key of ["album-cover", "album-thumb"]) {
+      if (!assetPresets.some((preset) => preset?.key === key)) {
+        throw new Error(`Missing Directus asset preset: ${key}`);
+      }
+    }
+    if (!["all", "presets"].includes(directusSettings?.storage_asset_transform)) {
+      throw new Error("Directus asset transformations are not enabled");
+    }
+
+    const albumPublishedDefault =
+      db.type === "pg"
+        ? await db.get(
+            [
+              "select column_default",
+              "from information_schema.columns",
+              "where table_schema = $1 and table_name = $2 and column_name = $3"
+            ].join(" "),
+            [db.schema, "albums", "published"]
+          )
+        : await db.get(
+            "select dflt_value as column_default from pragma_table_info('albums') where name = ?",
+            ["published"]
+          );
+    if (!/^(?:true|1)$/i.test(String(albumPublishedDefault?.column_default))) {
+      throw new Error("albums.published does not default to true");
+    }
+
     console.log(`database=${db.path}`);
     console.log(`db_client=${db.type}`);
     console.log(`directus_collections=${collections.length}`);
@@ -349,4 +433,21 @@ function permissionFields(value) {
     .split(",")
     .map((field) => field.trim())
     .filter(Boolean);
+}
+
+function jsonArray(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
 }

@@ -1,4 +1,5 @@
 export type DirectusFileId = string | null;
+export type AlbumAssetPreset = "album-cover" | "album-thumb";
 
 export type Post = {
   id: number;
@@ -77,6 +78,34 @@ export type VideoProject = {
   masters?: VideoMaster[];
 };
 
+export type AlbumPhoto = {
+  id: number;
+  album_id: number | { id: number };
+  sdr_image: DirectusFileId;
+  hdr_image: DirectusFileId;
+  caption: string | null;
+  alt_text: string | null;
+  hdr_transfer: "pq" | "hlg" | null;
+  hdr_primaries: string | null;
+  hdr_bit_depth: number | null;
+  published: boolean | number;
+  sort_order: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type Album = {
+  id: number;
+  title: string;
+  slug: string;
+  description: string | null;
+  cover_image: DirectusFileId;
+  published: boolean | number;
+  created_at: string | null;
+  updated_at: string | null;
+  photos?: AlbumPhoto[];
+};
+
 type DirectusListResponse<T> = {
   data: T[];
 };
@@ -98,6 +127,12 @@ const VIDEO_LIST_FIELDS =
   "masters.id,masters.label,masters.type,masters.hls_url,masters.is_default,masters.sort_order";
 const VIDEO_DETAIL_FIELDS =
   "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at,masters.*";
+const ALBUM_LIST_FIELDS =
+  "id,title,slug,description,cover_image,published,created_at,updated_at," +
+  "photos.id,photos.album_id,photos.sdr_image,photos.hdr_image,photos.caption," +
+  "photos.alt_text,photos.hdr_transfer,photos.hdr_primaries,photos.hdr_bit_depth," +
+  "photos.published,photos.sort_order,photos.created_at,photos.updated_at";
+const ALBUM_DETAIL_FIELDS = ALBUM_LIST_FIELDS;
 
 /* ---- Config ---- */
 let cachedToken: string | null = null;
@@ -187,9 +222,24 @@ async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function assetUrl(fileId: DirectusFileId) {
+export function assetUrl(
+  fileId: DirectusFileId,
+  preset?: AlbumAssetPreset,
+) {
   if (!fileId) return null;
-  return `/api/assets/${fileId}`;
+  if (preset && preset !== "album-cover" && preset !== "album-thumb") {
+    throw new Error(`Unsupported asset preset: ${preset}`);
+  }
+  const suffix = preset ? `?key=${encodeURIComponent(preset)}` : "";
+  return `/api/assets/${fileId}${suffix}`;
+}
+
+export function albumPictureSources(photo: Pick<AlbumPhoto, "sdr_image" | "hdr_image">) {
+  return {
+    thumbnail: assetUrl(photo.sdr_image, "album-thumb"),
+    sdr: assetUrl(photo.sdr_image),
+    hdr: assetUrl(photo.hdr_image),
+  };
 }
 
 export function mediaUrl(pathname: string | null | undefined) {
@@ -257,6 +307,53 @@ export async function getVideoProject(slug: string) {
   );
   const project = response.data[0] ?? null;
   return project ? sortMasters(project) : null;
+}
+
+export function filterPublishedAlbums(albums: Album[]) {
+  return albums
+    .filter(isPublished)
+    .map((album) => ({
+      ...album,
+      photos: [...(album.photos ?? [])]
+        .filter(isPublished)
+        .sort((left, right) => {
+          const orderDifference =
+            (left.sort_order ?? 0) - (right.sort_order ?? 0);
+          return orderDifference || left.id - right.id;
+        }),
+    }));
+}
+
+function addPublicAlbumFilters(params: URLSearchParams) {
+  params.set("filter[published][_eq]", "true");
+  params.set("deep[photos][_filter][published][_eq]", "true");
+  params.set("deep[photos][_sort]", "sort_order,id");
+}
+
+export async function getAlbums(limit = 100) {
+  const params = new URLSearchParams({
+    fields: ALBUM_LIST_FIELDS,
+    sort: "-created_at,-id",
+    limit: String(limit),
+  });
+  addPublicAlbumFilters(params);
+  const response = await directusFetch<DirectusListResponse<Album>>(
+    `/items/albums?${params.toString()}`,
+  );
+  return filterPublishedAlbums(response.data);
+}
+
+export async function getAlbum(slug: string) {
+  const params = new URLSearchParams({
+    fields: ALBUM_DETAIL_FIELDS,
+    "filter[slug][_eq]": slug,
+    limit: "1",
+  });
+  addPublicAlbumFilters(params);
+  const response = await directusFetch<DirectusListResponse<Album>>(
+    `/items/albums?${params.toString()}`,
+  );
+  return filterPublishedAlbums(response.data)[0] ?? null;
 }
 
 export type SiteSettings = {

@@ -15,6 +15,17 @@ const NAV_LINKS = [
     ),
   },
   {
+    href: "/albums",
+    label: "相簿",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <circle cx="9" cy="10" r="2" />
+        <path d="m4 17 4-4 3 3 2-2 6 6" />
+      </svg>
+    ),
+  },
+  {
     href: "/posts",
     label: "文章",
     icon: (

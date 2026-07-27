@@ -95,12 +95,76 @@ async function deleteItem(token, collection, id) {
   });
 }
 
+async function deleteFile(token, id) {
+  await request(`/files/${id}`, {
+    method: "DELETE",
+    token
+  });
+}
+
+async function uploadTestImage(token, suffix) {
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64"
+  );
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([png], { type: "image/png" }),
+    `schema-test-photo-${suffix}.png`
+  );
+  form.append("title", "Schema Test Album Photo");
+
+  const response = await fetch(`${baseUrl}/files`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: form
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+
+  if (!response.ok || !data?.data?.id) {
+    const message = data?.errors?.[0]?.message || text || response.statusText;
+    throw new Error(`POST /files failed: ${response.status} ${message}`);
+  }
+
+  return data.data;
+}
+
 async function main() {
   const token = await login();
   const suffix = Date.now();
   const created = {};
 
   try {
+    created.albumFile = await uploadTestImage(token, suffix);
+    created.album = await createItem(token, "albums", {
+      title: "Schema Test Album",
+      slug: `schema-test-album-${suffix}`,
+      description: "Temporary photo album validation item.",
+      cover_image: created.albumFile.id,
+      published: false
+    });
+    created.albumPhoto = await createItem(token, "album_photos", {
+      album_id: created.album.id,
+      sdr_image: created.albumFile.id,
+      caption: "Temporary album photo.",
+      alt_text: "A one-pixel schema test image.",
+      published: false,
+      sort_order: 10
+    });
+    created.albumFileTwo = await uploadTestImage(token, `${suffix}-two`);
+    created.albumPhotoTwo = await createItem(token, "album_photos", {
+      album_id: created.album.id,
+      sdr_image: created.albumFileTwo.id,
+      caption: "Earlier sorted temporary album photo.",
+      alt_text: "A second one-pixel schema test image.",
+      published: true,
+      sort_order: 2
+    });
+
     created.post = await createItem(token, "posts", {
       title: "Schema Test Post",
       slug: `schema-test-post-${suffix}`,
@@ -140,11 +204,68 @@ async function main() {
       throw new Error("Created video master was not returned through video_projects.masters relation.");
     }
 
+    const album = await request(
+      `/items/albums/${created.album.id}?fields=id,title,photos.id,photos.caption`,
+      { token }
+    );
+    const photos = album.data.photos || [];
+    if (!photos.some((photo) => photo.id === created.albumPhoto.id)) {
+      throw new Error("Created album photo was not returned through albums.photos relation.");
+    }
+    if (!photos.some((photo) => photo.id === created.albumPhotoTwo.id)) {
+      throw new Error("Second album photo was not returned through albums.photos relation.");
+    }
+
+    const sortedPhotos = await request(
+      `/items/album_photos?filter[album_id][_eq]=${created.album.id}&fields=id,sort_order&sort=sort_order,id`,
+      { token }
+    );
+    if (
+      sortedPhotos.data?.[0]?.id !== created.albumPhotoTwo.id ||
+      sortedPhotos.data?.[1]?.id !== created.albumPhoto.id
+    ) {
+      throw new Error("Album photos were not returned in sort_order order.");
+    }
+
+    await deleteItem(token, "albums", created.album.id);
+    created.albumDeleted = true;
+    for (const photoId of [created.albumPhoto.id, created.albumPhotoTwo.id]) {
+      const deletedPhoto = await request(
+        `/items/album_photos?filter[id][_eq]=${photoId}&fields=id&limit=1`,
+        { token }
+      );
+      if (deletedPhoto.data?.length) {
+        throw new Error(`Album photo ${photoId} survived its parent album deletion.`);
+      }
+    }
+
+    console.log(`album_created=${created.album.id}`);
+    console.log(`album_photo_created=${created.albumPhoto.id}`);
+    console.log(`album_photo_sorted=${created.albumPhotoTwo.id}`);
+    console.log("album_photo_cascade=ok");
     console.log(`post_created=${created.post.id}`);
     console.log(`video_project_created=${created.project.id}`);
     console.log(`video_master_created=${created.master.id}`);
     console.log("cms_crud=ok");
   } finally {
+    if (created.albumPhoto?.id) {
+      await deleteItem(token, "album_photos", created.albumPhoto.id).catch(() => {});
+    }
+    if (created.albumPhotoTwo?.id) {
+      await deleteItem(token, "album_photos", created.albumPhotoTwo.id).catch(() => {});
+    }
+
+    if (created.album?.id && !created.albumDeleted) {
+      await deleteItem(token, "albums", created.album.id).catch(() => {});
+    }
+
+    if (created.albumFile?.id) {
+      await deleteFile(token, created.albumFile.id).catch(() => {});
+    }
+    if (created.albumFileTwo?.id) {
+      await deleteFile(token, created.albumFileTwo.id).catch(() => {});
+    }
+
     if (created.master?.id) {
       await deleteItem(token, "video_masters", created.master.id).catch(() => {});
     }

@@ -6,6 +6,21 @@ const http = require("node:http");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { Readable } = require("node:stream");
+const {
+  HDR_IMAGE_MIME_EXTENSIONS,
+  SDR_IMAGE_MIME_EXTENSIONS,
+  detectImageMime,
+  manifestPhotoPairKey,
+  pairAlbumFiles,
+  reconcileAlbumBatchResources,
+  rollbackAlbumBatch,
+  validateAlbumBatchLimits,
+  validateHdrProbe,
+  validateImageMetadata,
+  validatePairedAspectRatio,
+  validateSdrProbe
+} = require("./album-utils.cjs");
+const { createDirectusTokenCache } = require("./directus-auth.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(ROOT, "..", "..");
@@ -43,6 +58,15 @@ const MAX_ARTICLE_MARKDOWN_BYTES = positiveInteger(
   2 * 1024 * 1024
 );
 const MAX_ARTICLE_IMAGES = positiveInteger(env.MAX_ARTICLE_IMAGES, 24);
+const MAX_ALBUM_UPLOAD_BYTES = positiveInteger(
+  env.MAX_ALBUM_UPLOAD_BYTES,
+  512 * 1024 * 1024
+);
+const MAX_ALBUM_IMAGE_BYTES = positiveInteger(
+  env.MAX_ALBUM_IMAGE_BYTES,
+  64 * 1024 * 1024
+);
+const MAX_ALBUM_PHOTOS = positiveInteger(env.MAX_ALBUM_PHOTOS, 24);
 const FFMPEG_PATH = env.FFMPEG_PATH || resolveOptionalPackage("ffmpeg-static") || "ffmpeg";
 const FFPROBE_PATH =
   env.FFPROBE_PATH || resolveOptionalPackage("ffprobe-static", "path") || "ffprobe";
@@ -63,6 +87,7 @@ const ARTICLE_IMAGE_MIME_EXTENSIONS = new Map([
 const ARTICLE_IMAGE_PREFIX = "article-image://";
 const ARTICLE_IMAGE_TARGET_PATTERN =
   /!\[([^\]\r\n]*)\]\(article-image:\/\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,127})\)/g;
+const ALBUM_ASSET_PRESETS = new Set(["album-cover", "album-thumb"]);
 const COLOR_REQUIRED_FIELDS = [
   "colorPrimaries",
   "colorTransfer",
@@ -173,6 +198,29 @@ function requireArticleAuth(req) {
   }
 
   throw httpError(401, "Missing or invalid article API token.");
+}
+
+function requireAlbumAuth(req) {
+  if (!UPLOAD_API_TOKEN) {
+    throw httpError(
+      503,
+      "Album management is disabled until UPLOAD_API_TOKEN is configured."
+    );
+  }
+
+  const authorization = String(req.headers.authorization || "");
+  const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
+  const bearer = bearerMatch ? bearerMatch[1].trim() : "";
+  const uploadToken = String(req.headers["x-upload-token"] || "").trim();
+
+  if (
+    tokenMatches(bearer, UPLOAD_API_TOKEN) ||
+    tokenMatches(uploadToken, UPLOAD_API_TOKEN)
+  ) {
+    return;
+  }
+
+  throw httpError(401, "Missing or invalid album management token.");
 }
 
 function parseBoolean(value, fallback = false) {
@@ -691,6 +739,252 @@ function detectArticleImageMime(buffer) {
   }
 
   return null;
+}
+
+async function parseAlbumMultipart(req) {
+  const contentTypeHeader = String(req.headers["content-type"] || "");
+  if (!contentTypeHeader.toLowerCase().startsWith("multipart/form-data")) {
+    throw httpError(415, "Album photo uploads must use multipart/form-data.");
+  }
+
+  const declaredLength = Number(req.headers["content-length"] || 0);
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_ALBUM_UPLOAD_BYTES
+  ) {
+    throw httpError(
+      413,
+      `Album upload exceeds ${MAX_ALBUM_UPLOAD_BYTES} bytes.`
+    );
+  }
+
+  const tempDir = path.join(ROOT, "tmp", `album-${crypto.randomUUID()}`);
+  await fsp.mkdir(tempDir, { recursive: true });
+
+  return new Promise((resolve, reject) => {
+    const fields = Object.create(null);
+    const files = { sdrFiles: [], hdrFiles: [] };
+    const pendingWrites = [];
+    const activeWrites = new Set();
+    let fileSequence = 0;
+    let requestBytes = 0;
+    let settled = false;
+    let busboy;
+
+    try {
+      busboy = Busboy({
+        headers: req.headers,
+        limits: {
+          files: MAX_ALBUM_PHOTOS * 2,
+          fields: 2,
+          fileSize: MAX_ALBUM_IMAGE_BYTES,
+          fieldSize: 512 * 1024,
+          parts: MAX_ALBUM_PHOTOS * 2 + 2
+        }
+      });
+    } catch (error) {
+      fsp.rm(tempDir, { recursive: true, force: true }).finally(() => {
+        reject(httpError(400, `Invalid multipart request: ${error.message}`));
+      });
+      return;
+    }
+
+    const removeRequestListeners = () => {
+      req.off("data", onRequestData);
+      req.off("aborted", onRequestAborted);
+    };
+
+    const rejectOnce = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      req.unpipe(busboy);
+      removeRequestListeners();
+      for (const writeStream of activeWrites) {
+        writeStream.destroy(error);
+      }
+      if (!req.complete) {
+        req.resume();
+      }
+
+      Promise.allSettled(pendingWrites)
+        .then(() => fsp.rm(tempDir, { recursive: true, force: true }))
+        .finally(() => reject(error));
+    };
+
+    function onRequestData(chunk) {
+      requestBytes += chunk.length;
+      if (requestBytes > MAX_ALBUM_UPLOAD_BYTES) {
+        rejectOnce(
+          httpError(
+            413,
+            `Album upload exceeds ${MAX_ALBUM_UPLOAD_BYTES} bytes.`
+          )
+        );
+      }
+    }
+
+    function onRequestAborted() {
+      rejectOnce(httpError(400, "Album photo upload was interrupted."));
+    }
+
+    busboy.on("field", (name, value, info) => {
+      if (info.valueTruncated) {
+        rejectOnce(httpError(413, `Album field ${name} is too large.`));
+        return;
+      }
+      if (name === "manifest") {
+        fields.manifest = value;
+      }
+    });
+
+    busboy.on("file", (name, file, info) => {
+      if (settled) {
+        file.resume();
+        return;
+      }
+
+      if (name !== "sdrFiles" && name !== "hdrFiles") {
+        file.resume();
+        return;
+      }
+
+      const targetFiles = files[name];
+      if (targetFiles.length >= MAX_ALBUM_PHOTOS) {
+        file.resume();
+        rejectOnce(
+          httpError(
+            413,
+            `At most ${MAX_ALBUM_PHOTOS} ${name === "sdrFiles" ? "SDR" : "HDR"} photos are allowed.`
+          )
+        );
+        return;
+      }
+
+      try {
+        validateImageMetadata(
+          info,
+          name === "sdrFiles"
+            ? SDR_IMAGE_MIME_EXTENSIONS
+            : HDR_IMAGE_MIME_EXTENSIONS,
+          name === "sdrFiles" ? "SDR" : "HDR"
+        );
+      } catch (error) {
+        file.resume();
+        rejectOnce(httpError(415, error.message));
+        return;
+      }
+
+      fileSequence += 1;
+      const originalName = path.basename(String(info.filename || "image"));
+      const filename = safeFileName(originalName);
+      const tempPath = path.join(tempDir, `${fileSequence}-${filename}`);
+      assertInside(tempDir, tempPath);
+      const writeStream = fs.createWriteStream(tempPath);
+      activeWrites.add(writeStream);
+
+      const currentFile = {
+        field: name,
+        filename,
+        originalName,
+        mimeType: String(info.mimeType || "").toLowerCase(),
+        tempPath,
+        tempDir,
+        size: 0
+      };
+      targetFiles.push(currentFile);
+
+      file.on("data", (chunk) => {
+        currentFile.size += chunk.length;
+      });
+      file.on("limit", () => {
+        rejectOnce(
+          httpError(
+            413,
+            `Image ${originalName} exceeds ${MAX_ALBUM_IMAGE_BYTES} bytes.`
+          )
+        );
+      });
+      file.on("error", rejectOnce);
+      writeStream.on("error", rejectOnce);
+      writeStream.on("close", () => activeWrites.delete(writeStream));
+
+      pendingWrites.push(
+        new Promise((resolveWrite, rejectWrite) => {
+          writeStream.on("finish", resolveWrite);
+          writeStream.on("error", rejectWrite);
+        })
+      );
+
+      file.pipe(writeStream);
+    });
+
+    busboy.on("filesLimit", () => {
+      rejectOnce(
+        httpError(
+          413,
+          `At most ${MAX_ALBUM_PHOTOS} SDR/HDR photo pairs are allowed.`
+        )
+      );
+    });
+    busboy.on("fieldsLimit", () =>
+      rejectOnce(httpError(413, "Too many album upload fields."))
+    );
+    busboy.on("partsLimit", () =>
+      rejectOnce(httpError(413, "Too many album upload parts."))
+    );
+    busboy.on("error", (error) => {
+      rejectOnce(httpError(400, `Invalid multipart request: ${error.message}`));
+    });
+    busboy.on("finish", async () => {
+      if (settled) {
+        return;
+      }
+
+      try {
+        await Promise.all(pendingWrites);
+        await Promise.all(
+          [...files.sdrFiles, ...files.hdrFiles].map(assertAlbumImageContents)
+        );
+        settled = true;
+        removeRequestListeners();
+        resolve({ fields, files, tempDir });
+      } catch (error) {
+        rejectOnce(error);
+      }
+    });
+
+    req.on("data", onRequestData);
+    req.once("aborted", onRequestAborted);
+    req.pipe(busboy);
+  });
+}
+
+async function assertAlbumImageContents(file) {
+  if (!file.size) {
+    throw httpError(400, `Image ${file.originalName} is empty.`);
+  }
+
+  const handle = await fsp.open(file.tempPath, "r");
+  const signature = Buffer.alloc(64);
+  let bytesRead = 0;
+  try {
+    ({ bytesRead } = await handle.read(signature, 0, signature.length, 0));
+  } finally {
+    await handle.close();
+  }
+
+  const detectedMimeType = detectImageMime(
+    signature.subarray(0, bytesRead)
+  );
+  if (detectedMimeType !== file.mimeType) {
+    throw httpError(
+      415,
+      `Image ${file.originalName} does not match its declared MIME type.`
+    );
+  }
 }
 
 function normalizeArticleUpload(fields, files) {
@@ -2477,23 +2771,40 @@ function inferBitDepth(probe, masterType) {
 }
 
 async function directusRequest(pathname, token, options = {}) {
-  const method = String(options.method || "GET").toUpperCase();
+  const {
+    directusAuthRetried = false,
+    ...requestOptions
+  } = options;
+  const method = String(requestOptions.method || "GET").toUpperCase();
   let response;
   try {
     response = await fetch(`${DIRECTUS_URL}${pathname}`, {
-      ...options,
+      ...requestOptions,
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(options.headers || {})
+        ...(requestOptions.headers || {})
       },
       body:
-        options.body && typeof options.body !== "string"
-          ? JSON.stringify(options.body)
-          : options.body
+        requestOptions.body && typeof requestOptions.body !== "string"
+          ? JSON.stringify(requestOptions.body)
+          : requestOptions.body
     });
   } catch (cause) {
     throw directusTransportError(method, pathname, cause);
+  }
+
+  if (
+    token &&
+    !directusAuthRetried &&
+    [401, 403].includes(response.status)
+  ) {
+    await response.arrayBuffer().catch(() => {});
+    const refreshedToken = await refreshDirectusLogin(token);
+    return directusRequest(pathname, refreshedToken, {
+      ...requestOptions,
+      directusAuthRetried: true
+    });
   }
 
   let text;
@@ -2573,65 +2884,117 @@ function directusTransportError(method, pathname, cause) {
   return error;
 }
 
-async function directusUploadFile(token, file, title) {
+async function directusUploadFile(token, file, title, options = {}) {
   if (!file) {
     return null;
   }
 
   const buffer = await fsp.readFile(file.tempPath);
-  const form = new FormData();
-  form.append(
-    "file",
-    new Blob([buffer], { type: file.mimeType || "application/octet-stream" }),
-    file.filename
-  );
+  const reconciliationTag = String(options.reconciliationTag || "").trim();
 
-  if (title) {
-    form.append("title", title);
+  async function upload(accessToken, authRetried = false) {
+    const form = new FormData();
+    if (title) {
+      form.append("title", title);
+    }
+    if (reconciliationTag) {
+      form.append("description", reconciliationTag);
+    }
+    form.append(
+      "file",
+      new Blob([buffer], { type: file.mimeType || "application/octet-stream" }),
+      file.filename
+    );
+
+    let response;
+    try {
+      response = await fetch(`${DIRECTUS_URL}/files`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: form
+      });
+    } catch (cause) {
+      throw directusTransportError("POST", "/files", cause);
+    }
+
+    if (
+      !authRetried &&
+      [401, 403].includes(response.status)
+    ) {
+      await response.arrayBuffer().catch(() => {});
+      const refreshedToken = await refreshDirectusLogin(accessToken);
+      return upload(refreshedToken, true);
+    }
+
+    let text;
+    try {
+      text = await response.text();
+    } catch (cause) {
+      const error = directusTransportError("POST", "/files", cause);
+      error.directusResponseStatus = response.status;
+      throw error;
+    }
+
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (cause) {
+      const error = httpError(502, "Directus file upload returned invalid JSON.");
+      error.directusRequestSent = true;
+      error.directusResponseStatus = response.status;
+      error.directusAmbiguous = response.ok;
+      error.cause = cause;
+      throw error;
+    }
+
+    if (!response.ok) {
+      const message = data?.errors?.[0]?.message || text || response.statusText;
+      const error = httpError(response.status, `Directus file upload failed: ${message}`);
+      error.directusHttpStatus = response.status;
+      error.directusRequestSent = true;
+      throw error;
+    }
+
+    if (!data?.data?.id) {
+      const error = httpError(
+        502,
+        "Directus file upload response did not include a file id."
+      );
+      error.directusRequestSent = true;
+      error.directusResponseStatus = response.status;
+      error.directusAmbiguous = true;
+      throw error;
+    }
+
+    return data.data.id;
   }
 
-  let response;
   try {
-    response = await fetch(`${DIRECTUS_URL}/files`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`
-      },
-      body: form
-    });
-  } catch (cause) {
-    throw directusTransportError("POST", "/files", cause);
-  }
-
-  const text = await response.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch (cause) {
-    const error = httpError(502, "Directus file upload returned invalid JSON.");
-    error.directusRequestSent = true;
-    error.directusResponseStatus = response.status;
-    error.cause = cause;
+    return await upload(token);
+  } catch (error) {
+    if (error.directusAmbiguous && reconciliationTag) {
+      try {
+        const reconciledFileId = await findDirectusFileByUploadTag(
+          token,
+          reconciliationTag
+        );
+        if (reconciledFileId) {
+          return reconciledFileId;
+        }
+      } catch (reconciliationError) {
+        error.reconciliationError = reconciliationError;
+      }
+    }
     throw error;
   }
-
-  if (!response.ok) {
-    const message = data?.errors?.[0]?.message || text || response.statusText;
-    const error = httpError(response.status, `Directus file upload failed: ${message}`);
-    error.directusHttpStatus = response.status;
-    error.directusRequestSent = true;
-    throw error;
-  }
-
-  if (!data?.data?.id) {
-    throw httpError(502, "Directus file upload response did not include a file id.");
-  }
-
-  return data.data.id;
 }
 
-async function directusLogin() {
-  try {
+const DIRECTUS_TOKEN_SAFETY_MARGIN_MS = 30_000;
+const DIRECTUS_TOKEN_FALLBACK_TTL_MS = 5 * 60_000;
+const directusTokenCache = createDirectusTokenCache({
+  login: async () => {
     const data = await directusRequest("/auth/login", null, {
       method: "POST",
       body: {
@@ -2639,18 +3002,40 @@ async function directusLogin() {
         password: DIRECTUS_PASSWORD
       }
     });
+    return {
+      token: data?.data?.access_token,
+      expiresIn: data?.data?.expires
+    };
+  },
+  safetyMarginMs: DIRECTUS_TOKEN_SAFETY_MARGIN_MS,
+  fallbackTtlMs: DIRECTUS_TOKEN_FALLBACK_TTL_MS
+});
 
-    if (!data?.data?.access_token) {
-      throw httpError(502, "Directus login response did not include an access token.");
-    }
-    return data.data.access_token;
+function normalizeDirectusLoginError(error) {
+  if ([401, 403].includes(error.directusHttpStatus || error.statusCode)) {
+    const upstreamError = httpError(
+      502,
+      "Directus service authentication failed."
+    );
+    upstreamError.cause = error;
+    return upstreamError;
+  }
+  return error;
+}
+
+async function directusLogin() {
+  try {
+    return await directusTokenCache.get();
   } catch (error) {
-    if ([401, 403].includes(error.directusHttpStatus || error.statusCode)) {
-      const upstreamError = httpError(502, "Directus service authentication failed.");
-      upstreamError.cause = error;
-      throw upstreamError;
-    }
-    throw error;
+    throw normalizeDirectusLoginError(error);
+  }
+}
+
+async function refreshDirectusLogin(failedToken) {
+  try {
+    return await directusTokenCache.refresh(failedToken);
+  } catch (error) {
+    throw normalizeDirectusLoginError(error);
   }
 }
 
@@ -2943,6 +3328,1121 @@ async function handleArticleCreate(req, res) {
   } finally {
     if (parsed?.tempDir) {
       await fsp.rm(parsed.tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+const ALBUM_ITEM_FIELDS = [
+  "id",
+  "title",
+  "slug",
+  "description",
+  "cover_image",
+  "published",
+  "created_at",
+  "updated_at"
+].join(",");
+
+const ALBUM_PHOTO_FIELDS = [
+  "id",
+  "album_id",
+  "sdr_image",
+  "hdr_image",
+  "caption",
+  "alt_text",
+  "hdr_transfer",
+  "hdr_primaries",
+  "hdr_bit_depth",
+  "published",
+  "sort_order",
+  "created_at",
+  "updated_at"
+].join(",");
+
+function normalizeAlbumId(value, label = "album id") {
+  const text = String(value ?? "").trim();
+  if (!/^[1-9]\d*$/.test(text)) {
+    throw httpError(400, `${label} must be a positive integer.`);
+  }
+  return text;
+}
+
+function normalizeAlbumText(value, field, maxLength, options = {}) {
+  const text = String(value ?? "").trim();
+  if (options.required && !text) {
+    throw httpError(400, `${field} is required.`);
+  }
+  if (text.length > maxLength) {
+    throw httpError(400, `${field} must be ${maxLength} characters or fewer.`);
+  }
+  return text || null;
+}
+
+function parseAlbumBoolean(value, fallback, field = "published") {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  throw httpError(400, `${field} must be a boolean.`);
+}
+
+function slugifyAlbumTitle(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 200)
+    .replace(/-+$/g, "");
+}
+
+function fallbackAlbumSlug() {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  return `album-${date}-${crypto.randomBytes(4).toString("hex")}`;
+}
+
+async function findAlbumBySlug(token, slug) {
+  const params = new URLSearchParams({
+    "filter[slug][_eq]": slug,
+    fields: ALBUM_ITEM_FIELDS,
+    limit: "1"
+  });
+  const data = await directusRequest(`/items/albums?${params.toString()}`, token);
+  return data.data?.[0] || null;
+}
+
+async function getAlbumById(token, albumId) {
+  try {
+    const data = await directusRequest(
+      `/items/albums/${encodeURIComponent(albumId)}?fields=${encodeURIComponent(ALBUM_ITEM_FIELDS)}`,
+      token
+    );
+    return data.data;
+  } catch (error) {
+    if ((error.directusHttpStatus || error.statusCode) === 404) {
+      throw httpError(404, `Album ${albumId} was not found.`);
+    }
+    throw error;
+  }
+}
+
+async function getAlbumPhoto(token, albumId, photoId) {
+  let photo;
+  try {
+    const data = await directusRequest(
+      `/items/album_photos/${encodeURIComponent(photoId)}?fields=${encodeURIComponent(ALBUM_PHOTO_FIELDS)}`,
+      token
+    );
+    photo = data.data;
+  } catch (error) {
+    if ((error.directusHttpStatus || error.statusCode) === 404) {
+      throw httpError(404, `Album photo ${photoId} was not found.`);
+    }
+    throw error;
+  }
+
+  if (String(directusRelationId(photo.album_id)) !== String(albumId)) {
+    throw httpError(404, `Album photo ${photoId} was not found in album ${albumId}.`);
+  }
+  return photo;
+}
+
+async function listAlbumPhotos(token, albumId) {
+  const params = new URLSearchParams({
+    "filter[album_id][_eq]": albumId,
+    fields: ALBUM_PHOTO_FIELDS,
+    sort: "sort_order,id",
+    limit: "-1"
+  });
+  const data = await directusRequest(
+    `/items/album_photos?${params.toString()}`,
+    token
+  );
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+function albumUploadTag(batchId, index, rendition) {
+  return `album-upload:${batchId}:${index}:${rendition}`;
+}
+
+async function findDirectusFileByUploadTag(token, reconciliationTag) {
+  const params = new URLSearchParams({
+    "filter[description][_eq]": reconciliationTag,
+    fields: "id,description",
+    limit: "2"
+  });
+  const data = await directusRequest(`/files?${params.toString()}`, token);
+  const files = Array.isArray(data.data) ? data.data : [];
+  if (files.length > 1) {
+    throw httpError(
+      409,
+      `Multiple Directus files use reconciliation tag ${reconciliationTag}.`
+    );
+  }
+  return directusFileId(files[0]?.id);
+}
+
+async function findAlbumPhotoBySdrFile(token, albumId, sdrFileId) {
+  const params = new URLSearchParams({
+    "filter[album_id][_eq]": albumId,
+    "filter[sdr_image][_eq]": sdrFileId,
+    fields: ALBUM_PHOTO_FIELDS,
+    limit: "2"
+  });
+  const data = await directusRequest(
+    `/items/album_photos?${params.toString()}`,
+    token
+  );
+  const photos = Array.isArray(data.data) ? data.data : [];
+  if (photos.length > 1) {
+    throw httpError(
+      409,
+      `Multiple album photos reference SDR file ${sdrFileId}.`
+    );
+  }
+  return photos[0] || null;
+}
+
+async function findAlbumPhotosBySdrFiles(token, albumId, sdrFileIds) {
+  const uniqueIds = [...new Set(sdrFileIds.filter(Boolean).map(String))];
+  if (!uniqueIds.length) {
+    return [];
+  }
+  const params = new URLSearchParams({
+    "filter[album_id][_eq]": albumId,
+    "filter[sdr_image][_in]": uniqueIds.join(","),
+    fields: ALBUM_PHOTO_FIELDS,
+    limit: "-1"
+  });
+  const data = await directusRequest(
+    `/items/album_photos?${params.toString()}`,
+    token
+  );
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+function directusRelationId(value) {
+  if (value && typeof value === "object") {
+    return value.id ?? null;
+  }
+  return value ?? null;
+}
+
+function serializeManagedAlbum(album) {
+  const photos = Array.isArray(album.photos)
+    ? [...album.photos].sort((left, right) => {
+        const orderDifference =
+          Number(left?.sort_order || 0) - Number(right?.sort_order || 0);
+        return orderDifference || Number(left?.id || 0) - Number(right?.id || 0);
+      })
+    : [];
+  const publishedPhotos = photos.filter((photo) =>
+    parseBoolean(photo?.published, false)
+  );
+  return {
+    id: album.id,
+    title: album.title || "",
+    slug: album.slug || "",
+    description: album.description || "",
+    coverImage: directusFileId(album.cover_image),
+    published: parseBoolean(album.published, false),
+    photoCount: photos.length,
+    publishedPhotoCount: publishedPhotos.length,
+    hdrPhotoCount: photos.filter((photo) => directusFileId(photo?.hdr_image)).length,
+    photos: photos.map(serializeManagedPhoto),
+    createdAt: album.created_at || null,
+    updatedAt: album.updated_at || null,
+    url: `/albums/${album.slug}`
+  };
+}
+
+async function handleAlbumManageList(res) {
+  const token = await directusLogin();
+  const fields = [
+    ALBUM_ITEM_FIELDS,
+    ...ALBUM_PHOTO_FIELDS.split(",").map((field) => `photos.${field}`)
+  ].join(",");
+  const params = new URLSearchParams({
+    fields,
+    sort: "-created_at,-id",
+    "deep[photos][_sort]": "sort_order,id",
+    limit: "-1"
+  });
+  const data = await directusRequest(`/items/albums?${params.toString()}`, token);
+  const albums = Array.isArray(data.data)
+    ? data.data.map(serializeManagedAlbum)
+    : [];
+
+  sendJson(res, 200, { status: "ok", albums });
+}
+
+async function createUniqueAlbumSlug(token, title, requestedSlug) {
+  const explicitSlug = String(requestedSlug ?? "").trim().toLowerCase();
+  if (explicitSlug) {
+    if (explicitSlug.length > 200) {
+      throw httpError(400, "slug must be 200 characters or fewer.");
+    }
+    validateSlug(explicitSlug);
+    if (await findAlbumBySlug(token, explicitSlug)) {
+      throw httpError(409, `An album with slug ${explicitSlug} already exists.`);
+    }
+    return explicitSlug;
+  }
+
+  const base = slugifyAlbumTitle(title) || fallbackAlbumSlug();
+  if (!(await findAlbumBySlug(token, base))) {
+    return base;
+  }
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const suffix = crypto.randomBytes(3).toString("hex");
+    const candidate = `${base.slice(0, 193).replace(/-+$/g, "")}-${suffix}`;
+    if (!(await findAlbumBySlug(token, candidate))) {
+      return candidate;
+    }
+  }
+  throw httpError(409, "Could not generate a unique album slug.");
+}
+
+async function handleAlbumCreate(req, res) {
+  const body = await readJsonBody(req);
+  const title = normalizeAlbumText(body.title, "title", 200, { required: true });
+  const description = normalizeAlbumText(body.description, "description", 5000);
+  const published = parseAlbumBoolean(body.published, true);
+  const token = await directusLogin();
+  const slug = await createUniqueAlbumSlug(token, title, body.slug);
+  const now = new Date().toISOString();
+
+  try {
+    const result = await directusRequest("/items/albums", token, {
+      method: "POST",
+      body: {
+        title,
+        slug,
+        description,
+        published,
+        cover_image: null,
+        created_at: now,
+        updated_at: now
+      }
+    });
+    const album = result.data;
+    sendJson(res, 201, {
+      status: "ok",
+      album: serializeManagedAlbum({ ...album, photos: [] })
+    });
+  } catch (error) {
+    if (
+      [400, 409, 422].includes(error.directusHttpStatus || error.statusCode) &&
+      /(?:unique|duplicate)/i.test(error.message || "")
+    ) {
+      throw httpError(409, `An album with slug ${slug} already exists.`);
+    }
+    throw error;
+  }
+}
+
+function pickAlbumPatch(body) {
+  const patch = {};
+  if (Object.prototype.hasOwnProperty.call(body, "title")) {
+    patch.title = normalizeAlbumText(body.title, "title", 200, { required: true });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "description")) {
+    patch.description = normalizeAlbumText(body.description, "description", 5000);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "published")) {
+    patch.published = parseAlbumBoolean(body.published, false);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "slug")) {
+    throw httpError(400, "Album slugs cannot be changed after creation.");
+  }
+  if (!Object.keys(patch).length) {
+    throw httpError(400, "No editable album fields were provided.");
+  }
+  return patch;
+}
+
+async function handleAlbumPatch(req, res, albumId) {
+  const body = await readJsonBody(req);
+  const patch = pickAlbumPatch(body);
+  const token = await directusLogin();
+  await getAlbumById(token, albumId);
+  const result = await directusRequest(
+    `/items/albums/${encodeURIComponent(albumId)}`,
+    token,
+    {
+      method: "PATCH",
+      body: { ...patch, updated_at: new Date().toISOString() }
+    }
+  );
+  const photos = await listAlbumPhotos(token, albumId);
+  sendJson(res, 200, {
+    status: "ok",
+    album: serializeManagedAlbum({ ...result.data, photos })
+  });
+}
+
+function parseAlbumUploadManifest(rawManifest, pairs) {
+  if (!rawManifest) {
+    throw httpError(400, "manifest is required.");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawManifest);
+  } catch {
+    throw httpError(400, "manifest must be valid JSON.");
+  }
+
+  const entries = Array.isArray(parsed) ? parsed : parsed?.photos;
+  if (!Array.isArray(entries)) {
+    throw httpError(400, "manifest must be an array or contain a photos array.");
+  }
+
+  const entryByKey = new Map();
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw httpError(400, "Each manifest photo must be an object.");
+    }
+
+    let key;
+    try {
+      key = manifestPhotoPairKey(entry);
+    } catch (error) {
+      throw httpError(400, error.message);
+    }
+    if (entryByKey.has(key)) {
+      throw httpError(400, `Manifest photo basename "${key}" is duplicated.`);
+    }
+
+    entryByKey.set(key, {
+      key,
+      caption: normalizeAlbumText(entry.caption, "caption", 2000),
+      altText: normalizeAlbumText(entry.altText ?? entry.alt_text, "altText", 500),
+      published: parseAlbumBoolean(entry.published, true, "photo published")
+    });
+  }
+
+  const pairKeys = new Set(pairs.map((pair) => pair.key));
+  for (const key of entryByKey.keys()) {
+    if (!pairKeys.has(key)) {
+      throw httpError(400, `Manifest photo "${key}" has no matching SDR upload.`);
+    }
+  }
+  for (const pair of pairs) {
+    if (!entryByKey.has(pair.key)) {
+      throw httpError(400, `SDR photo "${pair.key}" is missing from the manifest.`);
+    }
+  }
+
+  return pairs.map((pair) => ({
+    ...pair,
+    ...entryByKey.get(pair.key)
+  }));
+}
+
+async function validateAlbumUpload(parsed) {
+  try {
+    validateAlbumBatchLimits(
+      parsed.files.sdrFiles,
+      parsed.files.hdrFiles,
+      {
+        maxPhotos: MAX_ALBUM_PHOTOS,
+        maxFileBytes: MAX_ALBUM_IMAGE_BYTES,
+        maxBatchBytes: MAX_ALBUM_UPLOAD_BYTES
+      }
+    );
+  } catch (error) {
+    throw httpError(413, error.message);
+  }
+
+  let pairs;
+  try {
+    pairs = pairAlbumFiles(parsed.files.sdrFiles, parsed.files.hdrFiles);
+  } catch (error) {
+    throw httpError(400, error.message);
+  }
+
+  if (!pairs.length) {
+    throw httpError(400, "At least one SDR photo is required.");
+  }
+  if (pairs.length > MAX_ALBUM_PHOTOS) {
+    throw httpError(413, `At most ${MAX_ALBUM_PHOTOS} photos are allowed per batch.`);
+  }
+
+  const normalizedPairs = parseAlbumUploadManifest(parsed.fields.manifest, pairs);
+  const validated = [];
+  for (const pair of normalizedPairs) {
+    let sdrMetadata;
+    let hdrMetadata = null;
+    try {
+      sdrMetadata = validateSdrProbe(
+        await probeAlbumImage(pair.sdr.tempPath)
+      );
+      if (pair.hdr) {
+        hdrMetadata = validateHdrProbe(
+          await probeAlbumImage(pair.hdr.tempPath)
+        );
+        validatePairedAspectRatio(sdrMetadata, hdrMetadata);
+      }
+    } catch (error) {
+      throw httpError(
+        422,
+        `Photo "${pair.key}" failed validation: ${error.message}`
+      );
+    }
+
+    validated.push({
+      ...pair,
+      sdrMetadata,
+      hdrMetadata
+    });
+  }
+  return validated;
+}
+
+async function probeAlbumImage(sourcePath) {
+  const { stdout } = await runProcess(FFPROBE_PATH, [
+    "-v",
+    "error",
+    "-count_frames",
+    "-select_streams",
+    "v:0",
+    "-show_streams",
+    "-of",
+    "json",
+    sourcePath
+  ]);
+  const parsed = JSON.parse(stdout);
+  const stream = parsed.streams?.[0];
+  if (!stream) {
+    throw new Error("No image stream was detected.");
+  }
+  return stream;
+}
+
+async function deleteDirectusFileSafely(token, fileId, context = "file") {
+  try {
+    await directusRequest(`/files/${encodeURIComponent(fileId)}`, token, {
+      method: "DELETE"
+    });
+    return null;
+  } catch (error) {
+    console.error(
+      `[albums] Could not remove ${context} ${fileId}: ${error.message}`
+    );
+    return { fileId: String(fileId), error };
+  }
+}
+
+async function rollbackAlbumUpload(
+  token,
+  albumId,
+  photoIds,
+  fileIds,
+  reconciliationTags = []
+) {
+  const reconciled = await reconcileAlbumBatchResources({
+    photoIds,
+    fileIds,
+    reconciliationTags,
+    findFileByTag: (tag) =>
+      findDirectusFileByUploadTag(token, tag),
+    findPhotosBySdrFiles: (sdrFileIds) =>
+      findAlbumPhotosBySdrFiles(token, albumId, sdrFileIds)
+  });
+
+  const errors = await rollbackAlbumBatch({
+    photoIds: reconciled.photoIds,
+    fileIds: reconciled.fileIds,
+    deletePhoto: (photoId) =>
+      directusRequest(
+        `/items/album_photos/${encodeURIComponent(photoId)}`,
+        token,
+        { method: "DELETE" }
+      ),
+    deleteFile: (fileId) =>
+      directusRequest(`/files/${encodeURIComponent(fileId)}`, token, {
+        method: "DELETE"
+      })
+  });
+  const failures = [...reconciled.errors, ...errors];
+  for (const failure of failures) {
+    console.error(
+      `[albums] Could not roll back ${failure.kind} ${failure.id}: ${failure.error.message}`
+    );
+  }
+  return failures;
+}
+
+function serializeManagedPhoto(photo) {
+  return {
+    id: photo.id,
+    albumId: directusRelationId(photo.album_id),
+    sdrImage: directusFileId(photo.sdr_image),
+    hdrImage: directusFileId(photo.hdr_image),
+    caption: photo.caption || "",
+    altText: photo.alt_text || "",
+    hdrTransfer: photo.hdr_transfer || null,
+    hdrPrimaries: photo.hdr_primaries || null,
+    hdrBitDepth: photo.hdr_bit_depth ?? null,
+    published: parseBoolean(photo.published, false),
+    sortOrder: Number(photo.sort_order || 0),
+    createdAt: photo.created_at || null,
+    updatedAt: photo.updated_at || null
+  };
+}
+
+async function createAlbumPhotoWithReconciliation(
+  token,
+  albumId,
+  sdrFileId,
+  payload,
+  uploadKey
+) {
+  try {
+    const response = await directusRequest("/items/album_photos", token, {
+      method: "POST",
+      body: payload
+    });
+    if (response.data?.id) {
+      return response.data;
+    }
+
+    const error = httpError(
+      502,
+      `Directus did not return the saved photo "${uploadKey}".`
+    );
+    error.directusAmbiguous = true;
+    throw error;
+  } catch (error) {
+    if (error.directusAmbiguous) {
+      try {
+        const reconciledPhoto = await findAlbumPhotoBySdrFile(
+          token,
+          albumId,
+          sdrFileId
+        );
+        if (reconciledPhoto) {
+          return reconciledPhoto;
+        }
+      } catch (reconciliationError) {
+        error.reconciliationError = reconciliationError;
+      }
+    }
+    throw error;
+  }
+}
+
+async function handleAlbumPhotoUpload(req, res, albumId) {
+  let parsed = null;
+  let token = null;
+  const batchId = crypto.randomUUID();
+  const createdPhotoIds = [];
+  const uploadedFileIds = [];
+  const reconciliationTags = [];
+
+  try {
+    parsed = await parseAlbumMultipart(req);
+    const uploads = await validateAlbumUpload(parsed);
+    token = await directusLogin();
+    const album = await getAlbumById(token, albumId);
+    const existingPhotos = await listAlbumPhotos(token, albumId);
+    const maxSortOrder = existingPhotos.reduce(
+      (maximum, photo) =>
+        Math.max(maximum, Number.parseInt(photo.sort_order, 10) || 0),
+      -1
+    );
+    const now = new Date().toISOString();
+    const createdPhotos = [];
+
+    for (let index = 0; index < uploads.length; index += 1) {
+      const upload = uploads[index];
+      const sdrUploadTag = albumUploadTag(batchId, index, "sdr");
+      reconciliationTags.push(sdrUploadTag);
+      const sdrFileId = await directusUploadFile(
+        token,
+        upload.sdr,
+        upload.caption || upload.altText || upload.sdr.originalName,
+        { reconciliationTag: sdrUploadTag }
+      );
+      uploadedFileIds.push(sdrFileId);
+
+      let hdrFileId = null;
+      if (upload.hdr) {
+        const hdrUploadTag = albumUploadTag(batchId, index, "hdr");
+        reconciliationTags.push(hdrUploadTag);
+        hdrFileId = await directusUploadFile(
+          token,
+          upload.hdr,
+          `${upload.caption || upload.altText || upload.hdr.originalName} HDR`,
+          { reconciliationTag: hdrUploadTag }
+        );
+        uploadedFileIds.push(hdrFileId);
+      }
+
+      const savedPhoto = await createAlbumPhotoWithReconciliation(
+        token,
+        albumId,
+        sdrFileId,
+        {
+          album_id: Number(albumId),
+          sdr_image: sdrFileId,
+          hdr_image: hdrFileId,
+          caption: upload.caption,
+          alt_text: upload.altText,
+          hdr_transfer: upload.hdrMetadata?.transfer || null,
+          hdr_primaries: upload.hdrMetadata?.primaries || null,
+          hdr_bit_depth: upload.hdrMetadata?.bitDepth || null,
+          published: upload.published,
+          sort_order: maxSortOrder + index + 1,
+          created_at: now,
+          updated_at: now
+        },
+        upload.key
+      );
+      createdPhotoIds.push(savedPhoto.id);
+      createdPhotos.push(savedPhoto);
+    }
+
+    if (!directusFileId(album.cover_image)) {
+      const firstPublished = createdPhotos.find((photo) =>
+        parseBoolean(photo.published, false)
+      );
+      if (firstPublished) {
+        await directusRequest(
+          `/items/albums/${encodeURIComponent(albumId)}`,
+          token,
+          {
+            method: "PATCH",
+            body: {
+              cover_image: directusFileId(firstPublished.sdr_image),
+              updated_at: new Date().toISOString()
+            }
+          }
+        );
+      }
+    }
+
+    sendJson(res, 201, {
+      status: "ok",
+      albumId: Number(albumId),
+      photos: createdPhotos.map(serializeManagedPhoto)
+    });
+  } catch (error) {
+    if (
+      token &&
+      (createdPhotoIds.length ||
+        uploadedFileIds.length ||
+        reconciliationTags.length)
+    ) {
+      const cleanupFailures = await rollbackAlbumUpload(
+        token,
+        albumId,
+        createdPhotoIds,
+        uploadedFileIds,
+        reconciliationTags
+      );
+      if (cleanupFailures.length) {
+        error.cleanupFailures = cleanupFailures;
+      }
+    }
+    throw error;
+  } finally {
+    if (parsed?.tempDir) {
+      await fsp
+        .rm(parsed.tempDir, { recursive: true, force: true })
+        .catch(() => {});
+    }
+  }
+}
+
+function pickAlbumPhotoPatch(body) {
+  const patch = {};
+  if (Object.prototype.hasOwnProperty.call(body, "caption")) {
+    patch.caption = normalizeAlbumText(body.caption, "caption", 2000);
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(body, "altText") ||
+    Object.prototype.hasOwnProperty.call(body, "alt_text")
+  ) {
+    patch.alt_text = normalizeAlbumText(
+      body.altText ?? body.alt_text,
+      "altText",
+      500
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "published")) {
+    patch.published = parseAlbumBoolean(
+      body.published,
+      false,
+      "photo published"
+    );
+  }
+  if (!Object.keys(patch).length) {
+    throw httpError(400, "No editable photo fields were provided.");
+  }
+  return patch;
+}
+
+function firstPublishedCoverPhoto(photos, excludedPhotoId = null) {
+  return photos.find(
+    (photo) =>
+      String(photo.id) !== String(excludedPhotoId ?? "") &&
+      parseBoolean(photo.published, false) &&
+      directusFileId(photo.sdr_image)
+  ) || null;
+}
+
+async function setAlbumCoverFile(token, albumId, fileId) {
+  await directusRequest(
+    `/items/albums/${encodeURIComponent(albumId)}`,
+    token,
+    {
+      method: "PATCH",
+      body: {
+        cover_image: fileId || null,
+        updated_at: new Date().toISOString()
+      }
+    }
+  );
+}
+
+async function handleAlbumPhotoPatch(req, res, albumId, photoId) {
+  const body = await readJsonBody(req);
+  const patch = pickAlbumPhotoPatch(body);
+  const token = await directusLogin();
+  const [album, photo] = await Promise.all([
+    getAlbumById(token, albumId),
+    getAlbumPhoto(token, albumId, photoId)
+  ]);
+  const wasPublished = parseBoolean(photo.published, false);
+  const nextPublished =
+    Object.prototype.hasOwnProperty.call(patch, "published")
+      ? patch.published
+      : wasPublished;
+
+  const response = await directusRequest(
+    `/items/album_photos/${encodeURIComponent(photoId)}`,
+    token,
+    {
+      method: "PATCH",
+      body: { ...patch, updated_at: new Date().toISOString() }
+    }
+  );
+
+  try {
+    const currentCover = directusFileId(album.cover_image);
+    const photoSdr = directusFileId(photo.sdr_image);
+    if (!nextPublished && currentCover === photoSdr) {
+      const photos = await listAlbumPhotos(token, albumId);
+      const replacement = firstPublishedCoverPhoto(photos, photoId);
+      await setAlbumCoverFile(
+        token,
+        albumId,
+        directusFileId(replacement?.sdr_image)
+      );
+    } else if (nextPublished && !currentCover) {
+      await setAlbumCoverFile(token, albumId, photoSdr);
+    }
+  } catch (error) {
+    if (
+      Object.prototype.hasOwnProperty.call(patch, "published") &&
+      patch.published !== wasPublished
+    ) {
+      await directusRequest(
+        `/items/album_photos/${encodeURIComponent(photoId)}`,
+        token,
+        {
+          method: "PATCH",
+          body: {
+            published: wasPublished,
+            updated_at: new Date().toISOString()
+          }
+        }
+      ).catch((rollbackError) => {
+        console.error(
+          `[albums] Could not roll back photo ${photoId} publication state: ${rollbackError.message}`
+        );
+      });
+    }
+    throw error;
+  }
+
+  sendJson(res, 200, {
+    status: "ok",
+    photo: serializeManagedPhoto({ ...photo, ...response.data })
+  });
+}
+
+async function handleAlbumPhotoDelete(res, albumId, photoId) {
+  const token = await directusLogin();
+  const [album, photo, photos] = await Promise.all([
+    getAlbumById(token, albumId),
+    getAlbumPhoto(token, albumId, photoId),
+    listAlbumPhotos(token, albumId)
+  ]);
+  const originalCover = directusFileId(album.cover_image);
+  const photoSdr = directusFileId(photo.sdr_image);
+  let coverChanged = false;
+
+  if (originalCover === photoSdr) {
+    const replacement = firstPublishedCoverPhoto(photos, photoId);
+    await setAlbumCoverFile(
+      token,
+      albumId,
+      directusFileId(replacement?.sdr_image)
+    );
+    coverChanged = true;
+  }
+
+  try {
+    await directusRequest(
+      `/items/album_photos/${encodeURIComponent(photoId)}`,
+      token,
+      { method: "DELETE" }
+    );
+  } catch (error) {
+    if (coverChanged) {
+      await setAlbumCoverFile(token, albumId, originalCover).catch(
+        (rollbackError) => {
+          console.error(
+            `[albums] Could not restore album ${albumId} cover: ${rollbackError.message}`
+          );
+        }
+      );
+    }
+    throw error;
+  }
+
+  const fileIds = [
+    directusFileId(photo.hdr_image),
+    directusFileId(photo.sdr_image)
+  ].filter(Boolean);
+  const cleanupFailures = [];
+  for (const fileId of fileIds) {
+    const failure = await deleteDirectusFileSafely(
+      token,
+      fileId,
+      "photo file"
+    );
+    if (failure) {
+      cleanupFailures.push(failure);
+    }
+  }
+
+  if (cleanupFailures.length) {
+    sendJson(res, 202, {
+      status: "partial",
+      deletedPhotoId: Number(photoId),
+      cleanupRequired: true,
+      orphanFileIds: cleanupFailures.map((failure) => failure.fileId),
+      message:
+        "The photo record was deleted, but one or more image files require manual cleanup."
+    });
+    return;
+  }
+
+  sendJson(res, 200, {
+    status: "ok",
+    deletedPhotoId: Number(photoId),
+    cleanupRequired: false,
+    orphanFileIds: []
+  });
+}
+
+function normalizeReorderIds(value) {
+  if (!Array.isArray(value)) {
+    throw httpError(400, "photoIds must be an array.");
+  }
+
+  const ids = value.map((id) => normalizeAlbumId(id, "photo id"));
+  if (new Set(ids).size !== ids.length) {
+    throw httpError(400, "photoIds must not contain duplicates.");
+  }
+  return ids;
+}
+
+async function handleAlbumPhotoReorder(req, res, albumId) {
+  const body = await readJsonBody(req, 256 * 1024);
+  const orderedIds = normalizeReorderIds(body.photoIds);
+  const token = await directusLogin();
+  await getAlbumById(token, albumId);
+  const photos = await listAlbumPhotos(token, albumId);
+  const existingIds = photos.map((photo) => String(photo.id));
+
+  if (
+    orderedIds.length !== existingIds.length ||
+    orderedIds.some((id) => !existingIds.includes(id))
+  ) {
+    throw httpError(
+      400,
+      "photoIds must contain every photo in this album exactly once."
+    );
+  }
+
+  const originalOrder = new Map(
+    photos.map((photo) => [String(photo.id), Number(photo.sort_order || 0)])
+  );
+  const updatedIds = [];
+  try {
+    for (let index = 0; index < orderedIds.length; index += 1) {
+      const photoId = orderedIds[index];
+      await directusRequest(
+        `/items/album_photos/${encodeURIComponent(photoId)}`,
+        token,
+        {
+          method: "PATCH",
+          body: {
+            sort_order: index,
+            updated_at: new Date().toISOString()
+          }
+        }
+      );
+      updatedIds.push(photoId);
+    }
+  } catch (error) {
+    for (const photoId of updatedIds.reverse()) {
+      await directusRequest(
+        `/items/album_photos/${encodeURIComponent(photoId)}`,
+        token,
+        {
+          method: "PATCH",
+          body: {
+            sort_order: originalOrder.get(photoId),
+            updated_at: new Date().toISOString()
+          }
+        }
+      ).catch((rollbackError) => {
+        console.error(
+          `[albums] Could not restore photo ${photoId} order: ${rollbackError.message}`
+        );
+      });
+    }
+    throw error;
+  }
+
+  sendJson(res, 200, {
+    status: "ok",
+    albumId: Number(albumId),
+    photoIds: orderedIds.map(Number)
+  });
+}
+
+async function handleAlbumCover(req, res, albumId) {
+  const body = await readJsonBody(req);
+  const photoId = normalizeAlbumId(body.photoId, "photo id");
+  const token = await directusLogin();
+  await getAlbumById(token, albumId);
+  const photo = await getAlbumPhoto(token, albumId, photoId);
+  if (!parseBoolean(photo.published, false)) {
+    throw httpError(400, "Only a published photo can be used as the album cover.");
+  }
+  const sdrFileId = directusFileId(photo.sdr_image);
+  if (!sdrFileId) {
+    throw httpError(422, "The selected photo does not have an SDR image.");
+  }
+
+  await setAlbumCoverFile(token, albumId, sdrFileId);
+  sendJson(res, 200, {
+    status: "ok",
+    albumId: Number(albumId),
+    coverPhotoId: Number(photoId),
+    coverImage: sdrFileId
+  });
+}
+
+async function handleAlbumRoute(req, res, url) {
+  try {
+    requireAlbumAuth(req);
+    const pathname = url.pathname;
+
+    if (req.method === "GET" && pathname === "/albums/manage") {
+      await handleAlbumManageList(res);
+      return;
+    }
+    if (req.method === "POST" && pathname === "/albums") {
+      await handleAlbumCreate(req, res);
+      return;
+    }
+
+    let match = pathname.match(/^\/albums\/([^/]+)$/);
+    if (req.method === "PATCH" && match) {
+      await handleAlbumPatch(
+        req,
+        res,
+        normalizeAlbumId(decodeURIComponent(match[1]))
+      );
+      return;
+    }
+
+    match = pathname.match(/^\/albums\/([^/]+)\/photos$/);
+    if (req.method === "POST" && match) {
+      await handleAlbumPhotoUpload(
+        req,
+        res,
+        normalizeAlbumId(decodeURIComponent(match[1]))
+      );
+      return;
+    }
+
+    match = pathname.match(/^\/albums\/([^/]+)\/photos\/reorder$/);
+    if (req.method === "POST" && match) {
+      await handleAlbumPhotoReorder(
+        req,
+        res,
+        normalizeAlbumId(decodeURIComponent(match[1]))
+      );
+      return;
+    }
+
+    match = pathname.match(/^\/albums\/([^/]+)\/photos\/([^/]+)$/);
+    if (match && ["PATCH", "DELETE"].includes(req.method)) {
+      const albumId = normalizeAlbumId(decodeURIComponent(match[1]));
+      const photoId = normalizeAlbumId(
+        decodeURIComponent(match[2]),
+        "photo id"
+      );
+      if (req.method === "PATCH") {
+        await handleAlbumPhotoPatch(req, res, albumId, photoId);
+      } else {
+        await handleAlbumPhotoDelete(res, albumId, photoId);
+      }
+      return;
+    }
+
+    match = pathname.match(/^\/albums\/([^/]+)\/cover$/);
+    if (req.method === "PUT" && match) {
+      await handleAlbumCover(
+        req,
+        res,
+        normalizeAlbumId(decodeURIComponent(match[1]))
+      );
+      return;
+    }
+
+    throw httpError(404, "Album management endpoint not found.");
+  } catch (error) {
+    const clientError =
+      [401, 403].includes(error.directusHttpStatus || 0)
+        ? httpError(502, "Directus service authorization failed.")
+        : error;
+    if (!res.headersSent) {
+      sendJson(res, clientError.statusCode || 500, {
+        status: "error",
+        error: clientError.message
+      });
     }
   }
 }
@@ -3423,6 +4923,13 @@ async function handleHealth(res) {
       markdownBytes: MAX_ARTICLE_MARKDOWN_BYTES,
       inlineImages: MAX_ARTICLE_IMAGES
     },
+    albumPublishingEnabled: Boolean(UPLOAD_API_TOKEN),
+    albumLimits: {
+      requestBytes: MAX_ALBUM_UPLOAD_BYTES,
+      imageBytes: MAX_ALBUM_IMAGE_BYTES,
+      photosPerBatch: MAX_ALBUM_PHOTOS,
+      assetPresets: [...ALBUM_ASSET_PRESETS]
+    },
     ffmpeg: {
       path: FFMPEG_PATH,
       available: ffmpegAvailable
@@ -3448,7 +4955,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && url.pathname.startsWith("/assets/")) {
-    await handleAsset(url.pathname, res);
+    await handleAsset(url, res);
     return;
   }
 
@@ -3459,6 +4966,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && url.pathname === "/articles") {
     await handleArticleCreate(req, res);
+    return;
+  }
+
+  if (url.pathname === "/albums" || url.pathname.startsWith("/albums/")) {
+    await handleAlbumRoute(req, res, url);
     return;
   }
 
@@ -3502,19 +5014,53 @@ async function handleMedia(pathname, res) {
   }
 }
 
-async function handleAsset(pathname, res) {
+async function fetchDirectusAsset(assetUrl, token, authRetried = false) {
+  const response = await fetch(assetUrl, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+  if (
+    !authRetried &&
+    [401, 403].includes(response.status)
+  ) {
+    await response.arrayBuffer().catch(() => {});
+    const refreshedToken = await refreshDirectusLogin(token);
+    return fetchDirectusAsset(assetUrl, refreshedToken, true);
+  }
+  return response;
+}
+
+async function handleAsset(url, res) {
   try {
+    const pathname = url.pathname;
     const fileId = decodeURIComponent(pathname.replace(/^\/assets\//, "")).split("/")[0];
     if (!/^[a-zA-Z0-9-]+$/.test(fileId)) {
       throw httpError(400, "Invalid asset id.");
     }
 
-    const token = await directusLogin();
-    const response = await fetch(`${DIRECTUS_URL}/assets/${encodeURIComponent(fileId)}`, {
-      headers: {
-        Authorization: `Bearer ${token}`
+    const requestedKeys = url.searchParams.getAll("key");
+    if (requestedKeys.length > 1) {
+      throw httpError(400, "Only one asset preset may be requested.");
+    }
+    const preset = requestedKeys[0] || null;
+    if (preset && !ALBUM_ASSET_PRESETS.has(preset)) {
+      throw httpError(400, "Unsupported asset preset.");
+    }
+    for (const parameter of url.searchParams.keys()) {
+      if (parameter !== "key") {
+        throw httpError(400, "Arbitrary asset transformations are not allowed.");
       }
-    });
+    }
+
+    const token = await directusLogin();
+    const assetUrl = new URL(
+      `${DIRECTUS_URL}/assets/${encodeURIComponent(fileId)}`
+    );
+    if (preset) {
+      assetUrl.searchParams.set("key", preset);
+    }
+    const response = await fetchDirectusAsset(assetUrl, token);
 
     if (!response.ok) {
       throw httpError(response.status, `Directus asset request failed: ${response.statusText}`);

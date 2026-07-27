@@ -11,7 +11,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Windows](https://img.shields.io/badge/Windows-11-0078D4?style=flat-square&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
 
-支持文章发布、视频项目管理、HLS 自适应播放、SDR / HDR10 / HLG / Dolby Vision 多母版切换  
+支持文章发布、SDR / HDR 相簿、视频项目管理、HLS 自适应播放、SDR / HDR10 / HLG / Dolby Vision 多母版切换
 Directus CMS 内容管理，Windows 本地服务 + Nginx + HTTPS 全栈部署
 
 </div>
@@ -28,6 +28,7 @@ Directus CMS 内容管理，Windows 本地服务 + Nginx + HTTPS 全栈部署
 | **Headless CMS** | Directus 11，REST + GraphQL，结构化管理文章与视频项目 |
 | **文章博客** | Markdown 正文、封面、标签、分类、草稿/发布状态 |
 | **站内写作台** | `/write` 直接编写与预览 Markdown，统一上传封面和正文图片后由 Directus 入库 |
+| **HDR 相簿** | `/albums` 页内新建相簿、批量配对 SDR 与 HDR AVIF；网格使用 SDR，HDR 设备的灯箱优先显示 PQ / HLG 原片 |
 
 ---
 
@@ -119,6 +120,9 @@ MAX_ARTICLE_UPLOAD_BYTES=67108864
 MAX_ARTICLE_IMAGE_BYTES=12582912
 MAX_ARTICLE_MARKDOWN_BYTES=2097152
 MAX_ARTICLE_IMAGES=24
+MAX_ALBUM_UPLOAD_BYTES=536870912
+MAX_ALBUM_IMAGE_BYTES=67108864
+MAX_ALBUM_PHOTOS=24
 FFMPEG_PATH=
 FFPROBE_PATH=
 ```
@@ -182,9 +186,11 @@ npm run dev:cms                # 启动 Directus
 npm run setup:cms-schema       # 创建 / 修复 CMS 内容模型
 npm run migrate:cms:postgres   # SQLite → PostgreSQL 迁移入口
 npm run test:api               # 检查 API 语法
+npm run test:album-api         # 对运行中的 API / Directus 执行相簿集成测试并清理测试数据
 npm run test:db                # 检查 Directus 数据库（SQLite / PostgreSQL）
 npm run test:cms-schema        # 检查 CMS 表、字段、关系
 npm run test:cms-crud          # 检查 CMS CRUD 与关联读取
+npm run test:web               # 前端单元测试
 npm run health                 # 检查本地服务健康状态
 npm run manager                # 启动本地服务管理面板
 ```
@@ -225,6 +231,16 @@ npm run manager                # 启动本地服务管理面板
 | `bitrate` | 码率 |
 | `dovi_metadata` | Dolby Vision 元数据 |
 | `is_default` · `status` | 默认母版 · 状态 |
+
+### `albums` / `album_photos` — SDR / HDR 相簿
+
+| 集合 | 关键字段 |
+|------|----------|
+| `albums` | `title` · 唯一 `slug` · `description` · `cover_image` · `published` · `photos` |
+| `album_photos` | `album_id` · 必选 `sdr_image` · 可选 `hdr_image` · `caption` · `alt_text` · HDR transfer / primaries / bit depth · `published` · `sort_order` |
+
+相簿封面与网格只使用 SDR 预设资源；灯箱以 SDR 原图为保底，并仅在
+`(dynamic-range: high)` 匹配时尝试 HDR AVIF。
 
 ---
 
@@ -267,11 +283,35 @@ npm run manager                # 启动本地服务管理面板
 
 ---
 
+## 相簿与 HDR 照片流程
+
+```text
+① /albums 页标题区 ──▶ 新建公开相簿或草稿；选择目标相簿
+          │
+          ▼
+② SDR / HDR 拖放区 ──▶ 以忽略大小写的去扩展名文件名配对
+          │
+          ▼
+③ Album API       ──▶ 校验签名、FFprobe 元数据、位深、PQ/HLG 与宽高比
+          │
+          ▼
+④ Directus        ──▶ 整批上传文件与 album_photos；失败时逆序回滚
+          │
+          ▼
+⑤ 网格 / 灯箱      ──▶ 缩略图固定 SDR；HDR 显示设备优先 HDR，失败回退 SDR
+```
+
+完整的格式约束、接口、管理模式和上线检查见
+[docs/albums.md](docs/albums.md)。
+
+---
+
 ## 部署
 
 详细部署步骤请参考 [docs/](docs/) 目录：
 
 - **网站内写文章** — [docs/article-writing.md](docs/article-writing.md)，包含 `/write`、文章图片与 Directus 发布链路
+- **相簿与 HDR 照片** — [docs/albums.md](docs/albums.md)，包含文件配对、验证、管理接口和显示回退
 - **Windows 服务** — `deployment/windows/` PowerShell 脚本，注册为系统服务开机自启
 - **Nginx** — `deployment/nginx/` 反向代理配置，支持 HLS 静态服务与 HTTPS
 

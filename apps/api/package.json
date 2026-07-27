@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node src/server.cjs",
     "start": "node src/server.cjs",
-    "test": "node --check src/server.cjs"
+    "test": "node --check src/server.cjs && node --test test/*.test.cjs"
   },
   "dependencies": {
     "busboy": "^1.6.0",
