@@ -9,7 +9,12 @@ export const metadata: Metadata = {
   description: "以 SDR 缩略图浏览相簿，并在支持的显示设备上查看 HDR 原片。",
 };
 
-export default async function AlbumsPage() {
+export default async function AlbumsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ dialog?: string | string[] }>;
+}) {
+  const { dialog } = await searchParams;
   const albums = await getAlbums();
 
   return (
@@ -24,6 +29,7 @@ export default async function AlbumsPage() {
           </p>
         </div>
         <AlbumsToolbar
+          initialDialog={dialog === "upload" ? "upload" : null}
           albums={albums.map((album) => ({
             id: album.id,
             title: album.title,

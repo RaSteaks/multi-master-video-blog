@@ -52,50 +52,6 @@ export const homeLayout = {
       radius: "24px",
       zIndex: 1,
     },
-    // Link to the local upload page.
-    uploadBlog: {
-      x: "20%",
-      y: "80%",
-      w: "150px",
-      h: "44px",
-      padding: "10px 18px",
-      radius: "999px",
-      fontSize: "0.84rem",
-    },
-    // External profile link — GitHub. dx keeps the widget centered on x.
-    github: {
-      x: "42%",
-      y: "80%",
-      w: "132px",
-      h: "44px",
-      dx: "-50%",
-      padding: "10px 18px",
-      radius: "999px",
-      fontSize: "0.84rem",
-      gap: "8px",
-    },
-    // External profile link — Bilibili. Same dimensions as github.
-    bilibili: {
-      x: "56%",
-      y: "80%",
-      w: "132px",
-      h: "44px",
-      dx: "-50%",
-      padding: "10px 18px",
-      radius: "999px",
-      fontSize: "0.84rem",
-      gap: "8px",
-    },
-    // Link to the Directus post editor.
-    writePost: {
-      x: "65%",
-      y: "80%",
-      w: "132px",
-      h: "44px",
-      padding: "10px 18px",
-      radius: "999px",
-      fontSize: "0.84rem",
-    },
   },
 } satisfies {
   stage: { minHeight: string };

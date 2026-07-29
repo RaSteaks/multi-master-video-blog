@@ -401,14 +401,16 @@ export async function getCounts() {
   addPublishedFilter(params);
   const qs = params.toString();
 
-  const [postsRes, videosRes] = await Promise.all([
+  const [postsRes, videosRes, albumsRes] = await Promise.all([
     directusFetch<DirectusAggregateResponse>(`/items/posts?${qs}`),
     directusFetch<DirectusAggregateResponse>(`/items/video_projects?${qs}`),
+    directusFetch<DirectusAggregateResponse>(`/items/albums?${qs}`),
   ]);
 
   return {
     posts: aggregateCount(postsRes),
     videos: aggregateCount(videosRes),
+    albums: aggregateCount(albumsRes),
   };
 }
 

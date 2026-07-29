@@ -11,14 +11,17 @@ import { siteConfig } from "@/lib/site-config";
 type UploadWidgetProps = {
   className: string;
   href: string;
-  layout?: HomeWidgetLayout;
   title: string;
 };
 
 type HomeWidgetStyle = CSSProperties & Record<`--${string}`, string | number>;
 
 export default async function Home() {
-  const { posts: postCount, videos: videoCount } = await getCounts();
+  const {
+    posts: postCount,
+    videos: videoCount,
+    albums: albumCount,
+  } = await getCounts();
 
   return (
     <>
@@ -34,25 +37,30 @@ export default async function Home() {
             layout={homeLayout.widgets.collection}
             postCount={postCount}
             videoCount={videoCount}
+            albumCount={albumCount}
           />
 
           <div className="home-action-row">
             <UploadWidget
               className="floating-widget home-free-widget orbit-card orbit-upload orbit-blog-upload"
               href="/upload"
-              layout={homeLayout.widgets.uploadBlog}
               title="上传视频"
+            />
+
+            <UploadWidget
+              className="floating-widget home-free-widget orbit-card orbit-upload orbit-album-upload"
+              href={siteConfig.home.albumUploadHref}
+              title="上传照片"
             />
 
             <UploadWidget
               className="floating-widget home-free-widget orbit-card orbit-upload orbit-post-upload"
               href={siteConfig.home.postUploadHref}
-              layout={homeLayout.widgets.writePost}
               title="写文章"
             />
 
-            <GitHubWidget layout={homeLayout.widgets.github} />
-            <BilibiliWidget layout={homeLayout.widgets.bilibili} />
+            <GitHubWidget />
+            <BilibiliWidget />
           </div>
         </div>
       </main>
@@ -102,11 +110,13 @@ function CollectionCard({
   layout,
   postCount,
   videoCount,
+  albumCount,
 }: {
   className?: string;
   layout?: HomeWidgetLayout;
   postCount: number;
   videoCount: number;
+  albumCount: number;
 }) {
   return (
     <section
@@ -126,6 +136,10 @@ function CollectionCard({
           <span>{siteConfig.home.collectionPostLabel}</span>
           <strong>{postCount}</strong>
         </Link>
+        <Link href="/albums">
+          <span>{siteConfig.home.collectionAlbumLabel}</span>
+          <strong>{albumCount}</strong>
+        </Link>
         <Link href="/about">
           <span>{siteConfig.home.collectionAboutLabel}</span>
           <strong>{siteConfig.home.collectionAboutValue}</strong>
@@ -135,21 +149,20 @@ function CollectionCard({
   );
 }
 
-function UploadWidget({ className, href, layout, title }: UploadWidgetProps) {
+function UploadWidget({ className, href, title }: UploadWidgetProps) {
   const isExternal = href.startsWith("http");
   const content = <strong>{title}</strong>;
-  const style = layout ? homeWidgetStyle(layout) : undefined;
 
   if (isExternal) {
     return (
-      <a className={className} href={href} style={style} target="_blank" rel="noreferrer">
+      <a className={className} href={href} target="_blank" rel="noreferrer">
         {content}
       </a>
     );
   }
 
   return (
-    <Link className={className} href={href} style={style}>
+    <Link className={className} href={href}>
       {content}
     </Link>
   );
@@ -157,16 +170,13 @@ function UploadWidget({ className, href, layout, title }: UploadWidgetProps) {
 
 function GitHubWidget({
   className = "floating-widget home-free-widget github-widget",
-  layout,
 }: {
   className?: string;
-  layout?: HomeWidgetLayout;
 }) {
   return (
     <a
       className={className}
       href={siteConfig.home.githubUrl}
-      style={layout ? homeWidgetStyle(layout) : undefined}
       target="_blank"
       rel="noreferrer"
       aria-label="Open GitHub profile"
@@ -179,16 +189,13 @@ function GitHubWidget({
 
 function BilibiliWidget({
   className = "floating-widget home-free-widget bilibili-widget",
-  layout,
 }: {
   className?: string;
-  layout?: HomeWidgetLayout;
 }) {
   return (
     <a
       className={className}
       href={siteConfig.home.bilibiliUrl}
-      style={layout ? homeWidgetStyle(layout) : undefined}
       target="_blank"
       rel="noreferrer"
       aria-label="Open Bilibili space"

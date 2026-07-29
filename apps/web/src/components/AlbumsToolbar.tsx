@@ -40,9 +40,15 @@ const MAX_PHOTOS = 24;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_BATCH_BYTES = 512 * 1024 * 1024;
 
-export function AlbumsToolbar({ albums }: { albums: AlbumOption[] }) {
+export function AlbumsToolbar({
+  albums,
+  initialDialog = null,
+}: {
+  albums: AlbumOption[];
+  initialDialog?: AlbumDialogName;
+}) {
   const router = useRouter();
-  const [dialog, setDialog] = useState<AlbumDialogName>(null);
+  const [dialog, setDialog] = useState<AlbumDialogName>(initialDialog);
   const [token, setToken] = useState("");
   const [managedAlbums, setManagedAlbums] = useState<ManagedAlbum[] | null>(
     null,
@@ -68,6 +74,21 @@ export function AlbumsToolbar({ albums }: { albums: AlbumOption[] }) {
   function completed(message: string) {
     setNotice(message);
     router.refresh();
+  }
+
+  function clearDialogQuery() {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("dialog")) return;
+
+    url.searchParams.delete("dialog");
+    router.replace(`${url.pathname}${url.search}${url.hash}`, {
+      scroll: false,
+    });
+  }
+
+  function closeDialog() {
+    setDialog(null);
+    clearDialogQuery();
   }
 
   function updateManagedAlbum(updated: ManagedAlbum) {
@@ -107,7 +128,7 @@ export function AlbumsToolbar({ albums }: { albums: AlbumOption[] }) {
       </p>
 
       {dialog === "create" ? (
-        <AlbumModal title="新建相簿" onClose={() => setDialog(null)}>
+        <AlbumModal title="新建相簿" onClose={closeDialog}>
           <CreateAlbumForm
             token={token}
             setToken={setToken}
@@ -116,7 +137,7 @@ export function AlbumsToolbar({ albums }: { albums: AlbumOption[] }) {
                 current ? [album, ...current] : current,
               );
               completed(`相簿“${album.title}”已创建。`);
-              setDialog(null);
+              closeDialog();
             }}
           />
         </AlbumModal>
@@ -125,7 +146,7 @@ export function AlbumsToolbar({ albums }: { albums: AlbumOption[] }) {
       {dialog === "upload" ? (
         <AlbumModal
           title="上传照片"
-          onClose={() => setDialog(null)}
+          onClose={closeDialog}
           wide
         >
           <UploadAlbumPhotosForm
@@ -138,6 +159,7 @@ export function AlbumsToolbar({ albums }: { albums: AlbumOption[] }) {
             onManagedAlbums={setManagedAlbums}
             onCompleted={completed}
             onOpenManager={(albumId) => {
+              clearDialogQuery();
               setManagedAlbumId(albumId);
               setDialog("manage");
             }}
@@ -148,7 +170,7 @@ export function AlbumsToolbar({ albums }: { albums: AlbumOption[] }) {
       {dialog === "manage" ? (
         <AlbumModal
           title="管理相簿"
-          onClose={() => setDialog(null)}
+          onClose={closeDialog}
           wide
         >
           {managedAlbum ? (
