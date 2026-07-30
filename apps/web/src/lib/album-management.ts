@@ -8,6 +8,21 @@ export type ManagedPhoto = {
   hdrTransfer: "pq" | "hlg" | null;
   hdrPrimaries: string | null;
   hdrBitDepth: number | null;
+  hlgImage: string | null;
+  filmScanFrameId: number | null;
+  filmStock: string | null;
+  filmProcess: string | null;
+  filmScanner: string | null;
+  filmFrameFormat: string | null;
+  renditions: Array<{
+    id: number;
+    kind: "sdr" | "pq" | "hlg";
+    file: string;
+    transfer: string | null;
+    primaries: string | null;
+    bitDepth: number | null;
+    isDefault: boolean;
+  }>;
   published: boolean;
   sortOrder: number;
   createdAt: string | null;
@@ -130,6 +145,51 @@ export async function albumApiRequest<T>(
     throw new Error("相簿接口返回了空响应。");
   }
   return payload;
+}
+
+export function uploadAlbumFormData<T>(
+  pathname: string,
+  token: string,
+  body: FormData,
+  onProgress: (progress: number) => void = () => {},
+) {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", pathname);
+    xhr.setRequestHeader("Authorization", `Bearer ${token.trim()}`);
+    xhr.responseType = "json";
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) {
+        onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+      }
+    });
+    xhr.addEventListener("load", () => {
+      const payload =
+        xhr.response ??
+        (() => {
+          try {
+            return JSON.parse(xhr.responseText);
+          } catch {
+            return null;
+          }
+        })();
+      if (xhr.status >= 200 && xhr.status < 300 && payload) {
+        onProgress(100);
+        resolve(payload as T);
+        return;
+      }
+      reject(
+        new Error(
+          payload?.error ||
+            payload?.message ||
+            `上传失败（${xhr.status || "网络错误"}）。`,
+        ),
+      );
+    });
+    xhr.addEventListener("error", () => reject(new Error("上传网络连接失败。")));
+    xhr.addEventListener("abort", () => reject(new Error("上传已取消。")));
+    xhr.send(body);
+  });
 }
 
 export async function fetchManagedAlbums(token: string) {

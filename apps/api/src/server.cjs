@@ -20,6 +20,25 @@ const {
   validatePairedAspectRatio,
   validateSdrProbe
 } = require("./album-utils.cjs");
+const {
+  FILM_SCAN_JOB_STATES,
+  assessFilmFrameDynamicRange,
+  createAnalysisImage,
+  detectFilmFrames,
+  detectFilmScanSignature,
+  estimateFilmBase,
+  inspectFilmScanSource,
+  mergeFrameAdjustments,
+  normalizeAdjustments,
+  normalizeCrop,
+  normalizeFilmScanMetadata,
+  renderFilmFrame,
+  renderFilmRawFrame,
+  renderFilmSourceContact,
+  sampleFilmBaseAtPoint,
+  sha256File: sha256FilmScanFile,
+  validateFilmScanUpload
+} = require("./film-scan-utils.cjs");
 const { createDirectusTokenCache } = require("./directus-auth.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -67,6 +86,20 @@ const MAX_ALBUM_IMAGE_BYTES = positiveInteger(
   64 * 1024 * 1024
 );
 const MAX_ALBUM_PHOTOS = positiveInteger(env.MAX_ALBUM_PHOTOS, 24);
+const MAX_FILM_SCAN_SOURCE_BYTES = positiveInteger(
+  env.MAX_FILM_SCAN_SOURCE_BYTES,
+  2 * 1024 * 1024 * 1024
+);
+const MAX_FILM_SCAN_JOB_BYTES = positiveInteger(
+  env.MAX_FILM_SCAN_JOB_BYTES,
+  4 * 1024 * 1024 * 1024
+);
+const MAX_FILM_SCAN_SOURCES = positiveInteger(env.MAX_FILM_SCAN_SOURCES, 48);
+const FILM_SCAN_PROCESS_TIMEOUT_MS = positiveInteger(
+  env.FILM_SCAN_PROCESS_TIMEOUT_MS,
+  30 * 60 * 1000
+);
+const FILM_SCAN_ROOT = path.join(MEDIA_ROOT, "film-scans");
 const FFMPEG_PATH = env.FFMPEG_PATH || resolveOptionalPackage("ffmpeg-static") || "ffmpeg";
 const FFPROBE_PATH =
   env.FFPROBE_PATH || resolveOptionalPackage("ffprobe-static", "path") || "ffprobe";
@@ -317,6 +350,10 @@ function httpError(statusCode, message) {
 
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(options.signal.reason || httpError(499, "Processing was canceled."));
+      return;
+    }
     const child = spawn(command, args, {
       cwd: options.cwd || REPO_ROOT,
       windowsHide: true
@@ -324,6 +361,34 @@ function runProcess(command, args, options = {}) {
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", abort);
+    };
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      cleanup();
+      reject(options.signal?.reason || httpError(499, "Processing was canceled."));
+    };
+    const timeout =
+      Number(options.timeoutMs) > 0
+        ? setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            child.kill("SIGKILL");
+            cleanup();
+            reject(
+              httpError(
+                504,
+                `${path.basename(command)} exceeded the processing timeout.`
+              )
+            );
+          }, Number(options.timeoutMs))
+        : null;
+    options.signal?.addEventListener("abort", abort, { once: true });
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -333,8 +398,16 @@ function runProcess(command, args, options = {}) {
       stderr += chunk.toString();
     });
 
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       if (code === 0) {
         resolve({ stdout, stderr });
         return;
@@ -739,6 +812,191 @@ function detectArticleImageMime(buffer) {
   }
 
   return null;
+}
+
+async function parseFilmScanMultipart(req) {
+  const contentTypeHeader = String(req.headers["content-type"] || "");
+  if (!contentTypeHeader.toLowerCase().startsWith("multipart/form-data")) {
+    throw httpError(415, "胶片扫描导入必须使用 multipart/form-data。");
+  }
+  const declaredLength = Number(req.headers["content-length"] || 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_FILM_SCAN_JOB_BYTES) {
+    throw httpError(413, "单个胶片扫描任务不能超过 4 GiB。");
+  }
+
+  await fsp.mkdir(path.join(ROOT, "tmp"), { recursive: true });
+  const tempDir = path.join(ROOT, "tmp", `film-scan-${crypto.randomUUID()}`);
+  await fsp.mkdir(tempDir, { recursive: true });
+
+  return new Promise((resolve, reject) => {
+    const fields = Object.create(null);
+    const files = [];
+    const pendingWrites = [];
+    const activeWrites = new Set();
+    let requestBytes = 0;
+    let fileSequence = 0;
+    let settled = false;
+    let busboy;
+
+    const finishWithError = (error) => {
+      if (settled) return;
+      settled = true;
+      if (busboy) req.unpipe(busboy);
+      for (const stream of activeWrites) stream.destroy(error);
+      if (!req.complete) req.resume();
+      Promise.allSettled(pendingWrites)
+        .then(() => fsp.rm(tempDir, { recursive: true, force: true }))
+        .finally(() => reject(error));
+    };
+
+    try {
+      busboy = Busboy({
+        headers: req.headers,
+        limits: {
+          files: MAX_FILM_SCAN_SOURCES,
+          fields: 2,
+          fileSize: MAX_FILM_SCAN_SOURCE_BYTES,
+          fieldSize: 1024 * 1024,
+          parts: MAX_FILM_SCAN_SOURCES + 2
+        }
+      });
+    } catch (error) {
+      finishWithError(httpError(400, `无效的胶片扫描上传请求：${error.message}`));
+      return;
+    }
+
+    req.on("data", (chunk) => {
+      requestBytes += chunk.length;
+      if (requestBytes > MAX_FILM_SCAN_JOB_BYTES) {
+        finishWithError(httpError(413, "单个胶片扫描任务不能超过 4 GiB。"));
+      }
+    });
+    req.once("aborted", () => {
+      finishWithError(httpError(400, "胶片扫描上传已中断。"));
+    });
+
+    busboy.on("field", (name, value, info) => {
+      if (info.valueTruncated) {
+        finishWithError(httpError(413, `字段 ${name} 过大。`));
+        return;
+      }
+      if (name === "metadata") fields.metadata = value;
+    });
+
+    busboy.on("file", (name, file, info) => {
+      if (settled) {
+        file.resume();
+        return;
+      }
+      if (name !== "sources") {
+        file.resume();
+        return;
+      }
+      fileSequence += 1;
+      const originalName = path.basename(String(info.filename || "scan.tif"));
+      const filename = `${String(fileSequence).padStart(3, "0")}-${safeFileName(originalName)}`;
+      const tempPath = path.join(tempDir, filename);
+      assertInside(tempDir, tempPath);
+      const writeStream = fs.createWriteStream(tempPath, { flags: "wx" });
+      activeWrites.add(writeStream);
+      const current = {
+        filename,
+        originalName,
+        mimeType: String(info.mimeType || "application/octet-stream").toLowerCase(),
+        tempPath,
+        tempDir,
+        size: 0,
+        truncated: false
+      };
+      files.push(current);
+      file.on("data", (chunk) => {
+        current.size += chunk.length;
+      });
+      file.on("limit", () => {
+        current.truncated = true;
+        finishWithError(
+          httpError(413, `原档“${originalName}”超过单文件 2 GiB 限制。`)
+        );
+      });
+      const writePromise = new Promise((resolveWrite, rejectWrite) => {
+        writeStream.on("finish", resolveWrite);
+        writeStream.on("error", rejectWrite);
+      }).finally(() => activeWrites.delete(writeStream));
+      pendingWrites.push(writePromise);
+      file.pipe(writeStream);
+    });
+
+    busboy.on("filesLimit", () =>
+      finishWithError(httpError(413, `单任务最多上传 ${MAX_FILM_SCAN_SOURCES} 个原档。`))
+    );
+    busboy.on("fieldsLimit", () =>
+      finishWithError(httpError(413, "胶片扫描字段过多。"))
+    );
+    busboy.on("partsLimit", () =>
+      finishWithError(httpError(413, "胶片扫描 multipart 部件过多。"))
+    );
+    busboy.on("error", (error) =>
+      finishWithError(httpError(400, `无效的胶片扫描上传请求：${error.message}`))
+    );
+    busboy.on("finish", async () => {
+      if (settled) return;
+      try {
+        await Promise.all(pendingWrites);
+        if (!files.length) throw httpError(400, "请至少上传一个胶片扫描原档。");
+        if (!fields.metadata) throw httpError(400, "metadata 字段不能为空。");
+        const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+        if (totalBytes > MAX_FILM_SCAN_JOB_BYTES) {
+          throw httpError(413, "单个胶片扫描任务不能超过 4 GiB。");
+        }
+        const stat = await fsp.statfs(MEDIA_ROOT).catch(() => null);
+        if (stat) {
+          const available = Number(stat.bavail) * Number(stat.bsize);
+          const reserve = Math.max(2 * 1024 * 1024 * 1024, totalBytes);
+          if (available < totalBytes + reserve) {
+            throw httpError(507, "媒体磁盘余量不足，无法安全保留原档。");
+          }
+        }
+        for (const file of files) {
+          const handle = await fsp.open(file.tempPath, "r");
+          const signatureBuffer = Buffer.alloc(64);
+          let bytesRead;
+          try {
+            ({ bytesRead } = await handle.read(signatureBuffer, 0, 64, 0));
+          } finally {
+            await handle.close();
+          }
+          const signature = detectFilmScanSignature(
+            signatureBuffer.subarray(0, bytesRead)
+          );
+          try {
+            Object.assign(
+              file,
+              validateFilmScanUpload({
+                filename: file.originalName,
+                declaredMime: file.mimeType,
+                signature
+              })
+            );
+          } catch (error) {
+            throw httpError(415, `原档“${file.originalName}”：${error.message}`);
+          }
+          file.sha256 = await sha256FilmScanFile(file.tempPath);
+        }
+        const duplicate = files.find(
+          (file, index) => files.findIndex((candidate) => candidate.sha256 === file.sha256) !== index
+        );
+        if (duplicate) {
+          throw httpError(409, `原档“${duplicate.originalName}”在本任务中重复。`);
+        }
+        settled = true;
+        resolve({ fields, files, tempDir, totalBytes });
+      } catch (error) {
+        finishWithError(error);
+      }
+    });
+
+    req.pipe(busboy);
+  });
 }
 
 async function parseAlbumMultipart(req) {
@@ -3353,6 +3611,18 @@ const ALBUM_PHOTO_FIELDS = [
   "hdr_transfer",
   "hdr_primaries",
   "hdr_bit_depth",
+  "film_scan_frame_id",
+  "film_stock",
+  "film_process",
+  "film_scanner",
+  "film_frame_format",
+  "renditions.id",
+  "renditions.kind",
+  "renditions.file",
+  "renditions.transfer",
+  "renditions.primaries",
+  "renditions.bit_depth",
+  "renditions.is_default",
   "published",
   "sort_order",
   "created_at",
@@ -3832,6 +4102,33 @@ async function probeAlbumImage(sourcePath) {
   return stream;
 }
 
+async function downloadDirectusAssetToFile(token, fileId, targetPath) {
+  const assetUrl = new URL(
+    `${DIRECTUS_URL}/assets/${encodeURIComponent(fileId)}`
+  );
+  const response = await fetchDirectusAsset(assetUrl, token);
+  if (!response.ok) {
+    throw httpError(
+      response.status,
+      `Could not read the existing SDR photo: ${response.statusText}.`
+    );
+  }
+
+  const declaredLength = Number(response.headers.get("content-length") || 0);
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_ALBUM_IMAGE_BYTES
+  ) {
+    throw httpError(413, "The existing SDR photo exceeds the validation limit.");
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > MAX_ALBUM_IMAGE_BYTES) {
+    throw httpError(413, "The existing SDR photo exceeds the validation limit.");
+  }
+  await fsp.writeFile(targetPath, buffer);
+}
+
 async function deleteDirectusFileSafely(token, fileId, context = "file") {
   try {
     await directusRequest(`/files/${encodeURIComponent(fileId)}`, token, {
@@ -3887,6 +4184,18 @@ async function rollbackAlbumUpload(
 }
 
 function serializeManagedPhoto(photo) {
+  const renditions = Array.isArray(photo.renditions)
+    ? photo.renditions.map((rendition) => ({
+        id: Number(rendition.id),
+        kind: rendition.kind,
+        file: directusFileId(rendition.file),
+        transfer: rendition.transfer || null,
+        primaries: rendition.primaries || null,
+        bitDepth: Number(rendition.bit_depth || 0) || null,
+        isDefault: parseBoolean(rendition.is_default, false)
+      }))
+    : [];
+  const hlgRendition = renditions.find((rendition) => rendition.kind === "hlg");
   return {
     id: photo.id,
     albumId: directusRelationId(photo.album_id),
@@ -3897,6 +4206,13 @@ function serializeManagedPhoto(photo) {
     hdrTransfer: photo.hdr_transfer || null,
     hdrPrimaries: photo.hdr_primaries || null,
     hdrBitDepth: photo.hdr_bit_depth ?? null,
+    hlgImage: hlgRendition?.file || null,
+    filmScanFrameId: directusRelationId(photo.film_scan_frame_id),
+    filmStock: photo.film_stock || null,
+    filmProcess: photo.film_process || null,
+    filmScanner: photo.film_scanner || null,
+    filmFrameFormat: photo.film_frame_format || null,
+    renditions,
     published: parseBoolean(photo.published, false),
     sortOrder: Number(photo.sort_order || 0),
     createdAt: photo.created_at || null,
@@ -4186,6 +4502,212 @@ async function handleAlbumPhotoPatch(req, res, albumId, photoId) {
   });
 }
 
+async function handleAlbumPhotoHdrUpload(req, res, albumId, photoId) {
+  let parsed = null;
+  let token = null;
+  let uploadedHdrFileId = null;
+  let hdrCommitted = false;
+  let preserveUploadedFile = false;
+
+  try {
+    parsed = await parseAlbumMultipart(req);
+    if (parsed.files.sdrFiles.length) {
+      throw httpError(
+        400,
+        "Manual HDR upload accepts only one HDR AVIF file."
+      );
+    }
+    if (parsed.files.hdrFiles.length !== 1) {
+      throw httpError(
+        400,
+        "Manual HDR upload requires exactly one HDR AVIF file."
+      );
+    }
+
+    const hdrUpload = parsed.files.hdrFiles[0];
+    try {
+      validateAlbumBatchLimits([], [hdrUpload], {
+        maxPhotos: 1,
+        maxFileBytes: MAX_ALBUM_IMAGE_BYTES,
+        maxBatchBytes: MAX_ALBUM_IMAGE_BYTES
+      });
+    } catch (error) {
+      throw httpError(413, error.message);
+    }
+
+    let hdrMetadata;
+    try {
+      hdrMetadata = validateHdrProbe(
+        await probeAlbumImage(hdrUpload.tempPath)
+      );
+    } catch (error) {
+      throw httpError(422, `HDR photo failed validation: ${error.message}`);
+    }
+
+    token = await directusLogin();
+    const photo = await getAlbumPhoto(token, albumId, photoId);
+    const sdrFileId = directusFileId(photo.sdr_image);
+    if (!sdrFileId) {
+      throw httpError(422, "The selected photo does not have an SDR image.");
+    }
+
+    const sdrValidationPath = path.join(
+      parsed.tempDir,
+      `existing-sdr-${photoId}`
+    );
+    assertInside(parsed.tempDir, sdrValidationPath);
+    await downloadDirectusAssetToFile(
+      token,
+      sdrFileId,
+      sdrValidationPath
+    );
+    try {
+      const sdrMetadata = validateSdrProbe(
+        await probeAlbumImage(sdrValidationPath)
+      );
+      validatePairedAspectRatio(sdrMetadata, hdrMetadata);
+    } catch (error) {
+      throw httpError(
+        422,
+        `HDR photo does not match the selected SDR photo: ${error.message}`
+      );
+    }
+
+    const reconciliationTag =
+      `album-hdr:${albumId}:${photoId}:${crypto.randomUUID()}`;
+    uploadedHdrFileId = await directusUploadFile(
+      token,
+      hdrUpload,
+      `${photo.caption || photo.alt_text || hdrUpload.originalName} HDR`,
+      { reconciliationTag }
+    );
+
+    const renditionKind = hdrMetadata.transfer;
+    const existingRendition = Array.isArray(photo.renditions)
+      ? photo.renditions.find((rendition) => rendition.kind === renditionKind)
+      : null;
+    const patch =
+      renditionKind === "pq"
+        ? {
+            hdr_image: uploadedHdrFileId,
+            hdr_transfer: hdrMetadata.transfer,
+            hdr_primaries: hdrMetadata.primaries,
+            hdr_bit_depth: hdrMetadata.bitDepth,
+            updated_at: new Date().toISOString()
+          }
+        : { updated_at: new Date().toISOString() };
+    let savedPhoto;
+    try {
+      const response = await directusRequest(
+        `/items/album_photos/${encodeURIComponent(photoId)}`,
+        token,
+        {
+          method: "PATCH",
+          body: patch
+        }
+      );
+      savedPhoto = { ...photo, ...response.data };
+    } catch (error) {
+      if (!error.directusAmbiguous) {
+        throw error;
+      }
+      preserveUploadedFile = true;
+      const reconciledPhoto = await getAlbumPhoto(token, albumId, photoId);
+      if (
+        renditionKind === "pq" &&
+        String(directusFileId(reconciledPhoto.hdr_image)) !==
+        String(uploadedHdrFileId)
+      ) {
+        throw error;
+      }
+      savedPhoto = reconciledPhoto;
+    }
+    const renditionPayload = {
+      photo_id: Number(photoId),
+      film_scan_frame_id: directusRelationId(photo.film_scan_frame_id),
+      kind: renditionKind,
+      file: uploadedHdrFileId,
+      transfer: hdrMetadata.transfer,
+      primaries: hdrMetadata.primaries,
+      bit_depth: hdrMetadata.bitDepth,
+      is_default: renditionKind === "pq" || !directusFileId(photo.hdr_image),
+      created_at: existingRendition?.created_at || new Date().toISOString()
+    };
+    try {
+      if (existingRendition?.id) {
+        await directusRequest(
+          `/items/album_photo_renditions/${existingRendition.id}`,
+          token,
+          { method: "PATCH", body: renditionPayload }
+        );
+      } else {
+        await directusRequest("/items/album_photo_renditions", token, {
+          method: "POST",
+          body: renditionPayload
+        });
+      }
+    } catch (error) {
+      if (renditionKind === "pq") {
+        await directusRequest(`/items/album_photos/${photoId}`, token, {
+          method: "PATCH",
+          body: {
+            hdr_image: directusFileId(photo.hdr_image),
+            hdr_transfer: photo.hdr_transfer,
+            hdr_primaries: photo.hdr_primaries,
+            hdr_bit_depth: photo.hdr_bit_depth,
+            updated_at: new Date().toISOString()
+          }
+        }).catch(() => {});
+      }
+      throw error;
+    }
+    savedPhoto = await getAlbumPhoto(token, albumId, photoId);
+    hdrCommitted = true;
+
+    const previousHdrFileId =
+      directusFileId(existingRendition?.file) ||
+      (renditionKind === "pq" ? directusFileId(photo.hdr_image) : null);
+    let cleanupFailure = null;
+    if (
+      previousHdrFileId &&
+      String(previousHdrFileId) !== String(uploadedHdrFileId)
+    ) {
+      cleanupFailure = await deleteDirectusFileSafely(
+        token,
+        previousHdrFileId,
+        "replaced HDR photo"
+      );
+    }
+
+    sendJson(res, cleanupFailure ? 202 : 200, {
+      status: cleanupFailure ? "partial" : "ok",
+      photo: serializeManagedPhoto(savedPhoto),
+      cleanupRequired: Boolean(cleanupFailure),
+      orphanFileIds: cleanupFailure ? [cleanupFailure.fileId] : []
+    });
+  } catch (error) {
+    if (
+      token &&
+      uploadedHdrFileId &&
+      !hdrCommitted &&
+      !preserveUploadedFile
+    ) {
+      await deleteDirectusFileSafely(
+        token,
+        uploadedHdrFileId,
+        "uncommitted manual HDR upload"
+      );
+    }
+    throw error;
+  } finally {
+    if (parsed?.tempDir) {
+      await fsp
+        .rm(parsed.tempDir, { recursive: true, force: true })
+        .catch(() => {});
+    }
+  }
+}
+
 async function handleAlbumPhotoDelete(res, albumId, photoId) {
   const token = await directusLogin();
   const [album, photo, photos] = await Promise.all([
@@ -4227,9 +4749,16 @@ async function handleAlbumPhotoDelete(res, albumId, photoId) {
   }
 
   const fileIds = [
-    directusFileId(photo.hdr_image),
-    directusFileId(photo.sdr_image)
-  ].filter(Boolean);
+    ...new Set(
+      [
+        directusFileId(photo.hdr_image),
+        directusFileId(photo.sdr_image),
+        ...(Array.isArray(photo.renditions)
+          ? photo.renditions.map((rendition) => directusFileId(rendition.file))
+          : [])
+      ].filter(Boolean)
+    )
+  ];
   const cleanupFailures = [];
   for (const fileId of fileIds) {
     const failure = await deleteDirectusFileSafely(
@@ -4363,6 +4892,1910 @@ async function handleAlbumCover(req, res, albumId) {
   });
 }
 
+const FILM_SCAN_JOB_FIELDS = [
+  "id",
+  "album_id",
+  "status",
+  "scanner",
+  "frame_format",
+  "film_type",
+  "film_stock",
+  "iso",
+  "process",
+  "push_pull",
+  "roll_adjustments",
+  "progress",
+  "warnings",
+  "error_message",
+  "experimental_compatibility",
+  "started_at",
+  "completed_at",
+  "created_at",
+  "updated_at"
+].join(",");
+
+const FILM_SCAN_SOURCE_FIELDS = [
+  "id",
+  "job_id",
+  "original_name",
+  "relative_path",
+  "format",
+  "mime_type",
+  "size_bytes",
+  "sha256",
+  "width",
+  "height",
+  "bit_depth",
+  "icc_description",
+  "has_icc",
+  "decode_status",
+  "decode_error",
+  "created_at",
+  "updated_at"
+].join(",");
+
+const FILM_SCAN_FRAME_FIELDS = [
+  "id",
+  "job_id",
+  "source_id",
+  "album_photo_id",
+  "crop_x",
+  "crop_y",
+  "crop_width",
+  "crop_height",
+  "rotation",
+  "sort_order",
+  "confidence",
+  "review_status",
+  "accepted",
+  "published",
+  "adjustment_overrides",
+  "preview_path",
+  "created_at",
+  "updated_at"
+].join(",");
+
+const filmScanQueue = [];
+let activeFilmScanJobId = null;
+const filmScanJobControllers = new Map();
+let filmScanPreviewTail = Promise.resolve();
+
+function enqueueFilmScanPreview(operation) {
+  const result = filmScanPreviewTail.then(operation, operation);
+  filmScanPreviewTail = result.catch(() => {});
+  return result;
+}
+
+function filmScanCanceledError(message = "胶片扫描任务已取消。") {
+  const error = httpError(409, message);
+  error.filmScanCanceled = true;
+  return error;
+}
+
+function filmScanTimeoutError(label) {
+  const error = httpError(504, `${label}处理超时。`);
+  error.filmScanTimedOut = true;
+  return error;
+}
+
+function throwIfFilmScanAborted(signal) {
+  if (signal?.aborted) {
+    throw signal.reason || filmScanCanceledError();
+  }
+}
+
+function registerFilmScanController(jobId) {
+  const key = String(jobId);
+  if (filmScanJobControllers.has(key)) {
+    throw httpError(409, `胶片扫描任务 ${jobId} 正在处理中。`);
+  }
+  const controller = new AbortController();
+  filmScanJobControllers.set(key, controller);
+  return controller;
+}
+
+function releaseFilmScanController(jobId, controller) {
+  const key = String(jobId);
+  if (filmScanJobControllers.get(key) === controller) {
+    filmScanJobControllers.delete(key);
+  }
+}
+
+function jsonObject(value, fallback = {}) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+function jsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function serializeFilmScanSource(source) {
+  return {
+    id: Number(source.id),
+    jobId: Number(directusRelationId(source.job_id)),
+    originalName: source.original_name,
+    format: source.format,
+    mimeType: source.mime_type,
+    sizeBytes: Number(source.size_bytes || 0),
+    sha256: source.sha256,
+    width: Number(source.width || 0) || null,
+    height: Number(source.height || 0) || null,
+    bitDepth: Number(source.bit_depth || 0) || null,
+    hasIcc: parseBoolean(source.has_icc, false),
+    iccDescription: source.icc_description || null,
+    decodeStatus: source.decode_status,
+    decodeError: source.decode_error || null
+  };
+}
+
+function serializeFilmScanFrame(frame) {
+  return {
+    id: Number(frame.id),
+    jobId: Number(directusRelationId(frame.job_id)),
+    sourceId: Number(directusRelationId(frame.source_id)),
+    albumPhotoId: directusRelationId(frame.album_photo_id)
+      ? Number(directusRelationId(frame.album_photo_id))
+      : null,
+    crop: normalizeCrop({
+      x: Number(frame.crop_x),
+      y: Number(frame.crop_y),
+      width: Number(frame.crop_width),
+      height: Number(frame.crop_height)
+    }),
+    rotation: Number(frame.rotation || 0),
+    sortOrder: Number(frame.sort_order || 0),
+    confidence: Number(frame.confidence || 0),
+    reviewStatus: frame.review_status || "pending",
+    accepted: parseBoolean(frame.accepted, true),
+    published: parseBoolean(frame.published, true),
+    adjustmentOverrides: jsonObject(frame.adjustment_overrides),
+    previewAvailable: Boolean(frame.preview_path)
+  };
+}
+
+function serializeFilmScanJob(job, sources = [], frames = []) {
+  return {
+    id: Number(job.id),
+    albumId: Number(directusRelationId(job.album_id)),
+    status: job.status,
+    scanner: job.scanner,
+    frameFormat: job.frame_format,
+    filmType: job.film_type,
+    filmStock: job.film_stock,
+    iso: Number(job.iso || 0),
+    process: job.process,
+    pushPull: Number(job.push_pull || 0),
+    rollAdjustments: normalizeAdjustments(jsonObject(job.roll_adjustments)),
+    progress: Number(job.progress || 0),
+    warnings: jsonArray(job.warnings),
+    error: job.error_message || null,
+    experimentalCompatibility: parseBoolean(job.experimental_compatibility, true),
+    startedAt: job.started_at || null,
+    completedAt: job.completed_at || null,
+    createdAt: job.created_at || null,
+    updatedAt: job.updated_at || null,
+    sources: sources.map(serializeFilmScanSource),
+    frames: [...frames]
+      .sort(
+        (left, right) =>
+          Number(left.sort_order || 0) - Number(right.sort_order || 0) ||
+          Number(left.id) - Number(right.id)
+      )
+      .map(serializeFilmScanFrame)
+  };
+}
+
+async function getFilmScanJobRecord(token, albumId, jobId) {
+  let job;
+  try {
+    const response = await directusRequest(
+      `/items/film_scan_jobs/${encodeURIComponent(jobId)}?fields=${encodeURIComponent(
+        FILM_SCAN_JOB_FIELDS
+      )}`,
+      token
+    );
+    job = response.data;
+  } catch (error) {
+    if ((error.directusHttpStatus || error.statusCode) === 404) {
+      throw httpError(404, `胶片扫描任务 ${jobId} 不存在。`);
+    }
+    throw error;
+  }
+  if (String(directusRelationId(job.album_id)) !== String(albumId)) {
+    throw httpError(404, `胶片扫描任务 ${jobId} 不属于相簿 ${albumId}。`);
+  }
+  return job;
+}
+
+async function listFilmScanSources(token, jobId) {
+  const params = new URLSearchParams({
+    "filter[job_id][_eq]": String(jobId),
+    fields: FILM_SCAN_SOURCE_FIELDS,
+    sort: "id",
+    limit: "-1"
+  });
+  const result = await directusRequest(
+    `/items/film_scan_sources?${params.toString()}`,
+    token
+  );
+  return Array.isArray(result.data) ? result.data : [];
+}
+
+async function listFilmScanFrames(token, jobId) {
+  const params = new URLSearchParams({
+    "filter[job_id][_eq]": String(jobId),
+    fields: FILM_SCAN_FRAME_FIELDS,
+    sort: "sort_order,id",
+    limit: "-1"
+  });
+  const result = await directusRequest(
+    `/items/film_scan_frames?${params.toString()}`,
+    token
+  );
+  return Array.isArray(result.data) ? result.data : [];
+}
+
+async function getFilmScanFrameRecord(token, albumId, jobId, frameId) {
+  const job = await getFilmScanJobRecord(token, albumId, jobId);
+  const frames = await listFilmScanFrames(token, jobId);
+  const frame = frames.find((candidate) => String(candidate.id) === String(frameId));
+  if (!frame) throw httpError(404, `任务中不存在帧 ${frameId}。`);
+  return { job, frame };
+}
+
+async function handleFilmStockPresets(req, res) {
+  const token = await directusLogin();
+  if (req.method === "GET") {
+    const params = new URLSearchParams({
+      fields:
+        "id,manufacturer,model,film_type,nominal_iso,recommended_process,scanner,parameters,built_in,created_at,updated_at",
+      sort: "-built_in,manufacturer,model",
+      limit: "-1"
+    });
+    const result = await directusRequest(
+      `/items/film_stock_presets?${params.toString()}`,
+      token
+    );
+    sendJson(res, 200, {
+      status: "ok",
+      presets: Array.isArray(result.data) ? result.data : []
+    });
+    return;
+  }
+  const body = await readJsonBody(req, 256 * 1024);
+  const manufacturer = normalizeAlbumText(
+    body.manufacturer,
+    "manufacturer",
+    100,
+    { required: true }
+  );
+  const model = normalizeAlbumText(body.model, "model", 160, { required: true });
+  const filmType = String(body.filmType || "").trim();
+  if (!["color-negative", "bw-negative", "slide"].includes(filmType)) {
+    throw httpError(400, "filmType 无效。");
+  }
+  const scanner = body.scanner ? String(body.scanner).trim() : null;
+  if (
+    scanner &&
+    !["hasselblad-x5", "fujifilm-sp3000", "noritsu-hs1800"].includes(scanner)
+  ) {
+    throw httpError(400, "scanner 无效。");
+  }
+  const nominalIso = Math.max(1, Math.min(25600, Number(body.nominalIso || 100)));
+  const recommendedProcess = String(body.recommendedProcess || "").trim();
+  if (
+    recommendedProcess &&
+    !["c41", "e6", "ecn2", "bw", "other"].includes(recommendedProcess)
+  ) {
+    throw httpError(400, "recommendedProcess 无效。");
+  }
+  const existingParams = new URLSearchParams({
+    "filter[manufacturer][_eq]": manufacturer,
+    "filter[model][_eq]": model,
+    "filter[built_in][_eq]": "false",
+    fields: "id",
+    limit: "1"
+  });
+  const existing = (
+    await directusRequest(
+      `/items/film_stock_presets?${existingParams.toString()}`,
+      token
+    )
+  ).data?.[0];
+  const payload = {
+    manufacturer,
+    model,
+    film_type: filmType,
+    nominal_iso: nominalIso,
+    recommended_process: recommendedProcess || null,
+    scanner,
+    parameters: normalizeAdjustments(jsonObject(body.parameters)),
+    built_in: false,
+    updated_at: new Date().toISOString()
+  };
+  const saved = existing
+    ? (
+        await directusRequest(`/items/film_stock_presets/${existing.id}`, token, {
+          method: "PATCH",
+          body: payload
+        })
+      ).data
+    : (
+        await directusRequest("/items/film_stock_presets", token, {
+          method: "POST",
+          body: { ...payload, created_at: new Date().toISOString() }
+        })
+      ).data;
+  sendJson(res, existing ? 200 : 201, { status: "ok", preset: saved });
+}
+
+function filmScanSourcePath(relativePath) {
+  const filePath = path.resolve(MEDIA_ROOT, String(relativePath || ""));
+  assertInside(FILM_SCAN_ROOT, filePath);
+  return filePath;
+}
+
+function filmScanFrameCrop(frame) {
+  return normalizeCrop({
+    x: Number(frame.crop_x),
+    y: Number(frame.crop_y),
+    width: Number(frame.crop_width),
+    height: Number(frame.crop_height)
+  });
+}
+
+async function updateFilmScanJob(token, jobId, patch) {
+  return (
+    await directusRequest(`/items/film_scan_jobs/${encodeURIComponent(jobId)}`, token, {
+      method: "PATCH",
+      body: { ...patch, updated_at: new Date().toISOString() }
+    })
+  ).data;
+}
+
+function enqueueFilmScanJob(jobId) {
+  const normalized = String(jobId);
+  if (
+    normalized === String(activeFilmScanJobId) ||
+    filmScanQueue.some((queued) => String(queued) === normalized)
+  ) {
+    return;
+  }
+  filmScanQueue.push(normalized);
+  void drainFilmScanQueue();
+}
+
+async function withFilmScanTimeout(operation, label, controller) {
+  let timeout;
+  const work = Promise.resolve().then(() => operation(controller.signal));
+  try {
+    return await Promise.race([
+      work,
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => {
+            const error = filmScanTimeoutError(label);
+            controller.abort(error);
+            reject(error);
+          },
+          FILM_SCAN_PROCESS_TIMEOUT_MS
+        );
+      })
+    ]);
+  } catch (error) {
+    if (error.filmScanTimedOut) {
+      await work.catch(() => {});
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function drainFilmScanQueue() {
+  if (activeFilmScanJobId || !filmScanQueue.length) return;
+  activeFilmScanJobId = filmScanQueue.shift();
+  const jobId = activeFilmScanJobId;
+  let controller;
+  try {
+    controller = registerFilmScanController(jobId);
+    await withFilmScanTimeout(
+      (signal) => analyzeFilmScanJob(jobId, signal),
+      `胶片扫描任务 ${jobId}`,
+      controller
+    );
+  } catch (error) {
+    console.error(`[film-scan] Job ${jobId} failed: ${error.stack || error.message}`);
+    try {
+      const token = await directusLogin();
+      const current = (
+        await directusRequest(`/items/film_scan_jobs/${jobId}?fields=status`, token)
+      ).data;
+      if (error.filmScanCanceled) {
+        await updateFilmScanJob(token, jobId, {
+          status: "canceled",
+          error_message: null
+        });
+      } else if (current?.status !== "canceled") {
+        await updateFilmScanJob(token, jobId, {
+          status: "failed",
+          error_message: error.message
+        });
+      }
+    } catch (updateError) {
+      console.error(
+        `[film-scan] Could not persist failure for ${jobId}: ${updateError.message}`
+      );
+    }
+  } finally {
+    if (controller) releaseFilmScanController(jobId, controller);
+    activeFilmScanJobId = null;
+    if (filmScanQueue.length) setImmediate(() => void drainFilmScanQueue());
+  }
+}
+
+async function analyzeFilmScanJob(jobId, signal) {
+  throwIfFilmScanAborted(signal);
+  const token = await directusLogin();
+  const response = await directusRequest(
+    `/items/film_scan_jobs/${encodeURIComponent(jobId)}?fields=${encodeURIComponent(
+      FILM_SCAN_JOB_FIELDS
+    )}`,
+    token
+  );
+  const job = response.data;
+  if (!job || ["canceled", "committed"].includes(job.status)) return;
+  throwIfFilmScanAborted(signal);
+  await updateFilmScanJob(token, jobId, {
+    status: "analyzing",
+    progress: 1,
+    error_message: null,
+    started_at: job.started_at || new Date().toISOString()
+  });
+
+  const existingFrames = await listFilmScanFrames(token, jobId);
+  for (const frame of existingFrames) {
+    throwIfFilmScanAborted(signal);
+    await directusRequest(`/items/film_scan_frames/${frame.id}`, token, {
+      method: "DELETE"
+    });
+  }
+  const sources = await listFilmScanSources(token, jobId);
+  const warnings = [];
+  let order = 0;
+  let rollMask = null;
+
+  for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+    throwIfFilmScanAborted(signal);
+    const currentJob = (
+      await directusRequest(`/items/film_scan_jobs/${jobId}?fields=status`, token)
+    ).data;
+    if (currentJob.status === "canceled") return;
+
+    const source = sources[sourceIndex];
+    const sourcePath = filmScanSourcePath(source.relative_path);
+    try {
+      const metadata = await inspectFilmScanSource(sourcePath);
+      throwIfFilmScanAborted(signal);
+      await directusRequest(`/items/film_scan_sources/${source.id}`, token, {
+        method: "PATCH",
+        body: {
+          width: metadata.width,
+          height: metadata.height,
+          bit_depth: metadata.bitDepth,
+          has_icc: metadata.hasIcc,
+          icc_description: metadata.hasIcc
+            ? `${metadata.space || "embedded"} ICC (${metadata.iccBytes} bytes)`
+            : null,
+          decode_status: "decoded",
+          decode_error: null,
+          updated_at: new Date().toISOString()
+        }
+      });
+      if (source.format === "fff") {
+        warnings.push(
+          `${source.original_name} 以增强 TIFF 方式解码；X5 FFF/3F 兼容仍为实验性。`
+        );
+      }
+      const analysis = await createAnalysisImage(sourcePath);
+      throwIfFilmScanAborted(signal);
+      const detections = detectFilmFrames(analysis, {
+        frameFormat: job.frame_format
+      });
+      const sourceDir = path.dirname(sourcePath);
+      const previewDir = path.join(sourceDir, "previews");
+      await fsp.mkdir(previewDir, { recursive: true });
+      await renderFilmSourceContact(
+        sourcePath,
+        path.join(previewDir, `source-${source.id}-contact.jpg`)
+      );
+      throwIfFilmScanAborted(signal);
+
+      for (const detection of detections) {
+        throwIfFilmScanAborted(signal);
+        const base = estimateFilmBase(analysis, detection.crop);
+        if (
+          !rollMask &&
+          job.film_type === "color-negative" &&
+          base.confidence >= 0.85
+        ) {
+          rollMask = base.rgb;
+        }
+        const frameCreated = (
+          await directusRequest("/items/film_scan_frames", token, {
+            method: "POST",
+            body: {
+              job_id: Number(jobId),
+              source_id: Number(source.id),
+              crop_x: detection.crop.x,
+              crop_y: detection.crop.y,
+              crop_width: detection.crop.width,
+              crop_height: detection.crop.height,
+              rotation: 0,
+              sort_order: order,
+              confidence: detection.confidence,
+              review_status: detection.requiresConfirmation
+                ? "confirmation_required"
+                : "auto",
+              accepted: true,
+              published: true,
+              adjustment_overrides: {},
+              preview_path: null,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            }
+          })
+        ).data;
+        const previewPath = path.join(previewDir, `${frameCreated.id}.jpg`);
+        const adjustments = normalizeAdjustments(jsonObject(job.roll_adjustments));
+        await renderReviewedFilmFrame({
+          sourcePath,
+          outputPath: previewPath,
+          crop: detection.crop,
+          rotation: 0,
+          filmType: job.film_type,
+          adjustments,
+          maskRgb: adjustments.maskRgb || rollMask || base.rgb,
+          tempDir: previewDir,
+          key: `preview-${frameCreated.id}`,
+          maximumDimension: 1400,
+          quality: 88,
+          signal
+        });
+        throwIfFilmScanAborted(signal);
+        const previewRelative = path.relative(MEDIA_ROOT, previewPath);
+        await directusRequest(`/items/film_scan_frames/${frameCreated.id}`, token, {
+          method: "PATCH",
+          body: {
+            preview_path: previewRelative,
+            updated_at: new Date().toISOString()
+          }
+        });
+        if (detection.requiresConfirmation) {
+          warnings.push(
+            `帧 ${order + 1} 的自动裁切置信度为 ${detection.confidence.toFixed(
+              2
+            )}，提交前必须手动确认。`
+          );
+        }
+        order += 1;
+      }
+    } catch (error) {
+      if (signal?.aborted || error.filmScanCanceled || error.filmScanTimedOut) {
+        throw signal?.reason || error;
+      }
+      await directusRequest(`/items/film_scan_sources/${source.id}`, token, {
+        method: "PATCH",
+        body: {
+          decode_status: "failed",
+          decode_error: error.message,
+          updated_at: new Date().toISOString()
+        }
+      });
+      throw new Error(`原档“${source.original_name}”解码失败：${error.message}`);
+    }
+
+    await updateFilmScanJob(token, jobId, {
+      progress: Math.round(((sourceIndex + 1) / sources.length) * 85)
+    });
+  }
+
+  if (!order) throw new Error("未能从原档中识别出任何帧。");
+  throwIfFilmScanAborted(signal);
+  const adjustments = normalizeAdjustments(jsonObject(job.roll_adjustments));
+  if (job.film_type === "color-negative" && adjustments.maskMode === "auto") {
+    adjustments.maskRgb = rollMask;
+    if (!rollMask) {
+      adjustments.maskMode = "preset";
+      adjustments.maskRgb = await findFilmStockPresetMask(token, job);
+      warnings.push(
+        adjustments.maskRgb
+          ? "未找到可靠片基区域，已回退到扫描仪与胶卷型号预设，并标记为低置信度。"
+          : "未找到可靠片基区域或匹配预设，已使用通用彩负基准并标记为低置信度。"
+      );
+    }
+  }
+  throwIfFilmScanAborted(signal);
+  const finalState = (
+    await directusRequest(`/items/film_scan_jobs/${jobId}?fields=status`, token)
+  ).data?.status;
+  if (finalState === "canceled") throw filmScanCanceledError();
+  throwIfFilmScanAborted(signal);
+  await updateFilmScanJob(token, jobId, {
+    status: "review_required",
+    progress: 100,
+    roll_adjustments: adjustments,
+    warnings
+  });
+  throwIfFilmScanAborted(signal);
+}
+
+async function findFilmStockPresetMask(token, job) {
+  const params = new URLSearchParams({
+    fields: "manufacturer,model,scanner,parameters,built_in",
+    limit: "-1"
+  });
+  const presets = (
+    await directusRequest(`/items/film_stock_presets?${params.toString()}`, token)
+  ).data;
+  const requested = String(job.film_stock || "").trim().toLowerCase();
+  const matches = (Array.isArray(presets) ? presets : []).filter((preset) => {
+    const fullName = `${preset.manufacturer || ""} ${preset.model || ""}`
+      .trim()
+      .toLowerCase();
+    return fullName === requested || String(preset.model || "").toLowerCase() === requested;
+  });
+  const selected =
+    matches.find((preset) => preset.scanner === job.scanner) ||
+    matches.find((preset) => !preset.scanner) ||
+    null;
+  const maskRgb = jsonObject(selected?.parameters).maskRgb;
+  return Array.isArray(maskRgb) && maskRgb.length === 3
+    ? maskRgb.map((channel) => Math.max(0, Math.min(1, Number(channel))))
+    : null;
+}
+
+async function handleFilmScanCreate(req, res, albumId) {
+  let parsed;
+  let token;
+  let job = null;
+  let finalDir = null;
+  try {
+    parsed = await parseFilmScanMultipart(req);
+    let rawMetadata;
+    try {
+      rawMetadata = JSON.parse(parsed.fields.metadata);
+    } catch {
+      throw httpError(400, "metadata 必须是有效 JSON。");
+    }
+    let metadata;
+    try {
+      metadata = normalizeFilmScanMetadata(rawMetadata);
+    } catch (error) {
+      throw httpError(400, error.message);
+    }
+    const unsupportedSource = parsed.files.find((file) => {
+      if (metadata.scanner === "hasselblad-x5") return file.format === "jpeg";
+      return file.format === "fff";
+    });
+    if (unsupportedSource) {
+      throw httpError(
+        415,
+        metadata.scanner === "hasselblad-x5"
+          ? `Hasselblad X5 原档“${unsupportedSource.originalName}”应使用 FFF/3F 或 TIFF。`
+          : `FFF/3F 仅用于 Hasselblad X5；“${unsupportedSource.originalName}”请改用 TIFF 或 JPEG。`
+      );
+    }
+    token = await directusLogin();
+    await getAlbumById(token, albumId);
+
+    const duplicateParams = new URLSearchParams({
+      "filter[sha256][_in]": parsed.files.map((file) => file.sha256).join(","),
+      fields: "id,original_name,sha256",
+      limit: "1"
+    });
+    const duplicate = (
+      await directusRequest(
+        `/items/film_scan_sources?${duplicateParams.toString()}`,
+        token
+      )
+    ).data?.[0];
+    if (duplicate) {
+      throw httpError(
+        409,
+        `原档与已导入的“${duplicate.original_name}”内容重复（SHA-256 相同）。`
+      );
+    }
+
+    const now = new Date().toISOString();
+    job = (
+      await directusRequest("/items/film_scan_jobs", token, {
+        method: "POST",
+        body: {
+          album_id: Number(albumId),
+          status: "uploaded",
+          scanner: metadata.scanner,
+          frame_format: metadata.frameFormat,
+          film_type: metadata.filmType,
+          film_stock: metadata.filmStock,
+          iso: metadata.iso,
+          process: metadata.process,
+          push_pull: metadata.pushPull,
+          roll_adjustments: metadata.adjustments,
+          progress: 0,
+          warnings: [],
+          error_message: null,
+          experimental_compatibility: true,
+          created_at: now,
+          updated_at: now
+        }
+      })
+    ).data;
+
+    finalDir = path.join(FILM_SCAN_ROOT, String(job.id));
+    assertInside(FILM_SCAN_ROOT, finalDir);
+    const sourceDir = path.join(finalDir, "sources");
+    await fsp.mkdir(sourceDir, { recursive: true });
+    const createdSources = [];
+    for (const file of parsed.files) {
+      const targetPath = path.join(sourceDir, file.filename);
+      assertInside(finalDir, targetPath);
+      await fsp.rename(file.tempPath, targetPath);
+      const relativePath = path.relative(MEDIA_ROOT, targetPath);
+      const source = (
+        await directusRequest("/items/film_scan_sources", token, {
+          method: "POST",
+          body: {
+            job_id: Number(job.id),
+            original_name: file.originalName,
+            relative_path: relativePath,
+            format: file.format,
+            mime_type: file.mimeType,
+            size_bytes: file.size,
+            sha256: file.sha256,
+            decode_status: "queued",
+            created_at: now,
+            updated_at: now
+          }
+        })
+      ).data;
+      createdSources.push(source);
+    }
+
+    const responseJob = serializeFilmScanJob(job, createdSources, []);
+    sendJson(res, 202, { status: "ok", job: responseJob });
+    enqueueFilmScanJob(job.id);
+  } catch (error) {
+    if (job?.id && token) {
+      await updateFilmScanJob(token, job.id, {
+        status: "failed",
+        error_message: error.message
+      }).catch(() => {});
+    }
+    if (!res.headersSent) {
+      sendJson(res, error.statusCode || 500, {
+        status: "error",
+        error: error.message,
+        preservedJobId: job?.id || null
+      });
+    }
+  } finally {
+    if (parsed?.tempDir) {
+      await fsp.rm(parsed.tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+async function handleFilmScanGet(res, albumId, jobId) {
+  const token = await directusLogin();
+  const job = await getFilmScanJobRecord(token, albumId, jobId);
+  const [sources, frames] = await Promise.all([
+    listFilmScanSources(token, jobId),
+    listFilmScanFrames(token, jobId)
+  ]);
+  sendJson(res, 200, {
+    status: "ok",
+    job: serializeFilmScanJob(job, sources, frames)
+  });
+}
+
+function pickFilmScanJobPatch(body) {
+  const patch = {};
+  if (Object.hasOwn(body, "rollAdjustments")) {
+    patch.roll_adjustments = normalizeAdjustments(body.rollAdjustments);
+  }
+  if (Object.hasOwn(body, "filmStock")) {
+    const filmStock = String(body.filmStock || "").trim();
+    if (!filmStock) throw httpError(400, "胶卷型号不能为空。");
+    patch.film_stock = filmStock.slice(0, 160);
+  }
+  if (Object.hasOwn(body, "iso")) patch.iso = Math.max(1, Math.min(25600, Number(body.iso)));
+  if (Object.hasOwn(body, "pushPull")) {
+    patch.push_pull = Math.max(-5, Math.min(5, Number(body.pushPull)));
+  }
+  return patch;
+}
+
+async function renderOpticalDensityNegative(inputPath, outputPath, maskRgb, signal) {
+  throwIfFilmScanAborted(signal);
+  const mask =
+    Array.isArray(maskRgb) && maskRgb.length === 3
+      ? maskRgb.map((channel) =>
+          Math.max(0.01, Math.min(1, Number(channel)))
+        )
+      : [0.82, 0.61, 0.39];
+  const linearMask = mask.map((channel) =>
+    channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4
+  );
+  const densityRange = (2.4 * Math.log(10)).toFixed(6);
+  const channelExpression = (channel, sample) =>
+    `clip(log(${channel.toFixed(6)}/max(${sample}(X,Y),0.000015))/${densityRange},0,1)`;
+  const filter = [
+    "setparams=color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709",
+    "zscale=transfer=linear:npl=100",
+    "format=gbrpf32le",
+    [
+      `geq=r='${channelExpression(linearMask[0], "r")}'`,
+      `g='${channelExpression(linearMask[1], "g")}'`,
+      `b='${channelExpression(linearMask[2], "b")}'`
+    ].join(":"),
+    "format=gbrp16le"
+  ].join(",");
+  await runProcess(
+    FFMPEG_PATH,
+    [
+      "-y",
+      "-v",
+      "error",
+      "-i",
+      inputPath,
+      "-frames:v",
+      "1",
+      "-vf",
+      filter,
+      "-c:v",
+      "tiff",
+      "-pix_fmt",
+      "rgb48le",
+      outputPath
+    ],
+    { timeoutMs: FILM_SCAN_PROCESS_TIMEOUT_MS, signal }
+  );
+}
+
+async function prepareFilmFrameForRendering(options) {
+  if (options.filmType !== "color-negative") {
+    return {
+      sourcePath: options.sourcePath,
+      crop: options.crop,
+      rotation: options.rotation,
+      filmType: options.filmType,
+      temporaryPaths: []
+    };
+  }
+  const key = options.key || crypto.randomUUID();
+  const rawPath = path.join(options.tempDir, `${key}-managed-raw.tif`);
+  const densityPath = path.join(options.tempDir, `${key}-density.tif`);
+  assertInside(options.tempDir, rawPath);
+  assertInside(options.tempDir, densityPath);
+  await fsp.mkdir(options.tempDir, { recursive: true });
+  await renderFilmRawFrame({
+    sourcePath: options.sourcePath,
+    outputPath: rawPath,
+    crop: options.crop,
+    rotation: options.rotation
+  });
+  throwIfFilmScanAborted(options.signal);
+  await renderOpticalDensityNegative(
+    rawPath,
+    densityPath,
+    options.adjustments?.maskRgb,
+    options.signal
+  );
+  return {
+    sourcePath: densityPath,
+    crop: { x: 0, y: 0, width: 1, height: 1 },
+    rotation: 0,
+    filmType: "slide",
+    temporaryPaths: [rawPath, densityPath]
+  };
+}
+
+async function renderReviewedFilmFrame(options) {
+  const adjustments = normalizeAdjustments({
+    ...options.adjustments,
+    maskRgb: options.maskRgb || options.adjustments?.maskRgb || null
+  });
+  const prepared = await prepareFilmFrameForRendering({
+    sourcePath: options.sourcePath,
+    crop: options.crop,
+    rotation: options.rotation,
+    filmType: options.filmType,
+    adjustments,
+    tempDir: options.tempDir || path.dirname(options.outputPath),
+    key: options.key,
+    signal: options.signal
+  });
+  try {
+    throwIfFilmScanAborted(options.signal);
+    return await renderFilmFrame({
+      ...options,
+      sourcePath: prepared.sourcePath,
+      crop: prepared.crop,
+      rotation: prepared.rotation,
+      filmType: prepared.filmType,
+      adjustments
+    });
+  } finally {
+    for (const temporaryPath of prepared.temporaryPaths) {
+      await fsp.unlink(temporaryPath).catch(() => {});
+    }
+  }
+}
+
+async function renderFilmScanFramePreviewNow(token, job, frame) {
+  const sources = await listFilmScanSources(token, job.id);
+  const source = sources.find(
+    (candidate) => String(candidate.id) === String(directusRelationId(frame.source_id))
+  );
+  if (!source) throw httpError(404, "帧对应的原档不存在。");
+  const previewPath = filmScanSourcePath(frame.preview_path);
+  await fsp.mkdir(path.dirname(previewPath), { recursive: true });
+  const roll = normalizeAdjustments(jsonObject(job.roll_adjustments));
+  const adjustments = mergeFrameAdjustments(
+    roll,
+    jsonObject(frame.adjustment_overrides)
+  );
+  await renderReviewedFilmFrame({
+    sourcePath: filmScanSourcePath(source.relative_path),
+    outputPath: previewPath,
+    crop: filmScanFrameCrop(frame),
+    rotation: Number(frame.rotation || 0),
+    filmType: job.film_type,
+    adjustments,
+    maskRgb: adjustments.maskRgb,
+    tempDir: path.dirname(previewPath),
+    key: `preview-${frame.id}`,
+    maximumDimension: 1400,
+    quality: 88
+  });
+}
+
+function rerenderFilmScanFrame(token, job, frame) {
+  return enqueueFilmScanPreview(() =>
+    renderFilmScanFramePreviewNow(token, job, frame)
+  );
+}
+
+async function handleFilmScanJobPatch(req, res, albumId, jobId) {
+  const body = await readJsonBody(req, 512 * 1024);
+  const token = await directusLogin();
+  const job = await getFilmScanJobRecord(token, albumId, jobId);
+  if (!["review_required", "failed"].includes(job.status)) {
+    throw httpError(409, "仅待审核或失败任务可修改整卷参数。");
+  }
+  const patch = pickFilmScanJobPatch(body);
+  if (!Object.keys(patch).length && !Array.isArray(body.frameOrder)) {
+    throw httpError(400, "未提供可修改的任务字段。");
+  }
+  if (Array.isArray(body.frameOrder)) {
+    const frames = await listFilmScanFrames(token, jobId);
+    const expected = new Set(frames.map((frame) => String(frame.id)));
+    const received = body.frameOrder.map(String);
+    if (
+      received.length !== expected.size ||
+      new Set(received).size !== received.length ||
+      received.some((id) => !expected.has(id))
+    ) {
+      throw httpError(400, "frameOrder 必须完整且不能重复。");
+    }
+    for (let index = 0; index < received.length; index += 1) {
+      await directusRequest(`/items/film_scan_frames/${received[index]}`, token, {
+        method: "PATCH",
+        body: { sort_order: index, updated_at: new Date().toISOString() }
+      });
+    }
+  }
+  const sample = patch.roll_adjustments?.filmBaseSample;
+  if (sample && patch.roll_adjustments.maskMode === "manual") {
+    const sources = await listFilmScanSources(token, jobId);
+    const source =
+      sources.find(
+        (candidate) => String(candidate.id) === String(sample.sourceId || "")
+      ) || sources[0];
+    if (!source) throw httpError(409, "任务中没有可供片基取样的原档。");
+    patch.roll_adjustments.maskRgb = await sampleFilmBaseAtPoint(
+      filmScanSourcePath(source.relative_path),
+      sample
+    );
+    patch.roll_adjustments.filmBaseSample = {
+      x: sample.x,
+      y: sample.y,
+      sourceId: Number(source.id)
+    };
+  }
+  if (Object.keys(patch).length) await updateFilmScanJob(token, jobId, patch);
+  const currentJob = await getFilmScanJobRecord(token, albumId, jobId);
+  const [sources, frames] = await Promise.all([
+    listFilmScanSources(token, jobId),
+    listFilmScanFrames(token, jobId)
+  ]);
+  sendJson(res, 200, {
+    status: "ok",
+    job: serializeFilmScanJob(currentJob, sources, frames)
+  });
+}
+
+async function handleFilmScanFramePatch(req, res, albumId, jobId, frameId) {
+  const body = await readJsonBody(req, 512 * 1024);
+  const token = await directusLogin();
+  const { job, frame } = await getFilmScanFrameRecord(
+    token,
+    albumId,
+    jobId,
+    frameId
+  );
+  if (job.status !== "review_required") {
+    throw httpError(409, "仅待审核任务可修改帧。");
+  }
+  if (body.action === "split") {
+    const sources = await listFilmScanSources(token, jobId);
+    const source = sources.find(
+      (candidate) =>
+        String(candidate.id) === String(directusRelationId(frame.source_id))
+    );
+    if (!source) throw httpError(404, "帧对应的原档不存在。");
+    const crop = filmScanFrameCrop(frame);
+    const horizontal =
+      crop.width * Number(source.width || 1) >=
+      crop.height * Number(source.height || 1);
+    const splitAt = Math.max(0.15, Math.min(0.85, Number(body.splitAt || 0.5)));
+    const firstCrop = horizontal
+      ? { ...crop, width: crop.width * splitAt }
+      : { ...crop, height: crop.height * splitAt };
+    const secondCrop = horizontal
+      ? {
+          ...crop,
+          x: crop.x + crop.width * splitAt,
+          width: crop.width * (1 - splitAt)
+        }
+      : {
+          ...crop,
+          y: crop.y + crop.height * splitAt,
+          height: crop.height * (1 - splitAt)
+        };
+    const frames = await listFilmScanFrames(token, jobId);
+    for (const candidate of frames.filter(
+      (candidate) => Number(candidate.sort_order) > Number(frame.sort_order)
+    )) {
+      await directusRequest(`/items/film_scan_frames/${candidate.id}`, token, {
+        method: "PATCH",
+        body: {
+          sort_order: Number(candidate.sort_order) + 1,
+          updated_at: new Date().toISOString()
+        }
+      });
+    }
+    const updated = (
+      await directusRequest(`/items/film_scan_frames/${frameId}`, token, {
+        method: "PATCH",
+        body: {
+          crop_x: firstCrop.x,
+          crop_y: firstCrop.y,
+          crop_width: firstCrop.width,
+          crop_height: firstCrop.height,
+          review_status: "confirmation_required",
+          updated_at: new Date().toISOString()
+        }
+      })
+    ).data;
+    const created = (
+      await directusRequest("/items/film_scan_frames", token, {
+        method: "POST",
+        body: {
+          job_id: Number(jobId),
+          source_id: Number(directusRelationId(frame.source_id)),
+          crop_x: secondCrop.x,
+          crop_y: secondCrop.y,
+          crop_width: secondCrop.width,
+          crop_height: secondCrop.height,
+          rotation: Number(frame.rotation || 0),
+          sort_order: Number(frame.sort_order) + 1,
+          confidence: Math.min(0.84, Number(frame.confidence || 0.5)),
+          review_status: "confirmation_required",
+          accepted: true,
+          published: parseBoolean(frame.published, true),
+          adjustment_overrides: jsonObject(frame.adjustment_overrides),
+          preview_path: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      })
+    ).data;
+    const previewRelative = path.join(
+      path.dirname(String(frame.preview_path)),
+      `${created.id}.jpg`
+    );
+    const createdWithPreview = (
+      await directusRequest(`/items/film_scan_frames/${created.id}`, token, {
+        method: "PATCH",
+        body: { preview_path: previewRelative, updated_at: new Date().toISOString() }
+      })
+    ).data;
+    await Promise.all([
+      rerenderFilmScanFrame(token, job, { ...frame, ...updated }),
+      rerenderFilmScanFrame(token, job, { ...created, ...createdWithPreview })
+    ]);
+    sendJson(res, 201, {
+      status: "ok",
+      frames: [
+        serializeFilmScanFrame({ ...frame, ...updated }),
+        serializeFilmScanFrame({ ...created, ...createdWithPreview })
+      ]
+    });
+    return;
+  }
+  if (body.action === "merge-next") {
+    const frames = await listFilmScanFrames(token, jobId);
+    const currentIndex = frames.findIndex(
+      (candidate) => String(candidate.id) === String(frameId)
+    );
+    const next = frames[currentIndex + 1];
+    if (!next) throw httpError(409, "当前帧后没有可合并的帧。");
+    if (
+      String(directusRelationId(next.source_id)) !==
+      String(directusRelationId(frame.source_id))
+    ) {
+      throw httpError(409, "只能合并同一原档中的相邻帧。");
+    }
+    const left = filmScanFrameCrop(frame);
+    const right = filmScanFrameCrop(next);
+    const x = Math.min(left.x, right.x);
+    const y = Math.min(left.y, right.y);
+    const crop = normalizeCrop({
+      x,
+      y,
+      width: Math.max(left.x + left.width, right.x + right.width) - x,
+      height: Math.max(left.y + left.height, right.y + right.height) - y
+    });
+    const updated = (
+      await directusRequest(`/items/film_scan_frames/${frameId}`, token, {
+        method: "PATCH",
+        body: {
+          crop_x: crop.x,
+          crop_y: crop.y,
+          crop_width: crop.width,
+          crop_height: crop.height,
+          confidence: Math.min(0.84, Number(frame.confidence || 0.5)),
+          review_status: "confirmation_required",
+          updated_at: new Date().toISOString()
+        }
+      })
+    ).data;
+    await directusRequest(`/items/film_scan_frames/${next.id}`, token, {
+      method: "DELETE"
+    });
+    if (next.preview_path) {
+      await fsp.unlink(filmScanSourcePath(next.preview_path)).catch(() => {});
+    }
+    for (let index = currentIndex + 2; index < frames.length; index += 1) {
+      await directusRequest(`/items/film_scan_frames/${frames[index].id}`, token, {
+        method: "PATCH",
+        body: {
+          sort_order: index - 1,
+          updated_at: new Date().toISOString()
+        }
+      });
+    }
+    await rerenderFilmScanFrame(token, job, { ...frame, ...updated });
+    sendJson(res, 200, {
+      status: "ok",
+      frame: serializeFilmScanFrame({ ...frame, ...updated }),
+      removedFrameId: Number(next.id)
+    });
+    return;
+  }
+  const patch = {};
+  if (body.crop) {
+    const crop = normalizeCrop(body.crop);
+    Object.assign(patch, {
+      crop_x: crop.x,
+      crop_y: crop.y,
+      crop_width: crop.width,
+      crop_height: crop.height
+    });
+  }
+  if (Object.hasOwn(body, "rotation")) {
+    const rotation = Number(body.rotation);
+    if (![0, 90, 180, 270].includes(rotation)) {
+      throw httpError(400, "旋转角度只能是 0、90、180 或 270。");
+    }
+    patch.rotation = rotation;
+  }
+  if (Object.hasOwn(body, "accepted")) patch.accepted = parseAlbumBoolean(body.accepted, true);
+  if (Object.hasOwn(body, "published")) patch.published = parseAlbumBoolean(body.published, true);
+  if (Object.hasOwn(body, "adjustmentOverrides")) {
+    patch.adjustment_overrides = jsonObject(body.adjustmentOverrides);
+  }
+  if (Object.hasOwn(body, "confirmed") && parseAlbumBoolean(body.confirmed, false)) {
+    patch.review_status = "confirmed";
+  }
+  if (!Object.keys(patch).length) throw httpError(400, "未提供可修改的帧字段。");
+  const updated = (
+    await directusRequest(`/items/film_scan_frames/${frameId}`, token, {
+      method: "PATCH",
+      body: { ...patch, updated_at: new Date().toISOString() }
+    })
+  ).data;
+  await rerenderFilmScanFrame(token, job, { ...frame, ...updated });
+  sendJson(res, 200, {
+    status: "ok",
+    frame: serializeFilmScanFrame({ ...frame, ...updated })
+  });
+}
+
+async function handleFilmScanPreview(req, res, albumId, jobId) {
+  const body = await readJsonBody(req, 64 * 1024);
+  const frameId = normalizeAlbumId(body.frameId, "frame id");
+  const token = await directusLogin();
+  const { job, frame } = await getFilmScanFrameRecord(
+    token,
+    albumId,
+    jobId,
+    frameId
+  );
+  await rerenderFilmScanFrame(token, job, frame);
+  sendJson(res, 200, {
+    status: "ok",
+    frameId: Number(frameId),
+    previewEndpoint: `/api/albums/${albumId}/film-scans/${jobId}/frames/${frameId}/preview`
+  });
+}
+
+async function handleFilmScanPreviewAsset(res, albumId, jobId, frameId) {
+  const token = await directusLogin();
+  const { frame } = await getFilmScanFrameRecord(
+    token,
+    albumId,
+    jobId,
+    frameId
+  );
+  if (!frame.preview_path) throw httpError(404, "该帧尚无审核预览。");
+  const previewPath = filmScanSourcePath(frame.preview_path);
+  const stat = await fsp.stat(previewPath);
+  res.writeHead(200, {
+    "Content-Type": "image/jpeg",
+    "Content-Length": stat.size,
+    "Cache-Control": "private, no-store"
+  });
+  fs.createReadStream(previewPath).pipe(res);
+}
+
+async function handleFilmScanSourcePreviewAsset(
+  res,
+  albumId,
+  jobId,
+  sourceId
+) {
+  const token = await directusLogin();
+  await getFilmScanJobRecord(token, albumId, jobId);
+  const sources = await listFilmScanSources(token, jobId);
+  const source = sources.find((candidate) => String(candidate.id) === String(sourceId));
+  if (!source) throw httpError(404, "任务中不存在该原档。");
+  const previewPath = path.join(
+    path.dirname(filmScanSourcePath(source.relative_path)),
+    "previews",
+    `source-${source.id}-contact.jpg`
+  );
+  assertInside(FILM_SCAN_ROOT, previewPath);
+  const stat = await fsp.stat(previewPath);
+  res.writeHead(200, {
+    "Content-Type": "image/jpeg",
+    "Content-Length": stat.size,
+    "Cache-Control": "private, no-store"
+  });
+  fs.createReadStream(previewPath).pipe(res);
+}
+
+async function renderFilmHdrRendition(
+  inputPath,
+  outputPath,
+  kind,
+  signal,
+  highlightRolloff = 0.25
+) {
+  throwIfFilmScanAborted(signal);
+  const transfer = kind === "pq" ? "smpte2084" : "arib-std-b67";
+  const rolloff = Math.max(0, Math.min(1, Number(highlightRolloff || 0)));
+  const shoulder = 0.68 + rolloff * 0.17;
+  const shoulderOutput = 0.43 + rolloff * 0.09;
+  const filter = [
+    "setparams=color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709",
+    `curves=all='0/0 0.5/0.35 ${shoulder.toFixed(4)}/${shoulderOutput.toFixed(
+      4
+    )} 0.92/0.78 1/1'`,
+    "zscale=transfer=linear:npl=1000",
+    "format=gbrpf32le",
+    `zscale=primaries=bt2020:transfer=${transfer}:matrix=bt2020nc:npl=1000`,
+    "format=yuv444p10le"
+  ].join(",");
+  await runProcess(
+    FFMPEG_PATH,
+    [
+      "-y",
+      "-v",
+      "error",
+      "-i",
+      inputPath,
+      "-frames:v",
+      "1",
+      "-vf",
+      filter,
+      "-c:v",
+      "libaom-av1",
+      "-still-picture",
+      "1",
+      "-cpu-used",
+      "4",
+      "-crf",
+      "18",
+      "-pix_fmt",
+      "yuv444p10le",
+      "-color_primaries",
+      "bt2020",
+      "-color_trc",
+      transfer,
+      "-colorspace",
+      "bt2020nc",
+      "-f",
+      "avif",
+      outputPath
+    ],
+    { timeoutMs: FILM_SCAN_PROCESS_TIMEOUT_MS, signal }
+  );
+  throwIfFilmScanAborted(signal);
+  const probe = await probeAlbumImage(outputPath);
+  const pixelFormat = String(probe.pix_fmt || "");
+  const bitDepth = Number(probe.bits_per_raw_sample || (pixelFormat.match(/10/) ? 10 : 0));
+  if (
+    !pixelFormat.includes("10") ||
+    bitDepth < 10 ||
+    String(probe.color_primaries || "") !== "bt2020" ||
+    String(probe.color_transfer || "") !== transfer
+  ) {
+    throw new Error(`${kind.toUpperCase()} AVIF 的 FFprobe 色彩标记校验失败。`);
+  }
+  return {
+    transfer: kind,
+    primaries: "bt2020",
+    bitDepth: 10,
+    probe
+  };
+}
+
+async function handleFilmScanCommit(req, res, albumId, jobId) {
+  const body = await readJsonBody(req, 64 * 1024);
+  const token = await directusLogin();
+  let job = await getFilmScanJobRecord(token, albumId, jobId);
+  if (job.status !== "review_required") {
+    throw httpError(409, "仅待审核任务可以提交。");
+  }
+  const frames = (await listFilmScanFrames(token, jobId)).filter((frame) =>
+    parseBoolean(frame.accepted, true)
+  );
+  if (!frames.length) throw httpError(400, "请至少保留一帧再提交。");
+  const unconfirmed = frames.find(
+    (frame) =>
+      Number(frame.confidence || 0) < 0.85 && frame.review_status !== "confirmed"
+  );
+  if (unconfirmed) {
+    throw httpError(409, `帧 ${unconfirmed.id} 的低置信度裁切尚未手动确认。`);
+  }
+  const publishDefault = parseAlbumBoolean(body.published, true);
+  const sources = await listFilmScanSources(token, jobId);
+  const sourceById = new Map(sources.map((source) => [String(source.id), source]));
+  const existingPhotos = await listAlbumPhotos(token, albumId);
+  const maxSortOrder = existingPhotos.reduce(
+    (maximum, photo) => Math.max(maximum, Number(photo.sort_order || 0)),
+    -1
+  );
+  const workDir = path.join(FILM_SCAN_ROOT, String(jobId), "render");
+  await fsp.mkdir(workDir, { recursive: true });
+
+  const createdPhotoIds = [];
+  const createdRenditionIds = [];
+  const uploadedFileIds = [];
+  const warnings = jsonArray(job.warnings);
+  const analysisBySource = new Map();
+  const controller = registerFilmScanController(jobId);
+  try {
+    const signal = controller.signal;
+    throwIfFilmScanAborted(signal);
+    const stateBeforeRendering = (
+      await directusRequest(`/items/film_scan_jobs/${jobId}?fields=status`, token)
+    ).data?.status;
+    if (stateBeforeRendering === "canceled") throw filmScanCanceledError();
+    if (stateBeforeRendering !== "review_required") {
+      throw httpError(409, "任务状态已变化，请刷新后重试。");
+    }
+    throwIfFilmScanAborted(signal);
+    await updateFilmScanJob(token, jobId, {
+      status: "rendering",
+      progress: 0,
+      error_message: null
+    });
+    throwIfFilmScanAborted(signal);
+    for (let index = 0; index < frames.length; index += 1) {
+      throwIfFilmScanAborted(signal);
+      const currentState = (
+        await directusRequest(`/items/film_scan_jobs/${jobId}?fields=status`, token)
+      ).data?.status;
+      if (currentState === "canceled") {
+        throw filmScanCanceledError();
+      }
+      const frame = frames[index];
+      const source = sourceById.get(String(directusRelationId(frame.source_id)));
+      if (!source) throw new Error(`帧 ${frame.id} 的原档不存在。`);
+      const adjustments = mergeFrameAdjustments(
+        jsonObject(job.roll_adjustments),
+        jsonObject(frame.adjustment_overrides)
+      );
+      const prefix = `frame-${String(index + 1).padStart(3, "0")}`;
+      const sdrPath = path.join(workDir, `${prefix}-sdr.jpg`);
+      const linearPath = path.join(workDir, `${prefix}-linear.tif`);
+      const prepared = await prepareFilmFrameForRendering({
+        sourcePath: filmScanSourcePath(source.relative_path),
+        crop: filmScanFrameCrop(frame),
+        rotation: Number(frame.rotation || 0),
+        filmType: job.film_type,
+        adjustments,
+        tempDir: workDir,
+        key: prefix,
+        signal
+      });
+      let dynamicRange = null;
+      if (Number(source.bit_depth || 0) >= 16) {
+        const sourceKey = String(source.id);
+        if (!analysisBySource.has(sourceKey)) {
+          analysisBySource.set(
+            sourceKey,
+            await createAnalysisImage(filmScanSourcePath(source.relative_path))
+          );
+        }
+        dynamicRange = assessFilmFrameDynamicRange(
+          analysisBySource.get(sourceKey),
+          filmScanFrameCrop(frame)
+        );
+      }
+      const canRenderHdr =
+        Number(source.bit_depth || 0) >= 16 && Boolean(dynamicRange?.eligible);
+      let pqPath = null;
+      let hlgPath = null;
+      let pqMetadata = null;
+      let hlgMetadata = null;
+      try {
+        await renderFilmFrame({
+          sourcePath: prepared.sourcePath,
+          outputPath: sdrPath,
+          crop: prepared.crop,
+          rotation: prepared.rotation,
+          filmType: prepared.filmType,
+          adjustments,
+          maskRgb: adjustments.maskRgb,
+          outputFormat: "jpeg",
+          quality: 94
+        });
+        throwIfFilmScanAborted(signal);
+        if (canRenderHdr) {
+          await renderFilmFrame({
+            sourcePath: prepared.sourcePath,
+            outputPath: linearPath,
+            crop: prepared.crop,
+            rotation: prepared.rotation,
+            filmType: prepared.filmType,
+            adjustments,
+            maskRgb: adjustments.maskRgb,
+            outputFormat: "tiff16"
+          });
+          throwIfFilmScanAborted(signal);
+          pqPath = path.join(workDir, `${prefix}-pq.avif`);
+          hlgPath = path.join(workDir, `${prefix}-hlg.avif`);
+          try {
+            pqMetadata = await renderFilmHdrRendition(
+              linearPath,
+              pqPath,
+              "pq",
+              signal,
+              adjustments.highlightRolloff
+            );
+          } catch (error) {
+            pqPath = null;
+            warnings.push(`帧 ${index + 1} 的 PQ 渲染失败：${error.message}`);
+          }
+          try {
+            hlgMetadata = await renderFilmHdrRendition(
+              linearPath,
+              hlgPath,
+              "hlg",
+              signal,
+              adjustments.highlightRolloff
+            );
+          } catch (error) {
+            hlgPath = null;
+            warnings.push(`帧 ${index + 1} 的 HLG 渲染失败：${error.message}`);
+          }
+        } else if (Number(source.bit_depth || 0) < 16) {
+          warnings.push(`帧 ${index + 1} 来源为 8-bit，仅生成 SDR，未伪造 HDR。`);
+        } else {
+          warnings.push(
+            `帧 ${index + 1} 的有效动态范围不足（${Number(
+              dynamicRange?.effectiveStops || 0
+            ).toFixed(1)} stops），仅生成 SDR。`
+          );
+        }
+      } finally {
+        for (const temporaryPath of prepared.temporaryPaths) {
+          await fsp.unlink(temporaryPath).catch(() => {});
+        }
+      }
+
+      const title = `${job.film_stock} ${prefix}`;
+      const sdrFileId = await directusUploadFile(
+        token,
+        {
+          tempPath: sdrPath,
+          filename: `${prefix}.jpg`,
+          mimeType: "image/jpeg"
+        },
+        title
+      );
+      uploadedFileIds.push(sdrFileId);
+      let pqFileId = null;
+      let hlgFileId = null;
+      if (pqPath) {
+        pqFileId = await directusUploadFile(
+          token,
+          {
+            tempPath: pqPath,
+            filename: `${prefix}-pq.avif`,
+            mimeType: "image/avif"
+          },
+          `${title} PQ`
+        );
+        uploadedFileIds.push(pqFileId);
+      }
+      if (hlgPath) {
+        hlgFileId = await directusUploadFile(
+          token,
+          {
+            tempPath: hlgPath,
+            filename: `${prefix}-hlg.avif`,
+            mimeType: "image/avif"
+          },
+          `${title} HLG`
+        );
+        uploadedFileIds.push(hlgFileId);
+      }
+
+      const now = new Date().toISOString();
+      const published = Object.hasOwn(body, "published")
+        ? publishDefault
+        : parseBoolean(frame.published, true);
+      const photo = (
+        await directusRequest("/items/album_photos", token, {
+          method: "POST",
+          body: {
+            album_id: Number(albumId),
+            sdr_image: sdrFileId,
+            hdr_image: pqFileId,
+            caption: `${job.film_stock} · ${job.process.toUpperCase()}`,
+            alt_text: `${job.film_stock} 胶片扫描`,
+            hdr_transfer: pqFileId ? "pq" : null,
+            hdr_primaries: pqFileId ? "bt2020" : null,
+            hdr_bit_depth: pqFileId ? 10 : null,
+            film_scan_frame_id: Number(frame.id),
+            film_stock: job.film_stock,
+            film_process: job.process,
+            film_scanner: job.scanner,
+            film_frame_format: job.frame_format,
+            published,
+            sort_order: maxSortOrder + index + 1,
+            created_at: now,
+            updated_at: now
+          }
+        })
+      ).data;
+      createdPhotoIds.push(photo.id);
+      const renditions = [
+        {
+          kind: "sdr",
+          file: sdrFileId,
+          transfer: "srgb",
+          primaries: "bt709",
+          bitDepth: 8,
+          isDefault: true
+        },
+        pqFileId
+          ? {
+              kind: "pq",
+              file: pqFileId,
+              transfer: pqMetadata.transfer,
+              primaries: pqMetadata.primaries,
+              bitDepth: pqMetadata.bitDepth,
+              isDefault: true
+            }
+          : null,
+        hlgFileId
+          ? {
+              kind: "hlg",
+              file: hlgFileId,
+              transfer: hlgMetadata.transfer,
+              primaries: hlgMetadata.primaries,
+              bitDepth: hlgMetadata.bitDepth,
+              isDefault: !pqFileId
+            }
+          : null
+      ].filter(Boolean);
+      for (const rendition of renditions) {
+        const created = (
+          await directusRequest("/items/album_photo_renditions", token, {
+            method: "POST",
+            body: {
+              photo_id: Number(photo.id),
+              film_scan_frame_id: Number(frame.id),
+              kind: rendition.kind,
+              file: rendition.file,
+              transfer: rendition.transfer,
+              primaries: rendition.primaries,
+              bit_depth: rendition.bitDepth,
+              is_default: rendition.isDefault,
+              created_at: now
+            }
+          })
+        ).data;
+        createdRenditionIds.push(created.id);
+      }
+      await directusRequest(`/items/film_scan_frames/${frame.id}`, token, {
+        method: "PATCH",
+        body: {
+          album_photo_id: Number(photo.id),
+          review_status: "committed",
+          updated_at: now
+        }
+      });
+      await updateFilmScanJob(token, jobId, {
+        progress: Math.round(((index + 1) / frames.length) * 100),
+        warnings
+      });
+    }
+
+    throwIfFilmScanAborted(signal);
+    const stateBeforeCommit = (
+      await directusRequest(`/items/film_scan_jobs/${jobId}?fields=status`, token)
+    ).data?.status;
+    if (stateBeforeCommit === "canceled") throw filmScanCanceledError();
+    throwIfFilmScanAborted(signal);
+    const album = await getAlbumById(token, albumId);
+    if (!directusFileId(album.cover_image) && createdPhotoIds[0]) {
+      const first = await getAlbumPhoto(token, albumId, createdPhotoIds[0]);
+      await directusRequest(`/items/albums/${albumId}`, token, {
+        method: "PATCH",
+        body: {
+          cover_image: directusFileId(first.sdr_image),
+          updated_at: new Date().toISOString()
+        }
+      });
+    }
+    throwIfFilmScanAborted(signal);
+    job = await updateFilmScanJob(token, jobId, {
+      status: "committed",
+      progress: 100,
+      warnings,
+      completed_at: new Date().toISOString()
+    });
+    throwIfFilmScanAborted(signal);
+    sendJson(res, 201, {
+      status: "ok",
+      job: serializeFilmScanJob(job, sources, await listFilmScanFrames(token, jobId)),
+      createdPhotoIds: createdPhotoIds.map(Number)
+    });
+  } catch (error) {
+    for (const renditionId of [...createdRenditionIds].reverse()) {
+      await directusRequest(`/items/album_photo_renditions/${renditionId}`, token, {
+        method: "DELETE"
+      }).catch(() => {});
+    }
+    for (const photoId of [...createdPhotoIds].reverse()) {
+      await directusRequest(`/items/album_photos/${photoId}`, token, {
+        method: "DELETE"
+      }).catch(() => {});
+    }
+    for (const fileId of [...uploadedFileIds].reverse()) {
+      await directusRequest(`/files/${fileId}`, token, { method: "DELETE" }).catch(
+        () => {}
+      );
+    }
+    await updateFilmScanJob(
+      token,
+      jobId,
+      error.filmScanCanceled
+        ? { status: "canceled", error_message: null, warnings }
+        : { status: "failed", error_message: error.message, warnings }
+    ).catch(() => {});
+    throw error;
+  } finally {
+    releaseFilmScanController(jobId, controller);
+    await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function handleFilmScanRetry(res, albumId, jobId) {
+  const token = await directusLogin();
+  const job = await getFilmScanJobRecord(token, albumId, jobId);
+  if (job.status !== "failed") throw httpError(409, "仅失败任务可以重试。");
+  const [sources, frames] = await Promise.all([
+    listFilmScanSources(token, jobId),
+    listFilmScanFrames(token, jobId)
+  ]);
+  await cleanupFilmScanPartialCommit(token, job, frames);
+  const canResumeReview =
+    frames.length > 0 &&
+    sources.length > 0 &&
+    sources.every((source) => source.decode_status === "decoded");
+  if (canResumeReview) {
+    await updateFilmScanJob(token, jobId, {
+      status: "review_required",
+      progress: 100,
+      error_message: null
+    });
+    sendJson(res, 200, {
+      status: "ok",
+      jobId: Number(jobId),
+      resumedAt: "review_required"
+    });
+    return;
+  }
+  await updateFilmScanJob(token, jobId, {
+    status: "uploaded",
+    progress: 0,
+    error_message: null
+  });
+  enqueueFilmScanJob(jobId);
+  sendJson(res, 202, { status: "ok", jobId: Number(jobId) });
+}
+
+async function cleanupFilmScanPartialCommit(token, job, providedFrames = null) {
+  const frames = providedFrames || (await listFilmScanFrames(token, job.id));
+  if (!frames.length) return;
+  const frameIds = frames.map((frame) => String(frame.id));
+  const params = new URLSearchParams({
+    "filter[film_scan_frame_id][_in]": frameIds.join(","),
+    fields: ALBUM_PHOTO_FIELDS,
+    limit: "-1"
+  });
+  const photos = (
+    await directusRequest(`/items/album_photos?${params.toString()}`, token)
+  ).data;
+  for (const photo of Array.isArray(photos) ? photos : []) {
+    const fileIds = [
+      ...new Set(
+        [
+          directusFileId(photo.sdr_image),
+          directusFileId(photo.hdr_image),
+          ...(Array.isArray(photo.renditions)
+            ? photo.renditions.map((rendition) => directusFileId(rendition.file))
+            : [])
+        ].filter(Boolean)
+      )
+    ];
+    await directusRequest(`/items/album_photos/${photo.id}`, token, {
+      method: "DELETE"
+    }).catch(() => {});
+    for (const fileId of fileIds) {
+      await deleteDirectusFileSafely(
+        token,
+        fileId,
+        `partial film-scan job ${job.id}`
+      );
+    }
+  }
+  for (const frame of frames.filter((candidate) =>
+    directusRelationId(candidate.album_photo_id)
+  )) {
+    await directusRequest(`/items/film_scan_frames/${frame.id}`, token, {
+      method: "PATCH",
+      body: {
+        album_photo_id: null,
+        review_status:
+          Number(frame.confidence || 0) < 0.85 ? "confirmed" : "auto",
+        updated_at: new Date().toISOString()
+      }
+    }).catch(() => {});
+  }
+}
+
+async function handleFilmScanCancel(res, albumId, jobId) {
+  const token = await directusLogin();
+  const job = await getFilmScanJobRecord(token, albumId, jobId);
+  if (["committed", "canceled"].includes(job.status)) {
+      throw httpError(409, "已提交或已取消任务不能再次取消。");
+  }
+  const controller = filmScanJobControllers.get(String(jobId));
+  if (controller && !controller.signal.aborted) {
+    controller.abort(filmScanCanceledError());
+  }
+  await updateFilmScanJob(token, jobId, {
+    status: "canceled",
+    error_message: null
+  });
+  const index = filmScanQueue.findIndex((queued) => String(queued) === String(jobId));
+  if (index >= 0) filmScanQueue.splice(index, 1);
+  sendJson(res, 200, { status: "ok", jobId: Number(jobId), state: "canceled" });
+}
+
+async function recoverFilmScanQueue() {
+  try {
+    await fsp.mkdir(FILM_SCAN_ROOT, { recursive: true });
+    const token = await directusLogin();
+    const params = new URLSearchParams({
+      "filter[status][_in]": "uploaded,analyzing,rendering",
+      fields: "id,status",
+      sort: "created_at,id",
+      limit: "-1"
+    });
+    const jobs = (
+      await directusRequest(`/items/film_scan_jobs?${params.toString()}`, token)
+    ).data;
+    for (const job of Array.isArray(jobs) ? jobs : []) {
+      if (job.status === "rendering") {
+        const fullJob = (
+          await directusRequest(
+            `/items/film_scan_jobs/${job.id}?fields=${encodeURIComponent(
+              FILM_SCAN_JOB_FIELDS
+            )}`,
+            token
+          )
+        ).data;
+        await cleanupFilmScanPartialCommit(token, fullJob);
+        await updateFilmScanJob(token, job.id, {
+          status: "review_required",
+          progress: 100,
+          error_message: "API 重启中断了成片生成；已回滚部分提交，请重新审核并提交。"
+        });
+        continue;
+      }
+      if (job.status === "analyzing") {
+        await updateFilmScanJob(token, job.id, { status: "uploaded", progress: 0 });
+      }
+      enqueueFilmScanJob(job.id);
+    }
+  } catch (error) {
+    console.error(`[film-scan] Queue recovery skipped: ${error.message}`);
+  }
+}
+
 async function handleAlbumRoute(req, res, url) {
   try {
     requireAlbumAuth(req);
@@ -4376,6 +6809,13 @@ async function handleAlbumRoute(req, res, url) {
       await handleAlbumCreate(req, res);
       return;
     }
+    if (
+      pathname === "/albums/film-stock-presets" &&
+      ["GET", "POST"].includes(req.method)
+    ) {
+      await handleFilmStockPresets(req, res);
+      return;
+    }
 
     let match = pathname.match(/^\/albums\/([^/]+)$/);
     if (req.method === "PATCH" && match) {
@@ -4384,6 +6824,88 @@ async function handleAlbumRoute(req, res, url) {
         res,
         normalizeAlbumId(decodeURIComponent(match[1]))
       );
+      return;
+    }
+
+    match = pathname.match(/^\/albums\/([^/]+)\/film-scans$/);
+    if (req.method === "POST" && match) {
+      await handleFilmScanCreate(
+        req,
+        res,
+        normalizeAlbumId(decodeURIComponent(match[1]))
+      );
+      return;
+    }
+
+    match = pathname.match(
+      /^\/albums\/([^/]+)\/film-scans\/([^/]+)\/frames\/([^/]+)\/preview$/
+    );
+    if (req.method === "GET" && match) {
+      await handleFilmScanPreviewAsset(
+        res,
+        normalizeAlbumId(decodeURIComponent(match[1])),
+        normalizeAlbumId(decodeURIComponent(match[2]), "job id"),
+        normalizeAlbumId(decodeURIComponent(match[3]), "frame id")
+      );
+      return;
+    }
+
+    match = pathname.match(
+      /^\/albums\/([^/]+)\/film-scans\/([^/]+)\/sources\/([^/]+)\/preview$/
+    );
+    if (req.method === "GET" && match) {
+      await handleFilmScanSourcePreviewAsset(
+        res,
+        normalizeAlbumId(decodeURIComponent(match[1])),
+        normalizeAlbumId(decodeURIComponent(match[2]), "job id"),
+        normalizeAlbumId(decodeURIComponent(match[3]), "source id")
+      );
+      return;
+    }
+
+    match = pathname.match(
+      /^\/albums\/([^/]+)\/film-scans\/([^/]+)\/frames\/([^/]+)$/
+    );
+    if (req.method === "PATCH" && match) {
+      await handleFilmScanFramePatch(
+        req,
+        res,
+        normalizeAlbumId(decodeURIComponent(match[1])),
+        normalizeAlbumId(decodeURIComponent(match[2]), "job id"),
+        normalizeAlbumId(decodeURIComponent(match[3]), "frame id")
+      );
+      return;
+    }
+
+    match = pathname.match(
+      /^\/albums\/([^/]+)\/film-scans\/([^/]+)\/(preview|commit|retry|cancel)$/
+    );
+    if (req.method === "POST" && match) {
+      const albumId = normalizeAlbumId(decodeURIComponent(match[1]));
+      const jobId = normalizeAlbumId(decodeURIComponent(match[2]), "job id");
+      if (match[3] === "preview") {
+        await handleFilmScanPreview(req, res, albumId, jobId);
+      } else if (match[3] === "commit") {
+        await handleFilmScanCommit(req, res, albumId, jobId);
+      } else if (match[3] === "retry") {
+        await handleFilmScanRetry(res, albumId, jobId);
+      } else {
+        await handleFilmScanCancel(res, albumId, jobId);
+      }
+      return;
+    }
+
+    match = pathname.match(
+      /^\/albums\/([^/]+)\/film-scans\/(?:jobs\/)?([^/]+)$/
+    );
+    if (match && ["GET", "PATCH"].includes(req.method)) {
+      const albumId = normalizeAlbumId(decodeURIComponent(match[1]));
+      const jobId = normalizeAlbumId(decodeURIComponent(match[2]), "job id");
+      if (req.method === "GET") {
+        await handleFilmScanGet(res, albumId, jobId);
+      } else {
+        await handleFilmScanJobPatch(req, res, albumId, jobId);
+      }
       return;
     }
 
@@ -4403,6 +6925,19 @@ async function handleAlbumRoute(req, res, url) {
         req,
         res,
         normalizeAlbumId(decodeURIComponent(match[1]))
+      );
+      return;
+    }
+
+    match = pathname.match(
+      /^\/albums\/([^/]+)\/photos\/([^/]+)\/hdr$/
+    );
+    if (req.method === "POST" && match) {
+      await handleAlbumPhotoHdrUpload(
+        req,
+        res,
+        normalizeAlbumId(decodeURIComponent(match[1])),
+        normalizeAlbumId(decodeURIComponent(match[2]), "photo id")
       );
       return;
     }
@@ -4930,6 +7465,20 @@ async function handleHealth(res) {
       photosPerBatch: MAX_ALBUM_PHOTOS,
       assetPresets: [...ALBUM_ASSET_PRESETS]
     },
+    filmScan: {
+      enabled: true,
+      sourceBytes: MAX_FILM_SCAN_SOURCE_BYTES,
+      jobBytes: MAX_FILM_SCAN_JOB_BYTES,
+      sourcesPerJob: MAX_FILM_SCAN_SOURCES,
+      maxPixels: 800_000_000,
+      queueConcurrency: 1,
+      formats: ["fff", "3f", "tiff", "jpeg"],
+      experimentalScanners: [
+        "hasselblad-x5",
+        "fujifilm-sp3000",
+        "noritsu-hs1800"
+      ]
+    },
     ffmpeg: {
       path: FFMPEG_PATH,
       available: ffmpegAvailable
@@ -4987,6 +7536,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Upload API listening on http://${HOST}:${PORT}`);
+  void recoverFilmScanQueue();
 });
 
 async function handleMedia(pathname, res) {

@@ -111,10 +111,40 @@ const expectedTables = {
     "hdr_transfer",
     "hdr_primaries",
     "hdr_bit_depth",
+    "film_scan_frame_id",
+    "film_stock",
+    "film_process",
+    "film_scanner",
+    "film_frame_format",
     "published",
     "sort_order",
     "created_at",
     "updated_at"
+  ],
+  film_scan_jobs: [
+    "id", "album_id", "status", "scanner", "frame_format", "film_type",
+    "film_stock", "iso", "process", "push_pull", "roll_adjustments",
+    "progress", "warnings", "error_message", "experimental_compatibility",
+    "started_at", "completed_at", "created_at", "updated_at"
+  ],
+  film_scan_sources: [
+    "id", "job_id", "original_name", "relative_path", "format", "mime_type",
+    "size_bytes", "sha256", "width", "height", "bit_depth", "icc_description",
+    "has_icc", "decode_status", "decode_error", "created_at", "updated_at"
+  ],
+  film_scan_frames: [
+    "id", "job_id", "source_id", "album_photo_id", "crop_x", "crop_y",
+    "crop_width", "crop_height", "rotation", "sort_order", "confidence",
+    "review_status", "accepted", "published", "adjustment_overrides",
+    "preview_path", "created_at", "updated_at"
+  ],
+  film_stock_presets: [
+    "id", "manufacturer", "model", "film_type", "nominal_iso", "scanner",
+    "recommended_process", "parameters", "built_in", "created_at", "updated_at"
+  ],
+  album_photo_renditions: [
+    "id", "photo_id", "film_scan_frame_id", "kind", "file", "transfer",
+    "primaries", "bit_depth", "is_default", "created_at"
   ],
   analytics_events: [
     "id",
@@ -157,7 +187,16 @@ const expectedRelations = [
   ["albums", "cover_image", "directus_files"],
   ["album_photos", "sdr_image", "directus_files"],
   ["album_photos", "hdr_image", "directus_files"],
+  ["album_photo_renditions", "file", "directus_files"],
   ["album_photos", "album_id", "albums"],
+  ["film_scan_jobs", "album_id", "albums"],
+  ["film_scan_sources", "job_id", "film_scan_jobs"],
+  ["film_scan_frames", "job_id", "film_scan_jobs"],
+  ["film_scan_frames", "source_id", "film_scan_sources"],
+  ["film_scan_frames", "album_photo_id", "album_photos"],
+  ["album_photos", "film_scan_frame_id", "film_scan_frames"],
+  ["album_photo_renditions", "photo_id", "album_photos"],
+  ["album_photo_renditions", "film_scan_frame_id", "film_scan_frames"],
   ["video_masters", "project_id", "video_projects"],
   ["analytics_events", "post_id", "posts"],
   ["analytics_events", "video_project_id", "video_projects"],
@@ -192,6 +231,61 @@ async function main() {
 
       console.log(`${tableName}=ok columns=${columns.length}`);
     }
+
+    const sizeType =
+      db.type === "pg"
+        ? (
+            await db.all(
+              [
+                "select data_type",
+                "from information_schema.columns",
+                "where table_schema = $1 and table_name = $2 and column_name = $3"
+              ].join(" "),
+              [db.schema, "film_scan_sources", "size_bytes"]
+            )
+          )[0]?.data_type
+        : (
+            await db.all(
+              `pragma table_info(${quoteIdent("film_scan_sources")})`
+            )
+          ).find((column) => column.name === "size_bytes")?.type;
+    if (!["bigint", "big integer"].includes(String(sizeType || "").toLowerCase())) {
+      throw new Error(
+        `film_scan_sources.size_bytes must be a 64-bit integer, received ${sizeType || "unknown"}`
+      );
+    }
+    console.log(`film_scan_sources.size_bytes=ok type=${sizeType}`);
+
+    const parameter = (index) => (db.type === "pg" ? `$${index}` : "?");
+    const publicAlbumPermissions = await db.all(
+      [
+        "select p.collection, p.permissions",
+        `from ${db.tableRef("directus_permissions")} p`,
+        `join ${db.tableRef("directus_policies")} policy on policy.id = p.policy`,
+        `where policy.name = ${parameter(1)} and p.action = ${parameter(2)}`,
+        `and p.collection in (${parameter(3)}, ${parameter(4)}, ${parameter(5)})`,
+        "order by p.collection"
+      ].join(" "),
+      [
+        "$t:public_label",
+        "read",
+        "albums",
+        "album_photos",
+        "album_photo_renditions"
+      ]
+    );
+    if (publicAlbumPermissions.length !== 3) {
+      throw new Error("Missing filtered public album permissions");
+    }
+    for (const permission of publicAlbumPermissions) {
+      const filter = jsonObject(permission.permissions);
+      if (!JSON.stringify(filter).includes('"published"')) {
+        throw new Error(
+          `${permission.collection} public read permission must filter published records`
+        );
+      }
+    }
+    console.log("album public permissions=ok filtered");
 
     const collections = await db.all(
       [
@@ -450,4 +544,19 @@ function jsonArray(value) {
   }
 
   return [];
+}
+
+function jsonObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string" && value) {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }

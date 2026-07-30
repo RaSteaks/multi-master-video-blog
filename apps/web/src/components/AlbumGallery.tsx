@@ -14,6 +14,7 @@ import {
 import {
   albumApiRequest,
   fetchManagedAlbums,
+  uploadAlbumFormData,
   type ManagedAlbum,
   type ManagedPhoto,
 } from "@/lib/album-management";
@@ -22,14 +23,20 @@ export type GalleryPhoto = {
   id: number;
   sdrImage: string;
   hdrImage: string | null;
+  hlgImage: string | null;
   thumbnailUrl: string;
   sdrUrl: string;
   hdrUrl: string | null;
+  hlgUrl: string | null;
   caption: string;
   altText: string;
   hdrTransfer: "pq" | "hlg" | null;
   hdrPrimaries: string | null;
   hdrBitDepth: number | null;
+  filmStock: string | null;
+  filmProcess: string | null;
+  filmScanner: string | null;
+  filmFrameFormat: string | null;
   published: boolean;
   sortOrder: number;
 };
@@ -279,20 +286,26 @@ export function AlbumGallery({
           ) : null}
         </div>
         <div className="album-detail-aside">
-          <dl className="album-detail-stats">
-            <div>
-              <dt>照片</dt>
-              <dd>{managedAlbum ? `${publishedCount}/${photos.length}` : photos.length}</dd>
-            </div>
-            <div>
-              <dt>HDR 配对</dt>
-              <dd>{hdrCount}</dd>
-            </div>
-            <div>
-              <dt>状态</dt>
-              <dd>{visibleAlbum.published ? "公开" : "草稿"}</dd>
-            </div>
-          </dl>
+          {adminOpen ? (
+            <dl className="album-detail-stats">
+              <div>
+                <dt>照片</dt>
+                <dd>
+                  {managedAlbum
+                    ? `${publishedCount}/${photos.length}`
+                    : photos.length}
+                </dd>
+              </div>
+              <div>
+                <dt>HDR 配对</dt>
+                <dd>{hdrCount}</dd>
+              </div>
+              <div>
+                <dt>状态</dt>
+                <dd>{visibleAlbum.published ? "公开" : "草稿"}</dd>
+              </div>
+            </dl>
+          ) : null}
           {!embedded ? (
             <button
               className="album-action-button"
@@ -550,6 +563,48 @@ export function AlbumGallery({
             );
             if (saved) setEditingPhoto(null);
           }}
+          onUploadHdr={async (file, onProgress) => {
+            setAdminBusy(true);
+            setAdminError("");
+            setAdminNotice("");
+            const formData = new FormData();
+            formData.append("hdrFiles", file, file.name);
+            try {
+              const response = await uploadAlbumFormData<{
+                status: string;
+                photo: ManagedPhoto;
+                cleanupRequired?: boolean;
+                orphanFileIds?: string[];
+              }>(
+                `/api/albums/${managedAlbum.id}/photos/${editingPhoto.id}/hdr`,
+                token,
+                formData,
+                onProgress,
+              );
+              const refreshedAlbum = await refreshAdminAlbum();
+              const refreshedPhoto = refreshedAlbum.photos.find(
+                (photo) => photo.id === editingPhoto.id,
+              );
+              if (refreshedPhoto) setEditingPhoto(refreshedPhoto);
+              setFailedHdr((current) => {
+                const next = new Set(current);
+                next.delete(editingPhoto.id);
+                return next;
+              });
+              setAdminNotice(
+                response.cleanupRequired
+                  ? "HDR 已替换，但旧文件需要在 Directus 中手动清理。"
+                  : "HDR 版本已上传并完成手动配对。",
+              );
+            } catch (cause) {
+              const message =
+                cause instanceof Error ? cause.message : "HDR 上传失败。";
+              setAdminError(message);
+              throw cause;
+            } finally {
+              setAdminBusy(false);
+            }
+          }}
         />
       ) : null}
     </RootElement>
@@ -653,6 +708,7 @@ function PhotoEditDialog({
   busy,
   onClose,
   onSave,
+  onUploadHdr,
 }: {
   photo: ManagedPhoto;
   busy: boolean;
@@ -662,16 +718,51 @@ function PhotoEditDialog({
     altText: string;
     published: boolean;
   }) => Promise<void>;
+  onUploadHdr: (
+    file: File,
+    onProgress: (progress: number) => void,
+  ) => Promise<void>;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const hdrInputRef = useRef<HTMLInputElement>(null);
   const headingId = useId();
+  const hdrHeadingId = useId();
   const [caption, setCaption] = useState(photo.caption);
   const [altText, setAltText] = useState(photo.altText);
   const [published, setPublished] = useState(photo.published);
+  const [hdrFile, setHdrFile] = useState<File | null>(null);
+  const [hdrProgress, setHdrProgress] = useState(0);
+  const [hdrUploading, setHdrUploading] = useState(false);
+  const [hdrError, setHdrError] = useState("");
+  const [hdrSuccess, setHdrSuccess] = useState("");
 
   useEffect(() => {
     dialogRef.current?.showModal();
   }, []);
+
+  async function uploadHdr() {
+    if (!hdrFile) {
+      setHdrError("请先选择一张 HDR AVIF 照片。");
+      return;
+    }
+    if (hdrFile.size > 64 * 1024 * 1024) {
+      setHdrError("HDR 文件不能超过 64 MiB。");
+      return;
+    }
+    setHdrError("");
+    setHdrSuccess("");
+    setHdrProgress(0);
+    setHdrUploading(true);
+    try {
+      await onUploadHdr(hdrFile, setHdrProgress);
+      setHdrFile(null);
+      setHdrSuccess(photo.hdrImage ? "HDR 版本已替换。" : "HDR 版本已配对。");
+    } catch (cause) {
+      setHdrError(cause instanceof Error ? cause.message : "HDR 上传失败。");
+    } finally {
+      setHdrUploading(false);
+    }
+  }
 
   return (
     <dialog
@@ -723,6 +814,78 @@ function PhotoEditDialog({
           />
           <small>请描述画面内容，方便使用读屏器的访客理解照片。</small>
         </label>
+        <section
+          className="album-manual-hdr"
+          aria-labelledby={hdrHeadingId}
+        >
+          <header>
+            <div>
+              <p className="eyebrow">Photo version</p>
+              <h3 id={hdrHeadingId}>
+                {photo.hdrImage ? "替换 HDR 版本" : "手动配对 HDR"}
+              </h3>
+            </div>
+            <span className={photo.hdrImage ? "is-paired" : ""}>
+              {photo.hdrImage
+                ? `${photo.hdrTransfer?.toUpperCase() || "HDR"} · ${
+                    photo.hdrBitDepth || 10
+                  }-bit`
+                : "仅 SDR"}
+            </span>
+          </header>
+          <p>
+            直接选择这张照片对应的 HDR AVIF，文件名无需与 SDR
+            一致。上传时仍会校验 PQ／HLG、10／12-bit 与画幅比例。
+          </p>
+          <input
+            ref={hdrInputRef}
+            className="visually-hidden"
+            type="file"
+            accept=".avif,image/avif"
+            onChange={(event) => {
+              setHdrFile(event.target.files?.[0] ?? null);
+              setHdrError("");
+              setHdrSuccess("");
+              event.target.value = "";
+            }}
+          />
+          <div className="album-manual-hdr-actions">
+            <button
+              className="album-action-button"
+              type="button"
+              disabled={busy}
+              onClick={() => hdrInputRef.current?.click()}
+            >
+              {hdrFile ? "重新选择" : "选择 HDR AVIF"}
+            </button>
+            <span title={hdrFile?.name}>
+              {hdrFile?.name ?? "适合手机端逐张选择，无需重命名"}
+            </span>
+            <button
+              className="album-action-button album-action-button--primary"
+              type="button"
+              disabled={busy || !hdrFile}
+              onClick={() => void uploadHdr()}
+            >
+              {hdrUploading
+                ? `上传中 ${hdrProgress}%`
+                : photo.hdrImage
+                  ? "替换 HDR"
+                  : "上传并配对"}
+            </button>
+          </div>
+          {hdrUploading ? (
+            <progress max={100} value={hdrProgress} />
+          ) : null}
+          {hdrError || hdrSuccess ? (
+            <p
+              className={hdrError ? "is-error" : "is-success"}
+              role={hdrError ? "alert" : "status"}
+            >
+              {hdrError || hdrSuccess}
+            </p>
+          ) : null}
+        </section>
         <label className="album-switch">
           <input
             type="checkbox"
@@ -766,8 +929,10 @@ function PhotoLightbox({
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const [activeRange, setActiveRange] = useState<"HDR" | "SDR">("SDR");
-  const canUseHdr = Boolean(photo.hdrUrl && !hdrFailed);
+  const [activeRange, setActiveRange] = useState<"PQ" | "HLG" | "SDR">("SDR");
+  const [hlgFailed, setHlgFailed] = useState(false);
+  const canUsePq = Boolean(photo.hdrUrl && !hdrFailed);
+  const canUseHlg = Boolean(photo.hlgUrl && !hlgFailed);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -775,8 +940,12 @@ function PhotoLightbox({
   }, []);
 
   useEffect(() => {
-    setActiveRange("SDR");
-  }, [photo.id]);
+    const prefersHdr = window.matchMedia("(dynamic-range: high)").matches;
+    setHlgFailed(false);
+    setActiveRange(
+      prefersHdr && canUsePq ? "PQ" : prefersHdr && photo.hlgUrl ? "HLG" : "SDR",
+    );
+  }, [canUsePq, photo.hlgUrl, photo.id]);
 
   return (
     <dialog
@@ -806,20 +975,64 @@ function PhotoLightbox({
             {String(index + 1).padStart(2, "0")} /{" "}
             {String(total).padStart(2, "0")}
           </span>
-          <span
-            className={`album-lightbox-range${
-              activeRange === "HDR" ? " is-hdr" : ""
-            }`}
-            aria-live="polite"
+          <div
+            className="album-version-bar"
+            role="group"
+            aria-label="照片版本切换"
           >
-            {hdrFailed
-              ? "HDR 失败 · 已回退 SDR"
-              : activeRange === "HDR"
-                ? `${photo.hdrTransfer?.toUpperCase() || "HDR"} · ${
-                    photo.hdrBitDepth || 10
-                  }-bit`
-                : "SDR"}
-          </span>
+            <button
+              className={`album-version-button${
+                activeRange === "SDR" ? " active" : ""
+              }`}
+              type="button"
+              aria-pressed={activeRange === "SDR"}
+              onClick={() => setActiveRange("SDR")}
+            >
+              <span className="album-version-dot is-sdr" aria-hidden="true" />
+              <span>
+                SDR
+                <small>标准范围</small>
+              </span>
+            </button>
+            {photo.hdrImage ? (
+              <button
+                className={`album-version-button${
+                  activeRange === "PQ" ? " active" : ""
+                }`}
+                type="button"
+                aria-pressed={activeRange === "PQ"}
+                disabled={!canUsePq}
+                onClick={() => setActiveRange("PQ")}
+              >
+                <span className="album-version-dot is-hdr" aria-hidden="true" />
+                <span>
+                  PQ
+                  <small>
+                    {hdrFailed
+                      ? "载入失败"
+                      : `${photo.hdrBitDepth || 10}-bit · 1000 nit`}
+                  </small>
+                </span>
+              </button>
+            ) : null}
+            {photo.hlgImage ? (
+              <button
+                className={`album-version-button${
+                  activeRange === "HLG" ? " active" : ""
+                }`}
+                type="button"
+                aria-pressed={activeRange === "HLG"}
+                disabled={!canUseHlg}
+                onClick={() => setActiveRange("HLG")}
+              >
+                <span className="album-version-dot is-hlg" aria-hidden="true" />
+                <span>
+                  HLG
+                  <small>{hlgFailed ? "载入失败" : "10-bit · HDR 回退"}</small>
+                </span>
+              </button>
+            ) : null}
+          </div>
           <button
             type="button"
             aria-label="关闭灯箱"
@@ -832,36 +1045,39 @@ function PhotoLightbox({
 
         <figure>
           <picture>
-            {canUseHdr ? (
-              <source
-                media="(dynamic-range: high)"
-                type="image/avif"
-                srcSet={photo.hdrUrl!}
-              />
-            ) : null}
             <img
-              key={`${photo.id}-${canUseHdr ? "hdr" : "sdr"}`}
-              src={photo.sdrUrl}
+              key={`${photo.id}-${activeRange}`}
+              src={
+                activeRange === "PQ" && canUsePq
+                  ? photo.hdrUrl!
+                  : activeRange === "HLG" && canUseHlg
+                    ? photo.hlgUrl!
+                  : photo.sdrUrl
+              }
               alt={photo.altText || photo.caption || `相簿照片 ${index + 1}`}
               fetchPriority="high"
-              onLoad={(event) => {
-                const current = event.currentTarget.currentSrc;
-                setActiveRange(
-                  canUseHdr && photo.hdrUrl && current.includes(photo.hdrUrl)
-                    ? "HDR"
-                    : "SDR",
-                );
-              }}
               onError={() => {
-                if (canUseHdr) onHdrFailure();
+                if (activeRange === "PQ") {
+                  onHdrFailure();
+                  setActiveRange(canUseHlg ? "HLG" : "SDR");
+                } else if (activeRange === "HLG") {
+                  setHlgFailed(true);
+                  setActiveRange("SDR");
+                }
               }}
             />
           </picture>
           <figcaption>
             <p>{photo.caption || photo.altText || "未填写说明"}</p>
-            {photo.hdrImage ? (
+            {photo.filmStock ? (
               <small>
-                HDR {photo.hdrPrimaries || "wide gamut"} · 普通显示设备自动使用 SDR
+                {photo.filmStock} · {photo.filmProcess?.toUpperCase()} ·{" "}
+                {formatFilmScanner(photo.filmScanner)}
+              </small>
+            ) : photo.hdrImage || photo.hlgImage ? (
+              <small>
+                当前：{activeRange} · HDR{" "}
+                {photo.hdrPrimaries || "wide gamut"}
               </small>
             ) : (
               <small>SDR 原片</small>
@@ -891,17 +1107,30 @@ function managedPhotoToGallery(photo: ManagedPhoto): GalleryPhoto {
     id: photo.id,
     sdrImage: photo.sdrImage,
     hdrImage: photo.hdrImage,
+    hlgImage: photo.hlgImage,
     thumbnailUrl: `/api/assets/${photo.sdrImage}?key=album-thumb`,
     sdrUrl: `/api/assets/${photo.sdrImage}`,
     hdrUrl: photo.hdrImage ? `/api/assets/${photo.hdrImage}` : null,
+    hlgUrl: photo.hlgImage ? `/api/assets/${photo.hlgImage}` : null,
     caption: photo.caption,
     altText: photo.altText,
     hdrTransfer: photo.hdrTransfer,
     hdrPrimaries: photo.hdrPrimaries,
     hdrBitDepth: photo.hdrBitDepth,
+    filmStock: photo.filmStock,
+    filmProcess: photo.filmProcess,
+    filmScanner: photo.filmScanner,
+    filmFrameFormat: photo.filmFrameFormat,
     published: photo.published,
     sortOrder: photo.sortOrder,
   };
+}
+
+function formatFilmScanner(scanner: string | null) {
+  if (scanner === "hasselblad-x5") return "Hasselblad X5";
+  if (scanner === "fujifilm-sp3000") return "Fujifilm SP-3000";
+  if (scanner === "noritsu-hs1800") return "Noritsu HS-1800";
+  return scanner || "胶片扫描";
 }
 
 function managedAlbumToGallery(album: ManagedAlbum): GalleryAlbum {

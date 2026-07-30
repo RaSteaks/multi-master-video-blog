@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import {
   useEffect,
@@ -16,9 +17,20 @@ import {
   albumApiRequest,
   fetchManagedAlbums,
   pairAlbumFileSelections,
+  uploadAlbumFormData,
   type ManagedAlbum,
 } from "@/lib/album-management";
 import { ManagedAlbumGallery } from "@/components/AlbumGallery";
+
+const FilmScanImport = dynamic(
+  () =>
+    import("@/components/FilmScanImport").then(
+      (module) => module.FilmScanImport,
+    ),
+  {
+    loading: () => <p className="album-inline-note">正在载入暗房审核工具…</p>,
+  },
+);
 
 type AlbumOption = {
   id: number;
@@ -34,7 +46,7 @@ type UploadMetadata = {
   published: boolean;
 };
 
-type AlbumDialogName = "create" | "upload" | "manage" | null;
+type AlbumDialogName = "create" | "upload" | "film" | "manage" | null;
 
 const MAX_PHOTOS = 24;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -121,6 +133,14 @@ export function AlbumsToolbar({
           <UploadIcon />
           上传照片
         </button>
+        <button
+          className="album-action-button album-action-button--film"
+          type="button"
+          onClick={() => setDialog("film")}
+        >
+          <FilmIcon />
+          导入胶片扫描
+        </button>
       </div>
 
       <p className="album-toolbar-status" aria-live="polite">
@@ -163,6 +183,21 @@ export function AlbumsToolbar({
               setManagedAlbumId(albumId);
               setDialog("manage");
             }}
+          />
+        </AlbumModal>
+      ) : null}
+
+      {dialog === "film" ? (
+        <AlbumModal title="导入胶片扫描" onClose={closeDialog} wide>
+          <FilmScanImport
+            albums={(managedAlbums ?? albums).map((album) => ({
+              id: album.id,
+              title: album.title,
+              published: album.published,
+            }))}
+            token={token}
+            setToken={setToken}
+            onCompleted={completed}
           />
         </AlbumModal>
       ) : null}
@@ -497,7 +532,7 @@ function UploadAlbumPhotosForm({
     setBusy(true);
     setProgress(0);
     try {
-      await uploadWithProgress(
+      await uploadAlbumFormData(
         `/api/albums/${albumId}/photos`,
         token,
         formData,
@@ -620,7 +655,9 @@ function UploadAlbumPhotosForm({
                 {pairing.pairs.filter((pair) => pair.hdr).length} 组 HDR
               </h3>
             </div>
-            <small>配对依据：忽略大小写的去扩展名文件名</small>
+            <small>
+              优先按去扩展名的文件名自动配对；名称不同可在管理模式中逐张手动补传
+            </small>
           </header>
           <div className="album-pair-list">
             {pairing.pairs.map((pair) => (
@@ -910,51 +947,6 @@ function FormFeedback({
   );
 }
 
-function uploadWithProgress(
-  url: string,
-  token: string,
-  body: FormData,
-  onProgress: (progress: number) => void,
-) {
-  return new Promise<unknown>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
-    xhr.setRequestHeader("Authorization", `Bearer ${token.trim()}`);
-    xhr.responseType = "json";
-    xhr.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable) {
-        onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
-      }
-    });
-    xhr.addEventListener("load", () => {
-      const payload =
-        xhr.response ??
-        (() => {
-          try {
-            return JSON.parse(xhr.responseText);
-          } catch {
-            return null;
-          }
-        })();
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(100);
-        resolve(payload);
-      } else {
-        reject(
-          new Error(
-            payload?.error ||
-              payload?.message ||
-              `上传失败（${xhr.status || "网络错误"}）。`,
-          ),
-        );
-      }
-    });
-    xhr.addEventListener("error", () => reject(new Error("上传网络连接失败。")));
-    xhr.addEventListener("abort", () => reject(new Error("上传已取消。")));
-    xhr.send(body);
-  });
-}
-
 function PlusIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
@@ -968,6 +960,16 @@ function UploadIcon() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 16V4m0 0-4 4m4-4 4 4" />
       <path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4" />
+    </svg>
+  );
+}
+
+function FilmIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4" />
+      <circle cx="12" cy="12" r="2.8" />
     </svg>
   );
 }

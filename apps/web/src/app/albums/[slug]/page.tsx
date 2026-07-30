@@ -53,14 +53,22 @@ export default async function AlbumPage({ params }: AlbumPageProps) {
         id: photo.id,
         sdrImage: photo.sdr_image!,
         hdrImage: photo.hdr_image,
+        hlgImage:
+          photo.renditions?.find((rendition) => rendition.kind === "hlg")?.file ??
+          null,
         thumbnailUrl: sources.thumbnail,
         sdrUrl: sources.sdr,
         hdrUrl: sources.hdr,
+        hlgUrl: sources.hlg,
         caption: photo.caption || "",
         altText: photo.alt_text || "",
         hdrTransfer: photo.hdr_transfer,
         hdrPrimaries: photo.hdr_primaries,
         hdrBitDepth: photo.hdr_bit_depth,
+        filmStock: photo.film_stock,
+        filmProcess: photo.film_process,
+        filmScanner: photo.film_scanner,
+        filmFrameFormat: photo.film_frame_format,
         published: true,
         sortOrder: photo.sort_order ?? 0,
       };

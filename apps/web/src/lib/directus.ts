@@ -88,6 +88,20 @@ export type AlbumPhoto = {
   hdr_transfer: "pq" | "hlg" | null;
   hdr_primaries: string | null;
   hdr_bit_depth: number | null;
+  film_scan_frame_id: number | { id: number } | null;
+  film_stock: string | null;
+  film_process: string | null;
+  film_scanner: string | null;
+  film_frame_format: string | null;
+  renditions?: Array<{
+    id: number;
+    kind: "sdr" | "pq" | "hlg";
+    file: DirectusFileId;
+    transfer: string | null;
+    primaries: string | null;
+    bit_depth: number | null;
+    is_default: boolean | number;
+  }>;
   published: boolean | number;
   sort_order: number | null;
   created_at: string | null;
@@ -131,6 +145,10 @@ const ALBUM_LIST_FIELDS =
   "id,title,slug,description,cover_image,published,created_at,updated_at," +
   "photos.id,photos.album_id,photos.sdr_image,photos.hdr_image,photos.caption," +
   "photos.alt_text,photos.hdr_transfer,photos.hdr_primaries,photos.hdr_bit_depth," +
+  "photos.film_scan_frame_id,photos.film_stock,photos.film_process,photos.film_scanner," +
+  "photos.film_frame_format,photos.renditions.id,photos.renditions.kind," +
+  "photos.renditions.file,photos.renditions.transfer,photos.renditions.primaries," +
+  "photos.renditions.bit_depth,photos.renditions.is_default," +
   "photos.published,photos.sort_order,photos.created_at,photos.updated_at";
 const ALBUM_DETAIL_FIELDS = ALBUM_LIST_FIELDS;
 
@@ -234,11 +252,15 @@ export function assetUrl(
   return `/api/assets/${fileId}${suffix}`;
 }
 
-export function albumPictureSources(photo: Pick<AlbumPhoto, "sdr_image" | "hdr_image">) {
+export function albumPictureSources(
+  photo: Pick<AlbumPhoto, "sdr_image" | "hdr_image" | "renditions">,
+) {
+  const hlg = photo.renditions?.find((rendition) => rendition.kind === "hlg");
   return {
     thumbnail: assetUrl(photo.sdr_image, "album-thumb"),
     sdr: assetUrl(photo.sdr_image),
     hdr: assetUrl(photo.hdr_image),
+    hlg: assetUrl(hlg?.file ?? null),
   };
 }
 

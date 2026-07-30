@@ -23,10 +23,6 @@ export default async function AlbumsPage({
         <div className="page-header">
           <p className="eyebrow">Darkroom contact sheets</p>
           <h1>相簿</h1>
-          <p className="summary">
-            网格始终使用可靠的 SDR 印样；进入灯箱后，HDR 显示设备会自动选择
-            PQ 或 HLG AVIF 原片。
-          </p>
         </div>
         <AlbumsToolbar
           initialDialog={dialog === "upload" ? "upload" : null}

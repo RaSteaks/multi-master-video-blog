@@ -89,7 +89,27 @@ describe("HDR picture sources", () => {
       thumbnail: "/api/assets/sdr?key=album-thumb",
       sdr: "/api/assets/sdr",
       hdr: "/api/assets/hdr",
+      hlg: null,
     });
+    expect(
+      albumPictureSources(
+        photo(3, true, {
+          sdr_image: "sdr",
+          hdr_image: "pq",
+          renditions: [
+            {
+              id: 1,
+              kind: "hlg",
+              file: "hlg",
+              transfer: "hlg",
+              primaries: "bt2020",
+              bit_depth: 10,
+              is_default: false,
+            },
+          ],
+        }),
+      ).hlg,
+    ).toBe("/api/assets/hlg");
     expect(
       albumPictureSources(
         photo(2, true, { sdr_image: "sdr-only", hdr_image: null }),

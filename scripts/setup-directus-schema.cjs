@@ -274,6 +274,22 @@ function integerField(field, options = {}) {
   };
 }
 
+function bigIntegerField(field, options = {}) {
+  return {
+    field,
+    type: "bigInteger",
+    meta: {
+      interface: "input",
+      width: options.width || "half",
+      required: options.required || false
+    },
+    schema: {
+      is_nullable: !options.required,
+      default_value: options.defaultValue ?? null
+    }
+  };
+}
+
 function decimalField(field) {
   return {
     field,
@@ -524,6 +540,56 @@ const collections = [
     schema: {}
   },
   {
+    collection: "film_scan_jobs",
+    meta: {
+      collection: "film_scan_jobs",
+      icon: "scanner",
+      note: "Recoverable film-scan analysis, review, and rendering jobs.",
+      display_template: "{{film_stock}} · {{scanner}} · {{status}}"
+    },
+    schema: {}
+  },
+  {
+    collection: "film_scan_sources",
+    meta: {
+      collection: "film_scan_sources",
+      icon: "draft",
+      note: "Private original film-scan sources retained for reproducible rendering.",
+      display_template: "{{original_name}} · {{decode_status}}"
+    },
+    schema: {}
+  },
+  {
+    collection: "film_scan_frames",
+    meta: {
+      collection: "film_scan_frames",
+      icon: "crop",
+      note: "Detected or manually adjusted frames within film-scan sources.",
+      display_template: "#{{sort_order}} · {{review_status}}"
+    },
+    schema: {}
+  },
+  {
+    collection: "film_stock_presets",
+    meta: {
+      collection: "film_stock_presets",
+      icon: "tune",
+      note: "Built-in and custom film-base and color presets.",
+      display_template: "{{manufacturer}} {{model}}"
+    },
+    schema: {}
+  },
+  {
+    collection: "album_photo_renditions",
+    meta: {
+      collection: "album_photo_renditions",
+      icon: "hdr_on",
+      note: "SDR, PQ, and HLG files generated for an album photo.",
+      display_template: "{{kind}} · {{bit_depth}}-bit"
+    },
+    schema: {}
+  },
+  {
     collection: "analytics_events",
     meta: {
       collection: "analytics_events",
@@ -583,6 +649,53 @@ const displayGamutTypes = [
 const photoHdrTransferTypes = [
   { text: "PQ (ST 2084)", value: "pq" },
   { text: "HLG (ARIB STD-B67)", value: "hlg" }
+];
+
+const filmScanStatusTypes = [
+  { text: "Uploaded", value: "uploaded" },
+  { text: "Analyzing", value: "analyzing" },
+  { text: "Review required", value: "review_required" },
+  { text: "Rendering", value: "rendering" },
+  { text: "Committed", value: "committed" },
+  { text: "Failed", value: "failed" },
+  { text: "Canceled", value: "canceled" }
+];
+
+const filmScannerTypes = [
+  { text: "Hasselblad X5 (experimental)", value: "hasselblad-x5" },
+  { text: "Fujifilm SP-3000 (experimental)", value: "fujifilm-sp3000" },
+  { text: "Noritsu HS-1800 (experimental)", value: "noritsu-hs1800" }
+];
+
+const filmFrameFormatTypes = [
+  { text: "135 full frame", value: "135-full" },
+  { text: "135 half frame", value: "135-half" },
+  { text: "135 panoramic", value: "135-pano" },
+  { text: "120 6×4.5", value: "120-645" },
+  { text: "120 6×6", value: "120-66" },
+  { text: "120 6×7", value: "120-67" },
+  { text: "120 6×8", value: "120-68" },
+  { text: "120 6×9", value: "120-69" }
+];
+
+const filmTypeChoices = [
+  { text: "Color negative", value: "color-negative" },
+  { text: "Black-and-white negative", value: "bw-negative" },
+  { text: "E-6 slide / positive", value: "slide" }
+];
+
+const filmProcessChoices = [
+  { text: "C-41", value: "c41" },
+  { text: "E-6", value: "e6" },
+  { text: "ECN-2", value: "ecn2" },
+  { text: "Black and white", value: "bw" },
+  { text: "Other", value: "other" }
+];
+
+const renditionKinds = [
+  { text: "SDR", value: "sdr" },
+  { text: "PQ", value: "pq" },
+  { text: "HLG", value: "hlg" }
 ];
 
 const analyticsItemTypes = [
@@ -693,7 +806,8 @@ const fields = {
       "caption",
       "published",
       "sort_order"
-    ])
+    ]),
+    aliasO2mField("film_scan_jobs", ["film_stock", "scanner", "status", "progress"])
   ],
   album_photos: [
     integerField("album_id", { required: true }),
@@ -704,10 +818,115 @@ const fields = {
     selectField("hdr_transfer", photoHdrTransferTypes, false),
     stringField("hdr_primaries", false, { width: "half", maxLength: 64 }),
     integerField("hdr_bit_depth"),
+    integerField("film_scan_frame_id"),
+    stringField("film_stock", false, { width: "half", maxLength: 160 }),
+    stringField("film_process", false, { width: "half", maxLength: 64 }),
+    stringField("film_scanner", false, { width: "half", maxLength: 64 }),
+    stringField("film_frame_format", false, { width: "half", maxLength: 64 }),
     booleanField("published", false),
     integerField("sort_order", { defaultValue: 0 }),
     dateTimeField("created_at"),
+    dateTimeField("updated_at"),
+    aliasO2mField("renditions", [
+      "kind",
+      "file",
+      "transfer",
+      "primaries",
+      "bit_depth",
+      "is_default"
+    ])
+  ],
+  film_scan_jobs: [
+    integerField("album_id", { required: true }),
+    selectField("status", filmScanStatusTypes, true),
+    selectField("scanner", filmScannerTypes, true),
+    selectField("frame_format", filmFrameFormatTypes, true),
+    selectField("film_type", filmTypeChoices, true),
+    stringField("film_stock", true, { width: "half", maxLength: 160 }),
+    integerField("iso", { required: true }),
+    selectField("process", filmProcessChoices, true),
+    decimalField("push_pull"),
+    jsonObjectField("roll_adjustments"),
+    integerField("progress", { defaultValue: 0 }),
+    jsonObjectField("warnings"),
+    textField("error_message"),
+    booleanField("experimental_compatibility", true),
+    dateTimeField("started_at"),
+    dateTimeField("completed_at"),
+    dateTimeField("created_at"),
+    dateTimeField("updated_at"),
+    aliasO2mField("sources", [
+      "original_name",
+      "format",
+      "bit_depth",
+      "decode_status"
+    ]),
+    aliasO2mField("frames", [
+      "sort_order",
+      "confidence",
+      "review_status",
+      "preview_path"
+    ])
+  ],
+  film_scan_sources: [
+    integerField("job_id", { required: true }),
+    stringField("original_name", true, { maxLength: 255 }),
+    stringField("relative_path", true, { maxLength: 500 }),
+    stringField("format", true, { width: "half", maxLength: 32 }),
+    stringField("mime_type", true, { width: "half", maxLength: 64 }),
+    bigIntegerField("size_bytes"),
+    stringField("sha256", true, { width: "full", maxLength: 64 }),
+    integerField("width"),
+    integerField("height"),
+    integerField("bit_depth"),
+    stringField("icc_description", false, { width: "half", maxLength: 255 }),
+    booleanField("has_icc", false),
+    stringField("decode_status", true, { width: "half", maxLength: 32 }),
+    textField("decode_error"),
+    dateTimeField("created_at"),
     dateTimeField("updated_at")
+  ],
+  film_scan_frames: [
+    integerField("job_id", { required: true }),
+    integerField("source_id", { required: true }),
+    integerField("album_photo_id"),
+    decimalField("crop_x"),
+    decimalField("crop_y"),
+    decimalField("crop_width"),
+    decimalField("crop_height"),
+    integerField("rotation", { defaultValue: 0 }),
+    integerField("sort_order", { defaultValue: 0 }),
+    decimalField("confidence"),
+    stringField("review_status", true, { width: "half", maxLength: 32 }),
+    booleanField("accepted", true),
+    booleanField("published", true),
+    jsonObjectField("adjustment_overrides"),
+    stringField("preview_path", false, { maxLength: 500 }),
+    dateTimeField("created_at"),
+    dateTimeField("updated_at")
+  ],
+  film_stock_presets: [
+    stringField("manufacturer", true, { width: "half", maxLength: 100 }),
+    stringField("model", true, { width: "half", maxLength: 160 }),
+    selectField("film_type", filmTypeChoices, true),
+    integerField("nominal_iso"),
+    selectField("recommended_process", filmProcessChoices, false),
+    selectField("scanner", filmScannerTypes, false),
+    jsonObjectField("parameters"),
+    booleanField("built_in", false),
+    dateTimeField("created_at"),
+    dateTimeField("updated_at")
+  ],
+  album_photo_renditions: [
+    integerField("photo_id", { required: true }),
+    integerField("film_scan_frame_id"),
+    selectField("kind", renditionKinds, true),
+    fileField("file", { required: true }),
+    stringField("transfer", false, { width: "half", maxLength: 64 }),
+    stringField("primaries", false, { width: "half", maxLength: 64 }),
+    integerField("bit_depth"),
+    booleanField("is_default", false),
+    dateTimeField("created_at")
   ],
   analytics_events: [
     selectField("event_type", analyticsEventTypes, true),
@@ -834,6 +1053,91 @@ const relations = [
   fileRelation("albums", "cover_image"),
   fileRelation("album_photos", "sdr_image", { onDelete: "RESTRICT" }),
   fileRelation("album_photos", "hdr_image"),
+  fileRelation("album_photo_renditions", "file", { onDelete: "RESTRICT" }),
+  {
+    collection: "film_scan_jobs",
+    field: "album_id",
+    related_collection: "albums",
+    meta: {
+      many_collection: "film_scan_jobs",
+      many_field: "album_id",
+      one_collection: "albums",
+      one_field: "film_scan_jobs",
+      one_deselect_action: "delete"
+    },
+    schema: {
+      table: "film_scan_jobs",
+      column: "album_id",
+      foreign_key_table: "albums",
+      foreign_key_column: "id",
+      on_update: "NO ACTION",
+      on_delete: "CASCADE"
+    }
+  },
+  {
+    collection: "film_scan_sources",
+    field: "job_id",
+    related_collection: "film_scan_jobs",
+    meta: {
+      many_collection: "film_scan_sources",
+      many_field: "job_id",
+      one_collection: "film_scan_jobs",
+      one_field: "sources",
+      one_deselect_action: "delete"
+    },
+    schema: {
+      table: "film_scan_sources",
+      column: "job_id",
+      foreign_key_table: "film_scan_jobs",
+      foreign_key_column: "id",
+      on_update: "NO ACTION",
+      on_delete: "CASCADE"
+    }
+  },
+  {
+    collection: "film_scan_frames",
+    field: "job_id",
+    related_collection: "film_scan_jobs",
+    meta: {
+      many_collection: "film_scan_frames",
+      many_field: "job_id",
+      one_collection: "film_scan_jobs",
+      one_field: "frames",
+      one_deselect_action: "delete"
+    },
+    schema: {
+      table: "film_scan_frames",
+      column: "job_id",
+      foreign_key_table: "film_scan_jobs",
+      foreign_key_column: "id",
+      on_update: "NO ACTION",
+      on_delete: "CASCADE"
+    }
+  },
+  itemRelation("film_scan_frames", "source_id", "film_scan_sources"),
+  itemRelation("film_scan_frames", "album_photo_id", "album_photos"),
+  itemRelation("album_photos", "film_scan_frame_id", "film_scan_frames"),
+  {
+    collection: "album_photo_renditions",
+    field: "photo_id",
+    related_collection: "album_photos",
+    meta: {
+      many_collection: "album_photo_renditions",
+      many_field: "photo_id",
+      one_collection: "album_photos",
+      one_field: "renditions",
+      one_deselect_action: "delete"
+    },
+    schema: {
+      table: "album_photo_renditions",
+      column: "photo_id",
+      foreign_key_table: "album_photos",
+      foreign_key_column: "id",
+      on_update: "NO ACTION",
+      on_delete: "CASCADE"
+    }
+  },
+  itemRelation("album_photo_renditions", "film_scan_frame_id", "film_scan_frames"),
   itemRelation("analytics_events", "post_id", "posts"),
   itemRelation("analytics_events", "video_project_id", "video_projects"),
   itemRelation("analytics_events", "video_master_id", "video_masters"),
@@ -1169,13 +1473,14 @@ async function ensurePublicReadPermission(
   token,
   publicPolicyId,
   collection,
-  requiredFields
+  requiredFields,
+  recordPermissions = null
 ) {
   const permissionQuery = new URLSearchParams({
     "filter[collection][_eq]": collection,
     "filter[action][_eq]": "read",
     "filter[policy][_eq]": publicPolicyId,
-    fields: "id,fields",
+    fields: "id,fields,permissions",
     limit: "1"
   });
   const permissions = await request(`/permissions?${permissionQuery}`, {
@@ -1190,7 +1495,7 @@ async function ensurePublicReadPermission(
       body: {
         collection,
         action: "read",
-        permissions: {},
+        permissions: recordPermissions || {},
         validation: {},
         presets: null,
         fields: requiredFields,
@@ -1202,16 +1507,15 @@ async function ensurePublicReadPermission(
   }
 
   const currentFields = permissionFields(permission.fields);
-  if (currentFields.includes("*")) {
-    console.log(`public permission exists: ${collection}.read fields=*`);
-    return;
-  }
-
-  const mergedFields = [...new Set([...currentFields, ...requiredFields])];
+  const mergedFields = currentFields.includes("*")
+    ? ["*"]
+    : [...new Set([...currentFields, ...requiredFields])];
+  const patch = { fields: mergedFields };
+  if (recordPermissions) patch.permissions = recordPermissions;
   await request(`/permissions/${permission.id}`, {
     method: "PATCH",
     token,
-    body: { fields: mergedFields }
+    body: patch
   });
   console.log(
     `public permission ready: ${collection}.read fields=${mergedFields.join(",")}`
@@ -1248,6 +1552,155 @@ async function ensurePublicSiteSettingsPermission(token) {
     "site_settings_files",
     ["site_settings_id", "directus_files_id"]
   );
+  await ensurePublicReadPermission(
+    token,
+    publicPolicyId,
+    "albums",
+    [
+      "id", "title", "slug", "description", "cover_image", "published",
+      "created_at", "updated_at", "photos"
+    ],
+    { published: { _eq: true } }
+  );
+  await ensurePublicReadPermission(
+    token,
+    publicPolicyId,
+    "album_photos",
+    [
+      "id", "album_id", "sdr_image", "hdr_image", "caption", "alt_text",
+      "hdr_transfer", "hdr_primaries", "hdr_bit_depth", "film_scan_frame_id",
+      "film_stock", "film_process", "film_scanner", "film_frame_format",
+      "published", "sort_order", "created_at", "updated_at", "renditions"
+    ],
+    {
+      _and: [
+        { published: { _eq: true } },
+        { album_id: { published: { _eq: true } } }
+      ]
+    }
+  );
+  await ensurePublicReadPermission(
+    token,
+    publicPolicyId,
+    "album_photo_renditions",
+    [
+      "id", "photo_id", "film_scan_frame_id", "kind", "file", "transfer",
+      "primaries", "bit_depth", "is_default", "created_at"
+    ],
+    {
+      photo_id: {
+        published: { _eq: true },
+        album_id: { published: { _eq: true } }
+      }
+    }
+  );
+}
+
+const builtInFilmStockPresets = [
+  ["Kodak", "Portra 160", "color-negative", 160, "c41", [0.83, 0.63, 0.42]],
+  ["Kodak", "Portra 400", "color-negative", 400, "c41", [0.82, 0.61, 0.4]],
+  ["Kodak", "Portra 800", "color-negative", 800, "c41", [0.81, 0.6, 0.39]],
+  ["Kodak", "Gold 200", "color-negative", 200, "c41", [0.84, 0.62, 0.4]],
+  ["Kodak", "Ektar 100", "color-negative", 100, "c41", [0.82, 0.6, 0.38]],
+  ["Kodak", "5203 Vision3 50D", "color-negative", 50, "ecn2", [0.8, 0.58, 0.37]],
+  [
+    "Kodak",
+    "5207 Vision3 250D",
+    "color-negative",
+    250,
+    "ecn2",
+    [0.8, 0.58, 0.37],
+    ["Vision3 250D"]
+  ],
+  ["Kodak", "5219 Vision3 500T", "color-negative", 500, "ecn2", [0.8, 0.58, 0.37]],
+  ["Fujifilm", "Pro 400H", "color-negative", 400, "c41", [0.79, 0.62, 0.43]],
+  ["Fujifilm", "Velvia 50", "slide", 50, "e6", null],
+  ["Kodak", "Tri-X 400", "bw-negative", 400, "bw", null],
+  ["Ilford", "HP5 Plus", "bw-negative", 400, "bw", null],
+  ["Ilford", "Delta 100", "bw-negative", 100, "bw", null]
+];
+
+async function ensureBuiltInFilmStockPresets(token) {
+  for (const [
+    manufacturer,
+    model,
+    filmType,
+    nominalIso,
+    recommendedProcess,
+    maskRgb,
+    legacyModels = []
+  ] of builtInFilmStockPresets) {
+    let existing = null;
+    for (const candidateModel of [model, ...legacyModels]) {
+      const params = new URLSearchParams({
+        "filter[manufacturer][_eq]": manufacturer,
+        "filter[model][_eq]": candidateModel,
+        "filter[built_in][_eq]": "true",
+        fields: "id",
+        limit: "1"
+      });
+      existing = await request(`/items/film_stock_presets?${params}`, {
+        token
+      });
+      if (existing?.data?.[0]?.id) break;
+    }
+    const payload = {
+      manufacturer,
+      model,
+      film_type: filmType,
+      nominal_iso: nominalIso,
+      recommended_process: recommendedProcess,
+      scanner: null,
+      parameters: maskRgb ? { maskRgb, maskMode: "preset" } : {},
+      built_in: true,
+      updated_at: new Date().toISOString()
+    };
+    if (existing?.data?.[0]?.id) {
+      await request(`/items/film_stock_presets/${existing.data[0].id}`, {
+        method: "PATCH",
+        token,
+        body: payload
+      });
+    } else {
+      await request("/items/film_stock_presets", {
+        method: "POST",
+        token,
+        body: { ...payload, created_at: new Date().toISOString() }
+      });
+    }
+  }
+  console.log(`film stock presets ready: ${builtInFilmStockPresets.length}`);
+}
+
+async function ensureFilmScanSourceSizeType(token) {
+  const pathname = "/fields/film_scan_sources/size_bytes";
+  const current = await request(pathname, { token });
+  const currentType = current?.data?.type;
+  const currentDataType = String(current?.data?.schema?.data_type || "").toLowerCase();
+  if (
+    currentType === "bigInteger" &&
+    ["bigint", "integer", "big integer"].includes(currentDataType)
+  ) {
+    console.log("film_scan_sources.size_bytes type ready: bigInteger");
+    return;
+  }
+
+  const { field: _field, ...sizeFieldDefinition } =
+    bigIntegerField("size_bytes");
+  await request(pathname, {
+    method: "PATCH",
+    token,
+    body: sizeFieldDefinition
+  });
+  const updated = await request(pathname, { token });
+  if (updated?.data?.type !== "bigInteger") {
+    throw new Error(
+      `film_scan_sources.size_bytes migration failed: ${updated?.data?.type || "unknown"}`
+    );
+  }
+  console.log(
+    `film_scan_sources.size_bytes migrated: ${currentType || "unknown"} -> bigInteger`
+  );
 }
 
 function placeholder(db, index) {
@@ -1271,12 +1724,15 @@ async function main() {
     }
   }
 
+  await ensureFilmScanSourceSizeType(token);
+
   for (const relation of relations) {
     await ensureRelation(token, relation);
   }
 
   await ensureAlbumFieldDefaults(token);
   await ensureAlbumAssetPresets(token);
+  await ensureBuiltInFilmStockPresets(token);
   await ensureSiteSettingsAccentDefault(token);
   await ensurePublicSiteSettingsPermission(token);
   await ensureAnalyticsDashboardInDatabase();
