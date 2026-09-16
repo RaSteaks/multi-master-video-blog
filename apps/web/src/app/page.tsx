@@ -25,7 +25,7 @@ export default async function Home() {
 
   return (
     <>
-      <LiquidBackground variant="accent" />
+      <LiquidBackground />
 
       <main className="orbital-home" aria-label={siteConfig.home.profileName}>
         <div

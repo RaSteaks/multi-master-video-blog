@@ -48,6 +48,11 @@ const directusAdminRoutes = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Keep production builds reliable on the same low-memory hosts used for deployment.
+  experimental: {
+    cpus: 2,
+    memoryBasedWorkersCount: true
+  },
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   async rewrites() {
     return [

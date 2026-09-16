@@ -235,11 +235,15 @@ async function getToken() {
   return pendingToken;
 }
 
-async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
+async function directusFetch<T>(
+  pathname: string,
+  retried = false,
+  tags: string[] = [],
+): Promise<T> {
   const token = await getToken();
   const cacheOptions =
     REVALIDATE_SECONDS > 0
-      ? { next: { revalidate: REVALIDATE_SECONDS } }
+      ? { next: { revalidate: REVALIDATE_SECONDS, tags } }
       : { cache: "no-store" as const };
   const response = await fetch(`${directusUrl}${pathname}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
@@ -250,7 +254,7 @@ async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
     if (cachedToken === token) {
       cachedToken = null;
     }
-    return directusFetch<T>(pathname, true);
+    return directusFetch<T>(pathname, true, tags);
   }
 
   if (!response.ok) {
@@ -306,7 +310,9 @@ export async function getPosts(limit = 24) {
   });
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<Post>>(
-    `/items/posts?${params.toString()}`
+    `/items/posts?${params.toString()}`,
+    false,
+    ["posts:list"],
   );
   return response.data;
 }
@@ -319,7 +325,9 @@ export async function getPost(slug: string) {
   });
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<Post>>(
-    `/items/posts?${params.toString()}`
+    `/items/posts?${params.toString()}`,
+    false,
+    ["posts:list", `posts:slug:${slug}`],
   );
   return response.data[0] ?? null;
 }
@@ -332,7 +340,9 @@ export async function getVideoProjects(limit = 24) {
   });
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<VideoProject>>(
-    `/items/video_projects?${params.toString()}`
+    `/items/video_projects?${params.toString()}`,
+    false,
+    ["videos:list"],
   );
   return response.data.map(sortMasters);
 }
@@ -345,7 +355,9 @@ export async function getVideoProject(slug: string) {
   });
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<VideoProject>>(
-    `/items/video_projects?${params.toString()}`
+    `/items/video_projects?${params.toString()}`,
+    false,
+    ["videos:list", `videos:slug:${slug}`],
   );
   const project = response.data[0] ?? null;
   return project ? sortMasters(project) : null;
@@ -381,6 +393,8 @@ export async function getAlbums(limit = 100) {
   addPublicAlbumFilters(params);
   const response = await directusFetch<DirectusListResponse<Album>>(
     `/items/albums?${params.toString()}`,
+    false,
+    ["albums:list"],
   );
   return filterPublishedAlbums(response.data);
 }
@@ -394,6 +408,8 @@ export async function getAlbum(slug: string) {
   addPublicAlbumFilters(params);
   const response = await directusFetch<DirectusListResponse<Album>>(
     `/items/albums?${params.toString()}`,
+    false,
+    ["albums:list", `albums:slug:${slug}`],
   );
   return filterPublishedAlbums(response.data)[0] ?? null;
 }
@@ -408,14 +424,18 @@ export type SiteSettings = {
 export async function getSiteSettings(): Promise<SiteSettings | null> {
   try {
     const response = await directusFetch<{ data: SiteSettings }>(
-      "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id,accent_color"
+      "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id,accent_color",
+      false,
+      ["site-settings"],
     );
     return response.data ?? null;
   } catch {
     // Preserve background settings while accent_color is rolling out.
     try {
       const response = await directusFetch<{ data: SiteSettings }>(
-        "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id"
+        "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id",
+        false,
+        ["site-settings"],
       );
       return response.data ?? null;
     } catch {
@@ -452,9 +472,17 @@ export async function getCounts() {
   const qs = params.toString();
 
   const [postsRes, videosRes, albumsRes] = await Promise.all([
-    directusFetch<DirectusAggregateResponse>(`/items/posts?${qs}`),
-    directusFetch<DirectusAggregateResponse>(`/items/video_projects?${qs}`),
-    directusFetch<DirectusAggregateResponse>(`/items/albums?${qs}`),
+    directusFetch<DirectusAggregateResponse>(`/items/posts?${qs}`, false, [
+      "posts:list",
+    ]),
+    directusFetch<DirectusAggregateResponse>(
+      `/items/video_projects?${qs}`,
+      false,
+      ["videos:list"],
+    ),
+    directusFetch<DirectusAggregateResponse>(`/items/albums?${qs}`, false, [
+      "albums:list",
+    ]),
   ]);
 
   return {
@@ -482,4 +510,56 @@ function sortMasters(project: VideoProject) {
       return orderA !== orderB ? orderA - orderB : a.id - b.id;
     }),
   };
+}
+
+export type AssetDimensions = { width: number; height: number };
+
+/**
+ * Intrinsic size lookup for markdown inline images (`/api/assets/<id>` URLs),
+ * so `<img>` elements can declare width/height and avoid layout shift.
+ * File dimensions are immutable after upload, so the revalidate TTL is enough
+ * and no invalidation tags are needed.
+ */
+export async function getAssetDimensions(
+  fileIds: string[],
+): Promise<Map<string, AssetDimensions>> {
+  const results = new Map<string, AssetDimensions>();
+  const ids = [...new Set(fileIds)].filter(Boolean);
+  if (ids.length === 0) return results;
+
+  try {
+    const params = new URLSearchParams({
+      fields: "id,width,height",
+      "filter[id][_in]": ids.join(","),
+      limit: String(ids.length),
+    });
+    const response = await directusFetch<{
+      data: Array<{
+        id: string;
+        width: number | null;
+        height: number | null;
+      }>;
+    }>(`/files?${params.toString()}`);
+
+    for (const file of response.data) {
+      if (file.width && file.height) {
+        results.set(file.id, { width: file.width, height: file.height });
+      }
+    }
+  } catch {
+    // Dimension lookup is best-effort: on failure images render without
+    // intrinsic size (same behavior as before this lookup existed).
+  }
+
+  return results;
+}
+
+/** Extract Directus file ids from `/api/assets/<id>` markdown image URLs. */
+export function assetIdsFromMarkdown(markdown: string): string[] {
+  const ids: string[] = [];
+  const pattern = /\/api\/assets\/([a-zA-Z0-9-]+)/g;
+  for (const match of markdown.matchAll(pattern)) {
+    ids.push(match[1]);
+  }
+  return ids;
 }

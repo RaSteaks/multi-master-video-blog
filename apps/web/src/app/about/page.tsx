@@ -3,7 +3,8 @@ import path from "node:path";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
-import { assetUrl, getPost } from "@/lib/directus";
+import { assetIdsFromMarkdown, assetUrl, getAssetDimensions, getPost } from "@/lib/directus";
+import { markdownImageComponent } from "@/components/MarkdownImage";
 import { siteConfig } from "@/lib/site-config";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +27,16 @@ export default async function AboutPage() {
     const coverUrl = assetUrl(cmsPost.cover_image);
     const bgImageUrl = assetUrl(cmsPost.backgroundimage, "site-background");
     const content = cmsPost.content || "";
+    // Fidelity mode (plan §5.2): the about cover keeps its original ratio —
+    // no cropping preset. Real file dimensions only reserve layout space so
+    // the image cannot shift the page when it loads. Missing metadata falls
+    // back to attribute-free rendering (pre-existing behavior).
+    const dimensions = await getAssetDimensions([
+      ...assetIdsFromMarkdown(content),
+      ...(cmsPost.cover_image ? [cmsPost.cover_image] : []),
+    ]);
+    const coverSize = cmsPost.cover_image ? dimensions.get(cmsPost.cover_image) : undefined;
+    const components = { img: markdownImageComponent(dimensions) };
 
     return (
       <>
@@ -51,13 +62,16 @@ export default async function AboutPage() {
                 className="hero-media about-cover"
                 src={coverUrl}
                 alt={`Cover image for ${cmsPost.title}`}
+                width={coverSize?.width}
+                height={coverSize?.height}
                 loading="eager"
+                decoding="async"
                 fetchPriority="high"
               />
             ) : null}
 
             <article className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+              <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
             </article>
           </div>
         </main>
@@ -67,6 +81,8 @@ export default async function AboutPage() {
 
   // 2. Fall back to local file
   const about = await readAboutMarkdown();
+  const dimensions = await getAssetDimensions(assetIdsFromMarkdown(about.content));
+  const components = { img: markdownImageComponent(dimensions) };
 
   return (
     <main className="shell article-shell">
@@ -78,7 +94,7 @@ export default async function AboutPage() {
         </header>
 
         <article className="markdown-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{about.content}</ReactMarkdown>
+          <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>{about.content}</ReactMarkdown>
         </article>
       </div>
     </main>

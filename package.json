@@ -43,9 +43,13 @@
     "health": "node scripts/health-check.cjs",
     "test:db": "node scripts/test-directus-db.cjs",
     "test:cms-schema": "node scripts/test-directus-schema.cjs",
-    "test:cms-crud": "node scripts/test-directus-crud.cjs"
+    "test:cms-crud": "node scripts/test-directus-crud.cjs",
+    "test:manager": "node --test scripts/test-manager-powershell.cjs scripts/test-manager-lifecycle.cjs scripts/test-manager-launcher.cjs"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "proper-lockfile": "4.1.2"
   }
 }

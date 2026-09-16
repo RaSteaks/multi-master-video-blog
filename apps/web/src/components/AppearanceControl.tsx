@@ -8,7 +8,6 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
@@ -32,6 +31,8 @@ import {
   type ResolvedThemeColor,
   type StoredThemeColor,
 } from "@/lib/theme-color";
+import { HsvPicker } from "./HsvPicker";
+import { LiquidSettings, useLiquidPreferences } from "./LiquidSettings";
 import { LiquidBackground } from "./LiquidBackground";
 
 type BgMode = "image" | "liquid";
@@ -47,6 +48,16 @@ const COLLAPSED_COLOR_CHECKER_COUNT = 12;
 
 /** Sections that ship their own liquid background layer. */
 const liquidSections = new Set(["home", "videos", "posts", "upload"]);
+
+function readLocal(key: string) {
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+function writeLocal(key: string, value: string) {
+  try { window.localStorage.setItem(key, value); } catch { /* Keep the in-memory preference. */ }
+}
+function removeLocal(key: string) {
+  try { window.localStorage.removeItem(key); } catch { /* Keep the in-memory preference. */ }
+}
 
 function handleTabKeyDown(
   event: ReactKeyboardEvent<HTMLButtonElement>
@@ -130,6 +141,7 @@ export function AppearanceControl({
   defaultBlur?: number;
   siteAccentColor?: string;
 }) {
+  const liquid = useLiquidPreferences();
   const pathname = usePathname() || "/";
   const section = pathname.split("/").filter(Boolean)[0] || "home";
   const isHome = section === "home";
@@ -148,7 +160,7 @@ export function AppearanceControl({
   const [themeReady, setThemeReady] = useState(false);
   const [storedTheme, setStoredTheme] = useState<StoredThemeColor | null>(null);
   const [appearanceView, setAppearanceView] =
-    useState<AppearanceView>("color");
+    useState<AppearanceView>("background");
   const [colorEditor, setColorEditor] = useState<ColorEditor>("presets");
   const [customHsv, setCustomHsv] = useState<HsvColor>(() =>
     roundedHsv(siteTheme.base)
@@ -185,23 +197,23 @@ export function AppearanceControl({
   useEffect(() => {
     setMounted(true);
 
-    const savedMode = window.localStorage.getItem(MODE_KEY);
+    const savedMode = readLocal(MODE_KEY);
     if (savedMode === "image" || savedMode === "liquid") {
       setModeState(savedMode);
     }
 
-    const savedBlur = window.localStorage.getItem(BLUR_KEY);
+    const savedBlur = readLocal(BLUR_KEY);
     if (savedBlur != null && Number.isFinite(Number(savedBlur))) {
       setBlurState(clampBlur(Number(savedBlur)));
       setHasUserBlur(true);
     }
 
-    const savedImage = window.localStorage.getItem(IMAGE_KEY);
+    const savedImage = readLocal(IMAGE_KEY);
     if (savedImage && images.some((candidate) => candidate.url === savedImage)) {
       setImageState(savedImage);
     }
 
-    const rawTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    const rawTheme = readLocal(THEME_STORAGE_KEY);
     const parsedTheme = parseStoredTheme(rawTheme);
     if (parsedTheme) {
       setStoredTheme(parsedTheme);
@@ -217,7 +229,7 @@ export function AppearanceControl({
       }
       applyThemeVariables(storedThemeToResolved(parsedTheme));
     } else if (rawTheme) {
-      window.localStorage.removeItem(THEME_STORAGE_KEY);
+      removeLocal(THEME_STORAGE_KEY);
       applyThemeVariables(null);
     }
     setThemeReady(true);
@@ -238,14 +250,14 @@ export function AppearanceControl({
     if (!themeReady) return;
 
     if (!storedTheme) {
-      window.localStorage.removeItem(THEME_STORAGE_KEY);
+      removeLocal(THEME_STORAGE_KEY);
       applyThemeVariables(null);
       return;
     }
 
     applyThemeVariables(storedThemeToResolved(storedTheme));
     const timeout = window.setTimeout(() => {
-      window.localStorage.setItem(
+      writeLocal(
         THEME_STORAGE_KEY,
         JSON.stringify(storedTheme)
       );
@@ -322,12 +334,12 @@ export function AppearanceControl({
 
   function selectMode(next: BgMode) {
     setModeState(next);
-    window.localStorage.setItem(MODE_KEY, next);
+    writeLocal(MODE_KEY, next);
   }
 
   function selectImage(url: string) {
     setImageState(url);
-    window.localStorage.setItem(IMAGE_KEY, url);
+    writeLocal(IMAGE_KEY, url);
     if (mode !== "image") selectMode("image");
   }
 
@@ -335,13 +347,14 @@ export function AppearanceControl({
     const next = clampBlur(value);
     setBlurState(next);
     setHasUserBlur(true);
-    window.localStorage.setItem(BLUR_KEY, String(next));
+    writeLocal(BLUR_KEY, String(next));
   }
 
   function resetBackground() {
-    window.localStorage.removeItem(MODE_KEY);
-    window.localStorage.removeItem(BLUR_KEY);
-    window.localStorage.removeItem(IMAGE_KEY);
+    liquid.reset();
+    removeLocal(MODE_KEY);
+    removeLocal(BLUR_KEY);
+    removeLocal(IMAGE_KEY);
     document.documentElement.style.removeProperty("--user-bg-blur");
     setHasUserBlur(false);
     setBlurState(clampBlur(defaultBlur));
@@ -376,43 +389,8 @@ export function AppearanceControl({
     setCustomHsv(roundedHsv(siteTheme.base));
     setColorCheckerExpanded(false);
     setInspectedPresetId(null);
-    window.localStorage.removeItem(THEME_STORAGE_KEY);
+    removeLocal(THEME_STORAGE_KEY);
     applyThemeVariables(null);
-  }
-
-  function updateSaturationValue(event: ReactPointerEvent<HTMLButtonElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const saturation =
-      ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 100;
-    const value =
-      (1 - (event.clientY - rect.top) / Math.max(rect.height, 1)) * 100;
-    updateCustomColor({
-      h: customHsv.h,
-      s: saturation,
-      v: value,
-    });
-  }
-
-  function onSaturationValueKeyDown(
-    event: ReactKeyboardEvent<HTMLButtonElement>
-  ) {
-    const step = event.shiftKey ? 10 : 1;
-    let next = customHsv;
-
-    if (event.key === "ArrowLeft") {
-      next = { ...customHsv, s: customHsv.s - step };
-    } else if (event.key === "ArrowRight") {
-      next = { ...customHsv, s: customHsv.s + step };
-    } else if (event.key === "ArrowUp") {
-      next = { ...customHsv, v: customHsv.v + step };
-    } else if (event.key === "ArrowDown") {
-      next = { ...customHsv, v: customHsv.v - step };
-    } else {
-      return;
-    }
-
-    event.preventDefault();
-    updateCustomColor(next);
   }
 
   const customHex = hsvToHex(customHsv);
@@ -494,19 +472,6 @@ export function AppearanceControl({
           aria-label="设置类别"
         >
           <button
-            id={colorTabId}
-            type="button"
-            role="tab"
-            aria-selected={appearanceView === "color"}
-            aria-controls={colorPanelId}
-            tabIndex={appearanceView === "color" ? 0 : -1}
-            className={appearanceView === "color" ? "active" : ""}
-            onClick={() => setAppearanceView("color")}
-            onKeyDown={handleTabKeyDown}
-          >
-            颜色
-          </button>
-          <button
             id={backgroundTabId}
             type="button"
             role="tab"
@@ -518,6 +483,19 @@ export function AppearanceControl({
             onKeyDown={handleTabKeyDown}
           >
             背景
+          </button>
+          <button
+            id={colorTabId}
+            type="button"
+            role="tab"
+            aria-selected={appearanceView === "color"}
+            aria-controls={colorPanelId}
+            tabIndex={appearanceView === "color" ? 0 : -1}
+            className={appearanceView === "color" ? "active" : ""}
+            onClick={() => setAppearanceView("color")}
+            onKeyDown={handleTabKeyDown}
+          >
+            颜色
           </button>
         </div>
 
@@ -739,87 +717,7 @@ export function AppearanceControl({
                 编码值。
               </p>
 
-              <button
-                type="button"
-                className="sv-plane"
-                aria-label={`饱和度 ${customHsv.s}%，明度 ${customHsv.v}%。使用方向键调整，按住 Shift 每次调整 10%。`}
-                style={{ "--picker-hue": customHsv.h } as CSSProperties}
-                onPointerDown={(event) => {
-                  event.currentTarget.setPointerCapture(event.pointerId);
-                  updateSaturationValue(event);
-                }}
-                onPointerMove={(event) => {
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    updateSaturationValue(event);
-                  }
-                }}
-                onKeyDown={onSaturationValueKeyDown}
-              >
-                <span
-                  className="sv-plane-handle"
-                  style={{
-                    left: `${customHsv.s}%`,
-                    top: `${100 - customHsv.v}%`,
-                    background: customHex,
-                  }}
-                  aria-hidden="true"
-                />
-              </button>
-
-              <div className="hsv-hue-control">
-                <div className="bg-control-header">
-                  <label htmlFor={`${panelId}-hue`}>Hue</label>
-                  <output>{customHsv.h}°</output>
-                </div>
-                <input
-                  id={`${panelId}-hue`}
-                  className="hue-slider"
-                  type="range"
-                  min={0}
-                  max={359}
-                  step={1}
-                  value={customHsv.h}
-                  style={{ "--picker-hue": customHsv.h } as CSSProperties}
-                  onChange={(event) =>
-                    updateCustomColor({
-                      ...customHsv,
-                      h: Number(event.target.value),
-                    })
-                  }
-                />
-              </div>
-
-              <div className="hsv-number-grid">
-                {(
-                  [
-                    ["h", "H", 0, 359],
-                    ["s", "S", 0, 100],
-                    ["v", "V", 0, 100],
-                  ] as const
-                ).map(([channel, label, min, max]) => (
-                  <label key={channel}>
-                    <span>{label}</span>
-                    <input
-                      type="number"
-                      inputMode="numeric"
-                      min={min}
-                      max={max}
-                      step={1}
-                      value={customHsv[channel]}
-                      onChange={(event) =>
-                        updateCustomColor({
-                          ...customHsv,
-                          [channel]: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </label>
-                ))}
-                <div className="hsv-hex-output">
-                  <span>HEX</span>
-                  <output>{customHex}</output>
-                </div>
-              </div>
+              <HsvPicker value={customHsv} onChange={updateCustomColor} />
             </div>
           )}
 
@@ -926,9 +824,7 @@ export function AppearanceControl({
               ) : null}
             </>
           ) : (
-            <p className="bg-control-note">
-              首页跟随全局颜色；文章与视频栏目保留各自固定背景。
-            </p>
+            <LiquidSettings controller={liquid} />
           )}
           </section>
         )}
@@ -938,7 +834,7 @@ export function AppearanceControl({
       {mounted &&
       effectiveMode === "liquid" &&
       !liquidSections.has(section)
-        ? createPortal(<LiquidBackground variant="gray" />, document.body)
+        ? createPortal(<LiquidBackground />, document.body)
         : null}
 
       {mounted && customImage

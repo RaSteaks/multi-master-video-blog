@@ -7,7 +7,7 @@ import { LiquidBackground } from "@/components/LiquidBackground";
 export default function PostsLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <LiquidBackground variant="blue" />
+      <LiquidBackground />
       {children}
     </>
   );

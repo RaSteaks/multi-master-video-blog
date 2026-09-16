@@ -3,7 +3,10 @@ const fsp = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { execFile } = require("node:child_process");
+const {
+  runPowerShell: executePowerShell,
+  stopProcessesCommand
+} = require("./manager-powershell.cjs");
 const {
   loadDirectusEnv,
   openDirectusDatabase
@@ -13,7 +16,8 @@ const ROOT = path.resolve(__dirname, "..");
 const ROOT_ENV = loadEnvFile(path.join(ROOT, ".env"));
 const HOST = managerEnv("MANAGER_HOST", "127.0.0.1");
 const PORT = Number(managerEnv("MANAGER_PORT", 8070));
-const WAIT_MS = Number(managerEnv("MANAGER_WAIT_MS", 30000));
+// Directus cold startup can take over a minute on Windows.
+const WAIT_MS = Number(managerEnv("MANAGER_WAIT_MS", 90000));
 const MANAGER_BASE_PATH = normalizeBasePath(
   managerEnv("MANAGER_BASE_PATH", "/manager")
 );
@@ -82,6 +86,36 @@ const services = [
 ];
 
 const serviceMap = new Map(services.map((service) => [service.id, service]));
+let activeOperation = null;
+async function withOperation(label, operation) {
+  if (activeOperation) {
+    const error = new Error("Another operation is running: " + activeOperation);
+    error.statusCode = 409;
+    throw error;
+  }
+  activeOperation = label;
+  let release;
+  try {
+    await fsp.mkdir(path.join(ROOT, "logs"), { recursive: true });
+    try {
+      release = await require("proper-lockfile").lock(path.join(ROOT, "logs", "service-operation"), {
+        realpath: false, retries: 0, stale: 120000, update: 10000
+      });
+    } catch (error) {
+      if (error.code === "ELOCKED") {
+        error.statusCode = 409;
+        error.message = "Another service operation is running in Manager or a startup script. Retry after it finishes.";
+      }
+      throw error;
+    }
+    // A CLI invocation may have changed the persisted mode since Manager started.
+    currentWebMode = coerceWebMode(process.env[WEB_MODE_ENV_KEY] || loadEnvFile(path.join(ROOT, ".env"))[WEB_MODE_ENV_KEY] || managerEnv("WEB_MODE", "development"));
+    return await operation();
+  } finally {
+    try { if (release) await release(); }
+    finally { activeOperation = null; }
+  }
+}
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -415,21 +449,7 @@ function psArray(values) {
 }
 
 function runPowerShell(command) {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-      { cwd: ROOT, windowsHide: true },
-      (error, stdout, stderr) => {
-        if (error) {
-          error.stderr = stderr.trim();
-          reject(error);
-          return;
-        }
-        resolve(stdout.trim());
-      }
-    );
-  });
+  return executePowerShell(command, ROOT);
 }
 
 async function getPortOwners(port) {
@@ -456,22 +476,29 @@ async function getPortOwners(port) {
 }
 
 async function getPortProcessTree(port) {
+  const owners = await getPortOwners(port);
+  if (!owners.length) return [];
   const command = [
-    `$owners = Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue |`,
-    "Where-Object { $_.State -eq 'Listen' -and $_.OwningProcess } |",
-    "Select-Object -ExpandProperty OwningProcess -Unique;",
+    `$owners = @(${owners.join(",")});`,
     "$processes = Get-CimInstance Win32_Process;",
     "$byId = @{};",
     "$processes | ForEach-Object { $byId[[int]$_.ProcessId] = $_ };",
+    "$protected = @{};",
+    `$ancestor = ${process.pid};`,
+    "while ($ancestor -and $byId.ContainsKey($ancestor) -and -not $protected.ContainsKey($ancestor)) {",
+    "$protected[$ancestor] = $true; $ancestor = [int]$byId[$ancestor].ParentProcessId",
+    "};",
     "$rows = @();",
     "foreach ($owner in $owners) {",
     "$current = [int]$owner;",
     "$depth = 0;",
     "while ($current -and $byId.ContainsKey($current)) {",
+    "if ($protected.ContainsKey($current)) { break };",
     "$proc = $byId[$current];",
     "$name = [string]$proc.Name;",
     "$allowedAncestor = @('node.exe','cmd.exe') -contains $name.ToLowerInvariant();",
     "if ($depth -gt 0 -and -not $allowedAncestor) { break }",
+    "if ($depth -gt 0 -and ([string]$proc.CommandLine -notmatch '(?i)(npm(?:-cli\\.js|\\.cmd)|next|directus)' -or [string]$proc.CommandLine -match '(?i)(manager-dashboard|service-control|start-all-services|start-services)')) { break };",
     "if (-not ($rows | Where-Object { $_.ProcessId -eq $current })) {",
     "$rows += [pscustomobject]@{",
     "ProcessId = [int]$proc.ProcessId;",
@@ -481,7 +508,10 @@ async function getPortProcessTree(port) {
     "Depth = $depth",
     "}",
     "}",
-    "$current = [int]$proc.ParentProcessId;",
+    "$parentId = [int]$proc.ParentProcessId;",
+    "if ($byId.ContainsKey($parentId) -and $byId[$parentId].CreationDate -gt $proc.CreationDate) { break };",
+    "if ($parentId -eq $current -or ($rows | Where-Object { $_.ProcessId -eq $parentId })) { break };",
+    "$current = $parentId;",
     "$depth++;",
     "}",
     "}",
@@ -493,10 +523,11 @@ async function getPortProcessTree(port) {
   return Array.isArray(parsed) ? parsed : [parsed];
 }
 
-async function checkHttp(url) {
+async function checkHttp(url, timeoutMs = 3000) {
   const started = Date.now();
   try {
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    await response.body?.cancel();
     return {
       ok: response.ok,
       status: response.status,
@@ -516,7 +547,7 @@ async function waitForProcessHealth(service) {
   let lastError = null;
 
   while (Date.now() - started < WAIT_MS) {
-    const status = await checkHttp(service.healthUrl);
+    const status = await checkHttp(service.healthUrl, Math.max(1, Math.min(3000, WAIT_MS - (Date.now() - started))));
     if (status.ok) return status;
     lastError = status.error || `HTTP ${status.status}`;
     await delay(900);
@@ -542,6 +573,7 @@ async function waitForPortStopped(service) {
 async function startProcessService(service, options = {}) {
   const owners = await getPortOwners(service.port);
   if (owners.length > 0) {
+    await waitForProcessHealth(service);
     return {
       ok: true,
       message: `${service.name} is already running.`,
@@ -590,19 +622,12 @@ async function startProcessService(service, options = {}) {
 async function stopProcessService(service) {
   const targets = await getPortProcessTree(service.port);
   if (targets.length === 0) {
+    await waitForPortStopped(service);
     return { ok: true, message: `${service.name} is already stopped.` };
   }
 
   const ids = targets.map((target) => Number(target.ProcessId)).filter(Boolean);
-  const idList = ids.join(",");
-  await runPowerShell(
-    [
-      `foreach ($id in @(${idList})) {`,
-      "$proc = Get-Process -Id $id -ErrorAction SilentlyContinue;",
-      "if ($proc) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }",
-      "}"
-    ].join(" ")
-  );
+  await runPowerShell(stopProcessesCommand(ids));
   await waitForPortStopped(service);
   return { ok: true, message: `Stopped ${service.name}.`, pids: ids };
 }
@@ -628,7 +653,7 @@ async function buildWeb() {
     ].join(" ")
   );
 
-  if (Number(exitCode) !== 0) {
+  if (!/^0$/.test(exitCode)) {
     throw new Error(
       `Web build failed with exit code ${exitCode}. Check logs/web.build.err.log.`
     );
@@ -671,7 +696,7 @@ async function startWindowsService(service) {
     return { ok: true, message: `${service.name} is already running.` };
   }
 
-  await runPowerShell(`Start-Service -Name ${psQuote(service.serviceName)}`);
+  await controlWindowsService(service, "Start-Service");
   await waitForWindowsService(service.serviceName, "Running");
   return { ok: true, message: `Started ${service.name}.` };
 }
@@ -682,9 +707,24 @@ async function stopWindowsService(service) {
     return { ok: true, message: `${service.name} is already stopped.` };
   }
 
-  await runPowerShell(`Stop-Service -Name ${psQuote(service.serviceName)} -Force`);
+  await controlWindowsService(service, "Stop-Service", " -Force");
   await waitForWindowsService(service.serviceName, "Stopped");
   return { ok: true, message: `Stopped ${service.name}.` };
+}
+
+async function controlWindowsService(service, command, options = "") {
+  try {
+    await runPowerShell(
+      command + " -Name " + psQuote(service.serviceName) + options + " -ErrorAction Stop"
+    );
+  } catch (error) {
+    throw new Error(
+      command + " failed for " + service.serviceName + ". " +
+      "If access is denied, restart the Service Manager from an Administrator PowerShell " +
+      "with npm run manager:restart, then retry. " +
+      (error.stderr || error.message)
+    );
+  }
 }
 
 async function getProcessServiceStatus(service) {
@@ -765,7 +805,7 @@ async function getDatabaseStatus() {
   let db = null;
 
   try {
-    db = await openDirectusDatabase(loadDirectusEnv());
+    db = await openDirectusDatabase(loadDirectusEnv(), { connectionTimeoutMillis: 3000, query_timeout: 3000, statement_timeout: 3000 });
     const tables = await db.listTables();
     const projects = await countTableRows(db, "video_projects", tables);
     const masters = await countTableRows(db, "video_masters", tables);
@@ -816,7 +856,8 @@ function managerStatus() {
     pid: process.pid,
     uptime: Math.round(process.uptime()),
     node: process.version,
-    platform: process.platform
+    platform: process.platform,
+    activeOperation
   };
 }
 
@@ -862,9 +903,8 @@ async function handleAction(serviceId, action) {
       return startProcessService(service);
     }
     if (action === "rebuild-restart" && service.id === "web") {
-      await buildWeb();
       await stopProcessService(service);
-      await delay(1000);
+      if (currentWebMode === "production") await buildWeb();
       return startProcessService(service, { skipBuild: true });
     }
   }
@@ -891,15 +931,28 @@ async function handleWebModeChange(modeValue) {
   }
 
   const web = serviceMap.get("web");
-  if (nextMode === "production") {
-    await buildWeb();
-  }
-
-  setRootEnvValue(WEB_MODE_ENV_KEY, nextMode);
-  currentWebMode = nextMode;
+  const previousMode = currentWebMode;
+  // Stop before next build: both modes share the .next output directory.
   await stopProcessService(web);
-  await delay(1000);
-  await startProcessService(web, { skipBuild: nextMode === "production" });
+  try {
+    if (nextMode === "production") await buildWeb();
+    currentWebMode = nextMode;
+    await startProcessService(web, { skipBuild: true });
+    setRootEnvValue(WEB_MODE_ENV_KEY, nextMode);
+    // The persisted selection supersedes the startup override. Future operations
+    // read the file so switches from other processes remain visible too.
+    delete process.env[WEB_MODE_ENV_KEY];
+  } catch (error) {
+    currentWebMode = previousMode;
+    let recovery = "Previous mode restored and restarted.";
+    try {
+      await stopProcessService(web);
+      await startProcessService(web);
+    } catch (recoveryError) {
+      recovery = "Previous mode retained, but recovery failed: " + cleanPowerShellError(recoveryError);
+    }
+    throw new Error("Mode switch failed: " + cleanPowerShellError(error) + ". " + recovery);
+  }
 
   return {
     ok: true,
@@ -973,9 +1026,24 @@ async function handleStackAction(action) {
   }
 
   if (action === "restart-all") {
-    await runStackActions(["web", "api", "cms", "postgres"], "stop");
+    let stopError;
+    try { await runStackActions(["web", "api", "cms", "postgres"], "stop"); }
+    catch (error) { stopError = error; }
     await delay(1000);
-    return runStackActions(["postgres", "cms", "api", "web"], "start");
+    let started;
+    try { started = await runStackActions(["postgres", "cms", "api", "web"], "start"); }
+    catch (error) {
+      if (stopError) {
+        error.message = "Stop phase: " + stopError.message + "; startup recovery: " + error.message;
+        error.results = [...stopError.results, ...error.results];
+      }
+      throw error;
+    }
+    if (stopError) {
+      stopError.message = "Restart was incomplete: " + stopError.message + ". Startup recovery completed; services are running.";
+      throw stopError;
+    }
+    return started;
   }
 
   const error = new Error(`Unsupported stack action: ${action}`);
@@ -996,6 +1064,7 @@ async function runStackActions(serviceIds, action) {
         ok: false,
         message: cleanPowerShellError(error)
       });
+      if (action === "start") break;
     }
   }
 
@@ -1102,27 +1171,28 @@ const server = http.createServer(async (req, res) => {
 
     const stackMatch = pathname.match(/^\/api\/stack\/([^/]+)$/);
     if (req.method === "POST" && stackMatch) {
-      const result = await handleStackAction(stackMatch[1]);
+      const result = await withOperation(stackMatch[1], () => handleStackAction(stackMatch[1]));
       sendJson(res, 200, { ok: true, result, status: await allStatus() });
       return;
     }
 
     if (req.method === "POST" && pathname === "/api/upload-tokens") {
-      const result = await handleUploadTokenChange(await readJsonBody(req));
+      const payload = await readJsonBody(req);
+      const result = await withOperation("upload-tokens", () => handleUploadTokenChange(payload));
       sendJson(res, 200, { ok: true, result, status: await allStatus() });
       return;
     }
 
     const webModeMatch = pathname.match(/^\/api\/services\/web\/mode\/([^/]+)$/);
     if (req.method === "POST" && webModeMatch) {
-      const result = await handleWebModeChange(webModeMatch[1]);
+      const result = await withOperation("web-mode", () => handleWebModeChange(webModeMatch[1]));
       sendJson(res, 200, { ok: true, result, status: await allStatus() });
       return;
     }
 
     const serviceMatch = pathname.match(/^\/api\/services\/([^/]+)\/([^/]+)$/);
     if (req.method === "POST" && serviceMatch) {
-      const result = await handleAction(serviceMatch[1], serviceMatch[2]);
+      const result = await withOperation(serviceMatch[1] + ":" + serviceMatch[2], () => handleAction(serviceMatch[1], serviceMatch[2]));
       sendJson(res, 200, { ok: true, result, status: await allStatus() });
       return;
     }
@@ -1150,7 +1220,7 @@ server.on("error", (error) => {
   throw error;
 });
 
-server.listen(PORT, HOST, () => {
+if (require.main === module) server.listen(PORT, HOST, () => {
   console.log(`Service Manager listening on http://${HOST}:${PORT}`);
   if (MANAGER_BASE_PATH) {
     console.log(`Service Manager base path: ${MANAGER_BASE_PATH}`);
@@ -1160,6 +1230,12 @@ server.listen(PORT, HOST, () => {
   );
 });
 
+module.exports = {
+  server, html, withOperation, handleAction, handleStackAction,
+  handleWebModeChange, getServiceStatus, getDatabaseStatus, runStackActions,
+  waitForProcessHealth, serviceMap, cleanPowerShellError, managerStatus
+};
+
 function html() {
   return String.raw`<!doctype html>
 <html lang="en">
@@ -1168,80 +1244,60 @@ function html() {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Service Manager</title>
   <style>
-    /* ========================================================================
-       MMVB Master Control — "Reference Room" console
-       Aligned with the site design system (SMPTE RP 431-2 inspired):
-       amber signals · steel-blue reference · neutral near-black surround
-       ======================================================================== */
+    /* =====================================================================
+       MMVB Service Manager — "Drafting Sheet" console
+       The page is drawn as an engineering document: a bordered sheet on
+       grid paper, DIN lettering, a title block for runtime metadata,
+       rubber-stamp status marks, a ledger with dotted leaders, and an
+       output recorder on graph paper. No glass, no glow, no gradients.
+       ===================================================================== */
     :root {
-      color-scheme: dark;
-      --bg: #0C0E10;
-      --surface: #161A1E;
-      --surface-raised: #1E2328;
-      --surface-overlay: #252C34;
-      --surface-deep: #08090B;
-      --text: #E2E8EE;
-      --text-2: #9AAABB;
-      --faint: #536070;
-      --line: #222A32;
-      --line-light: #2C3840;
-      --amber: #D4922A;
-      --amber-bright: #E9AE4F;
-      --amber-ink: #1A1206;
-      --blue: #4890C2;
-      --blue-bright: #7FB8D8;
-      --green: #3DA87A;
-      --green-bright: #6BC9A0;
-      --red: #D45252;
-      --red-bright: #FF9DA0;
+      color-scheme: light;
+      --paper: #EAE7DE;
+      --paper-raised: #F5F2EA;
+      --paper-deep: #DDD8C9;
+      --screen: #E4E0D1;
+      --ink: #262419;
+      --ink-soft: #4A4738;
+      --ink-2: #5B5747;
+      --ink-faint: #8F8A76;
+      --rule: #CCC6B1;
+      --rule-strong: #A59E85;
+      --red: #B23A2E;
+      --red-deep: #8E2B22;
+      --green: #2E6B47;
+      --amber: #96660F;
+      --blue: #3A6491;
       --font-display: Bahnschrift, "Segoe UI", "Microsoft YaHei UI", sans-serif;
-      --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
-      --radius: 6px;
-      --shadow: 0 18px 44px rgba(0, 0, 0, .38);
-      --shadow-tight: 0 8px 20px rgba(0, 0, 0, .3);
+      --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+      --hard-shadow: 4px 4px 0 rgba(38, 36, 25, .13);
+      --hard-shadow-lg: 8px 8px 0 rgba(38, 36, 25, .15);
     }
 
     * { box-sizing: border-box; }
 
     ::selection {
-      background: rgba(212, 146, 42, .32);
-      color: #fff;
+      background: var(--ink);
+      color: var(--paper);
     }
 
     body {
       margin: 0;
       min-height: 100vh;
       background:
-        radial-gradient(1100px 480px at 18% -6%, rgba(212, 146, 42, .05), transparent 70%),
-        radial-gradient(900px 420px at 90% 112%, rgba(72, 144, 194, .05), transparent 70%),
-        linear-gradient(rgba(154, 170, 187, .045) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(154, 170, 187, .045) 1px, transparent 1px),
-        var(--bg);
-      background-size: auto, auto, 44px 44px, 44px 44px, auto;
-      color: var(--text);
+        url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" stitchTiles="stitch"/><feColorMatrix values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.05 0"/></filter><rect width="180" height="180" filter="url(%23n)"/></svg>'),
+        radial-gradient(1200px 520px at 50% -10%, rgba(255, 255, 255, .5), transparent 70%),
+        linear-gradient(rgba(58, 100, 145, .05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(58, 100, 145, .05) 1px, transparent 1px),
+        linear-gradient(rgba(58, 100, 145, .075) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(58, 100, 145, .075) 1px, transparent 1px),
+        var(--paper);
+      background-size: 180px 180px, auto, 26px 26px, 26px 26px, 130px 130px, 130px 130px, auto;
+      color: var(--ink);
       font-family: var(--font-display);
-      font-size: 14px;
-      line-height: 1.45;
+      font-size: 13px;
+      line-height: 1.5;
       -webkit-font-smoothing: antialiased;
-    }
-
-    /* SMPTE reference bars — muted seven-strip signature along the top edge */
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0 0 auto;
-      z-index: 50;
-      height: 3px;
-      background: linear-gradient(90deg,
-        #b4b4b4 0%, #b4b4b4 14.28%,
-        #b4b44b 14.28%, #b4b44b 28.57%,
-        #4bb4b4 28.57%, #4bb4b4 42.85%,
-        #4bb44b 42.85%, #4bb44b 57.14%,
-        #b44bb4 57.14%, #b44bb4 71.42%,
-        #b44b4b 71.42%, #b44b4b 85.71%,
-        #4b4bb4 85.71%, #4b4bb4 100%);
-      opacity: .5;
-      pointer-events: none;
     }
 
     button, input, select { font: inherit; }
@@ -1251,7 +1307,7 @@ function html() {
     button, a, input { -webkit-tap-highlight-color: transparent; }
 
     :focus-visible {
-      outline: 2px solid var(--blue-bright);
+      outline: 2px dashed var(--blue);
       outline-offset: 2px;
     }
 
@@ -1267,38 +1323,243 @@ function html() {
       border: 0;
     }
 
-    main {
-      width: min(1560px, calc(100% - 28px));
-      margin: 0 auto;
-      padding: 20px 0 44px;
+    /* ---- The sheet ------------------------------------------------------- */
+    main.sheet {
+      position: relative;
+      width: min(1600px, calc(100% - 36px));
+      margin: 20px auto 48px;
+      border: 1.5px solid var(--ink);
+      outline: 1px solid var(--rule-strong);
+      outline-offset: 4px;
+      background: linear-gradient(rgba(255, 255, 255, .4), rgba(255, 255, 255, 0) 220px), var(--paper-raised);
+      box-shadow: var(--hard-shadow-lg);
+      padding-bottom: 26px;
     }
 
-    /* ---- Buttons -------------------------------------------------------- */
+    /* Registration crosses at two corners of the sheet */
+    main.sheet::before,
+    main.sheet::after {
+      content: "";
+      position: absolute;
+      width: 11px;
+      height: 11px;
+      pointer-events: none;
+      background:
+        linear-gradient(var(--ink), var(--ink)) center / 1.5px 100% no-repeat,
+        linear-gradient(var(--ink), var(--ink)) center / 100% 1.5px no-repeat;
+    }
+
+    main.sheet::before { top: -18px; left: -18px; }
+    main.sheet::after { bottom: -18px; right: -18px; }
+
+    /* ---- Masthead --------------------------------------------------------- */
+    .masthead {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px 32px;
+      align-items: start;
+      padding: 24px 28px 20px;
+      animation: rise .4s ease-out both;
+    }
+
+    .identity { min-width: 0; }
+
+    .eyebrow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin: 0;
+      color: var(--blue);
+      font: 700 10px/1 var(--font-display);
+      letter-spacing: .22em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      background: var(--red);
+    }
+
+    .eyebrow-tag {
+      padding-left: 11px;
+      border-left: 1px solid var(--rule-strong);
+      color: var(--ink-faint);
+      font: 500 9px/1 var(--font-mono);
+      letter-spacing: .12em;
+    }
+
+    h1 {
+      margin: 10px 0 0;
+      font: 700 clamp(26px, 2.6vw, 34px)/0.95 var(--font-display);
+      font-stretch: semi-condensed;
+      letter-spacing: .02em;
+      text-transform: uppercase;
+    }
+
+    .subhead {
+      margin: 9px 0 0;
+      max-width: 560px;
+      color: var(--ink-2);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .tally {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 16px;
+    }
+
+    .tally-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 26px;
+      border: 1px solid var(--rule-strong);
+      border-radius: 2px;
+      background: var(--paper);
+      color: var(--ink-2);
+      padding: 0 9px;
+      cursor: pointer;
+      font: 700 9px/1 var(--font-display);
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      transition: border-color .12s ease, color .12s ease, background .12s ease;
+    }
+
+    .tally-chip i {
+      width: 7px;
+      height: 7px;
+      background: var(--red);
+    }
+
+    .tally-chip.ok i { background: var(--green); }
+    .tally-chip.warn i { background: var(--amber); }
+
+    .tally-chip:hover {
+      border-color: var(--ink);
+      background: var(--paper-raised);
+      color: var(--ink);
+    }
+
+    .mast-side {
+      display: grid;
+      gap: 16px;
+      justify-items: end;
+    }
+
+    /* The title block — manager runtime data, as on a drawing sheet */
+    .titleblock {
+      max-width: 100%;
+      border: 1.5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--hard-shadow);
+    }
+
+    .tb-tag {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 6px 10px 5px;
+      border-bottom: 1px solid var(--ink);
+      background: var(--paper-deep);
+      color: var(--ink-2);
+      font: 600 8.5px/1 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .tb-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(92px, auto));
+    }
+
+    .tb-field {
+      min-width: 0;
+      padding: 9px 12px 8px;
+      border-left: 1px solid var(--rule-strong);
+    }
+
+    .tb-field:first-child { border-left: 0; }
+
+    .tb-field span {
+      display: block;
+      color: var(--ink-faint);
+      font: 700 8px/1 var(--font-display);
+      letter-spacing: .17em;
+      text-transform: uppercase;
+    }
+
+    .tb-field strong {
+      display: block;
+      margin-top: 6px;
+      overflow-wrap: anywhere;
+      font: 550 11px/1.25 var(--font-mono);
+      letter-spacing: -.01em;
+    }
+
+    .commands {
+      display: grid;
+      gap: 8px;
+      justify-items: end;
+    }
+
+    .command-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0;
+      color: var(--ink-faint);
+      font: 600 9px/1 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .command-label::after {
+      content: "";
+      width: 20px;
+      height: 1px;
+      background: var(--rule-strong);
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 7px;
+    }
+
+    /* ---- Buttons — mechanical, hard-edged, offset print shadow ------------ */
     .button {
-      min-height: 34px;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      background: var(--surface-raised);
-      color: var(--text);
-      padding: 0 12px;
+      min-height: 32px;
+      border: 1.5px solid var(--ink);
+      border-radius: 2px;
+      background: var(--paper-raised);
+      color: var(--ink);
+      padding: 0 13px;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 7px;
-      font: 600 11px/1 var(--font-display);
-      letter-spacing: .06em;
+      font: 700 10px/1 var(--font-display);
+      letter-spacing: .1em;
       text-transform: uppercase;
       white-space: nowrap;
-      transition: border-color .15s ease, background .15s ease, color .15s ease, transform .15s ease, box-shadow .15s ease;
+      box-shadow: 2.5px 2.5px 0 rgba(38, 36, 25, .18);
+      transition: background .12s ease, color .12s ease, box-shadow .12s ease, transform .12s ease, border-color .12s ease;
     }
 
-    .button:hover {
-      border-color: var(--line-light);
-      background: var(--surface-overlay);
-    }
+    .button:hover { background: var(--paper-deep); }
 
-    .button:active { transform: translateY(1px); }
+    .button:active {
+      transform: translate(2px, 2px);
+      box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+    }
 
     .button:disabled {
       cursor: wait;
@@ -1308,761 +1569,553 @@ function html() {
     }
 
     .button.primary {
-      border-color: var(--amber);
-      background: var(--amber);
-      color: var(--amber-ink);
+      border-color: var(--ink);
+      background: var(--ink);
+      color: var(--paper-raised);
     }
 
-    .button.primary:hover {
-      border-color: var(--amber-bright);
-      background: var(--amber-bright);
-    }
+    .button.primary:hover { background: #3B3828; }
 
     .button.warn {
-      border-color: rgba(72, 144, 194, .5);
-      background: rgba(72, 144, 194, .13);
-      color: #CFE6F4;
+      border-color: var(--blue);
+      background: transparent;
+      color: var(--blue);
     }
 
-    .button.warn:hover {
-      border-color: var(--blue-bright);
-      background: rgba(72, 144, 194, .22);
-    }
+    .button.warn:hover { background: rgba(58, 100, 145, .1); }
 
     .button.danger {
-      border-color: rgba(212, 82, 82, .5);
-      background: rgba(212, 82, 82, .1);
-      color: #F6D2D3;
+      border-color: var(--red);
+      background: transparent;
+      color: var(--red);
     }
 
-    .button.danger:hover {
-      border-color: var(--red-bright);
-      background: rgba(212, 82, 82, .2);
-    }
-
-    /* ---- Masthead -------------------------------------------------------- */
-    .masthead {
-      position: relative;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto auto;
-      gap: 18px 26px;
-      align-items: center;
-      overflow: hidden;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background:
-        linear-gradient(115deg, rgba(212, 146, 42, .07), transparent 42%),
-        linear-gradient(180deg, rgba(255, 255, 255, .015), transparent),
-        var(--surface);
-      box-shadow: var(--shadow);
-      padding: 16px 18px;
-      animation: deck-in .4s ease-out both;
-    }
-
-    .masthead::after {
-      content: "";
-      position: absolute;
-      top: 12px;
-      right: 14px;
-      width: 190px;
-      height: 6px;
-      background: repeating-linear-gradient(90deg, var(--line-light) 0 2px, transparent 2px 12px);
-      opacity: .75;
-      pointer-events: none;
-    }
-
-    .identity {
-      display: flex;
-      align-items: center;
-      gap: 15px;
-      min-width: 0;
-    }
-
-    .brand-mark {
-      flex: 0 0 46px;
-      width: 46px;
-      height: 46px;
-      display: flex;
-      align-items: flex-end;
-      gap: 3px;
-      border: 1px solid var(--line-light);
-      border-radius: 5px;
-      background: var(--surface-deep);
-      padding: 9px 8px;
-      overflow: hidden;
-    }
-
-    .brand-mark i {
-      flex: 1;
-      border-radius: 1px;
-      background: linear-gradient(180deg, var(--amber-bright), var(--amber) 70%, #9c6d20);
-      transform-origin: bottom;
-      animation: vu 1.7s ease-in-out infinite;
-    }
-
-    .brand-mark i:nth-child(1) { height: 62%; animation-delay: 0s; }
-    .brand-mark i:nth-child(2) { height: 100%; animation-delay: .28s; }
-    .brand-mark i:nth-child(3) { height: 44%; animation-delay: .55s; }
-    .brand-mark i:nth-child(4) { height: 82%; animation-delay: .12s; }
-    .brand-mark i:nth-child(5) { height: 55%; animation-delay: .4s; }
-
-    .identity-copy { min-width: 0; }
-
-    .eyebrow {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 10px;
-      margin: 0 0 5px;
-      color: var(--amber);
-      font: 700 10px/1 var(--font-display);
-      letter-spacing: .19em;
-      text-transform: uppercase;
-    }
-
-    .eyebrow-tag {
-      padding-left: 10px;
-      border-left: 1px solid var(--line-light);
-      color: var(--faint);
-      font: 600 9px/1 var(--font-mono);
-      letter-spacing: .12em;
-    }
-
-    h1 {
-      margin: 0;
-      font: 650 clamp(24px, 2.4vw, 32px)/1 var(--font-display);
-      font-stretch: semi-condensed;
-      letter-spacing: -.015em;
-    }
-
-    .subhead {
-      margin: 7px 0 0;
-      max-width: 620px;
-      color: var(--text-2);
-      font-size: 12px;
-      line-height: 1.45;
-    }
-
-    .tally {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-
-    .tally-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      height: 30px;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      background: var(--surface-raised);
-      color: var(--text-2);
-      padding: 0 10px;
-      cursor: pointer;
-      font: 600 10px/1 var(--font-display);
-      letter-spacing: .09em;
-      text-transform: uppercase;
-      transition: border-color .15s ease, color .15s ease, background .15s ease;
-    }
-
-    .tally-chip i {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--red);
-      box-shadow: 0 0 0 2px rgba(212, 82, 82, .14);
-    }
-
-    .tally-chip.ok i {
-      background: var(--green);
-      box-shadow: 0 0 0 2px rgba(61, 168, 122, .16);
-    }
-
-    .tally-chip.warn i {
-      background: var(--amber);
-      box-shadow: 0 0 0 2px rgba(212, 146, 42, .16);
-    }
-
-    .tally-chip:hover {
-      border-color: var(--line-light);
-      background: var(--surface-overlay);
-      color: var(--text);
-    }
-
-    .command-deck {
-      display: grid;
-      gap: 7px;
-      justify-items: end;
-    }
-
-    .command-label {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      margin: 0;
-      color: var(--faint);
-      font: 600 9px/1 var(--font-mono);
-      letter-spacing: .12em;
-      text-transform: uppercase;
-    }
-
-    .command-label::before {
-      content: "";
-      width: 18px;
-      height: 1px;
-      background: var(--line-light);
-    }
-
-    .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-      gap: 6px;
-    }
+    .button.danger:hover { background: rgba(178, 58, 46, .09); }
 
     .toolbar .button {
-      min-width: 86px;
-      min-height: 38px;
-      font-size: 10px;
-      letter-spacing: .1em;
+      min-width: 92px;
+      min-height: 36px;
     }
 
-    /* ---- Status strip ---------------------------------------------------- */
-    .status-strip {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 10px;
-      animation: deck-in .4s .05s ease-out both;
+    /* ---- Scale ruler under the masthead ----------------------------------- */
+    .ruler {
+      height: 15px;
+      margin: 0 28px;
+      border-bottom: 1.5px solid var(--ink);
+      background:
+        repeating-linear-gradient(90deg, var(--ink-soft) 0 1px, transparent 1px 10px) left bottom / 100% 5px no-repeat,
+        repeating-linear-gradient(90deg, var(--ink) 0 1px, transparent 1px 50px) left bottom / 100% 11px no-repeat;
+      opacity: .8;
     }
 
-    .status-tile {
-      position: relative;
-      min-width: 0;
-      min-height: 72px;
-      overflow: hidden;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface);
-      padding: 12px 14px 11px 17px;
-      box-shadow: var(--shadow-tight);
+    /* ---- Sections ---------------------------------------------------------- */
+    .section {
+      padding: 24px 28px 0;
+      animation: rise .4s ease-out both;
     }
 
-    .status-tile::before {
-      content: "";
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 3px;
-      background: var(--faint);
-      opacity: .6;
+    .section:nth-of-type(1) { animation-delay: .05s; }
+    .section:nth-of-type(2) { animation-delay: .1s; }
+    .section:nth-of-type(3) { animation-delay: .15s; }
+    .section:nth-of-type(4) { animation-delay: .2s; }
+
+    .section-head {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 11px;
     }
 
-    .status-tile.ok::before { background: var(--green); opacity: 1; }
-    .status-tile.info::before { background: var(--blue); opacity: 1; }
-    .status-tile.alert::before { background: var(--red); opacity: 1; }
-
-    .status-tile::after {
-      content: "";
-      position: absolute;
-      top: 0;
-      right: 0;
-      width: 14px;
-      height: 14px;
-      border-top: 1px solid var(--line-light);
-      border-right: 1px solid var(--line-light);
-      border-top-right-radius: var(--radius);
-      opacity: .9;
+    .section-no {
+      padding: 4px 6px 3px;
+      border: 1.5px solid var(--ink);
+      background: var(--ink);
+      color: var(--paper-raised);
+      font: 700 10px/1 var(--font-mono);
+      letter-spacing: .08em;
     }
 
-    .tile-label {
-      display: block;
-      color: var(--text-2);
-      font: 650 9px/1 var(--font-display);
-      letter-spacing: .15em;
+    .section-name {
+      margin: 0;
+      font: 700 12px/1 var(--font-display);
+      letter-spacing: .24em;
       text-transform: uppercase;
     }
 
-    .tile-value {
+    .section-rule {
+      flex: 1;
+      border-top: 1px solid var(--rule-strong);
+      transform: translateY(-3px);
+    }
+
+    .section-note {
+      color: var(--ink-faint);
+      font: 500 9px/1 var(--font-mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    /* ---- 01 · Status record strip ------------------------------------------ */
+    .record {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border: 1.5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--hard-shadow);
+    }
+
+    .record-cell {
+      position: relative;
+      min-width: 0;
+      padding: 13px 15px 12px;
+      border-left: 1px solid var(--rule-strong);
+    }
+
+    .record-cell:first-child { border-left: 0; }
+
+    .record-cell::after {
+      content: "";
+      position: absolute;
+      top: 7px;
+      right: 7px;
+      width: 7px;
+      height: 7px;
+      border-top: 1px solid var(--rule-strong);
+      border-right: 1px solid var(--rule-strong);
+    }
+
+    .record-label {
       display: block;
-      max-width: 100%;
+      color: var(--ink-faint);
+      font: 700 8.5px/1 var(--font-display);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    .record-value {
+      display: block;
       margin-top: 9px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       font: 600 21px/1 var(--font-mono);
-      letter-spacing: -.03em;
+      letter-spacing: -.02em;
     }
 
-    /* ---- Service bay ------------------------------------------------------ */
-    .service-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 10px;
-      animation: deck-in .4s .1s ease-out both;
-    }
+    .record-cell.ok .record-value { color: var(--green); }
+    .record-cell.alert .record-value { color: var(--red); }
 
-    .service-card {
-      position: relative;
-      display: flex;
-      flex-direction: column;
-      min-width: 0;
+    /* ---- 02 · Equipment bay — bill-of-materials rows ------------------------ */
+    .bay {
       overflow: hidden;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface);
-      transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+      border: 1.5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--hard-shadow);
     }
 
-    .service-card::before {
+    .svc {
+      position: relative;
+      padding: 0 16px 0 21px;
+      transition: background .15s ease;
+    }
+
+    .svc::before {
       content: "";
       position: absolute;
-      z-index: 1;
       inset: 0 auto 0 0;
       width: 3px;
       background: var(--red);
-      opacity: .9;
+      opacity: .85;
     }
 
-    .service-card.ok::before { background: var(--green); }
-    .service-card.warn::before { background: var(--amber); }
+    .svc.ok::before { background: var(--green); }
+    .svc.warn::before { background: var(--amber); }
 
-    .service-card:hover {
-      border-color: var(--line-light);
-      box-shadow: 0 20px 44px rgba(0, 0, 0, .36);
-      transform: translateY(-1px);
-    }
+    .svc + .svc { border-top: 1px solid var(--rule-strong); }
 
-    .service-card.flash { animation: card-flash 1.3s ease-out; }
+    .svc:hover { background: var(--paper-raised); }
 
-    .card-head {
+    .svc.flash { animation: svc-flash 1.1s ease-out; }
+
+    .svc-ident {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      gap: 10px;
-      min-height: 64px;
-      padding: 11px 12px 10px 15px;
-      border-bottom: 1px solid var(--line);
-      background: linear-gradient(90deg, rgba(212, 146, 42, .04), transparent 46%);
+      gap: 14px;
+      padding: 13px 0 11px;
     }
 
-    .card-id {
-      display: flex;
-      align-items: flex-start;
-      gap: 9px;
-      min-width: 0;
-    }
-
-    .card-index {
+    .svc-no {
       flex: 0 0 auto;
-      margin-top: 1px;
-      border: 1px solid var(--line-light);
-      border-radius: 3px;
-      background: var(--surface-deep);
-      color: var(--faint);
-      padding: 3px 5px;
-      font: 600 9px/1 var(--font-mono);
-      letter-spacing: .08em;
-    }
-
-    .card-title { min-width: 0; }
-
-    .card-title h2 {
-      margin: 0;
-      font: 650 14px/1.2 var(--font-display);
-      letter-spacing: -.005em;
-      overflow-wrap: anywhere;
-    }
-
-    .card-meta {
-      margin: 5px 0 0;
-      color: var(--text-2);
-      font: 9px/1.35 var(--font-mono);
-      overflow-wrap: anywhere;
-    }
-
-    .badge {
-      flex: 0 0 auto;
-      min-width: 82px;
-      height: 25px;
-      border: 1px solid var(--line);
-      border-radius: 3px;
-      padding: 0 8px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      color: var(--text-2);
-      font: 700 9px/1 var(--font-display);
-      letter-spacing: .09em;
-      text-transform: uppercase;
-    }
-
-    .dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--red);
-      box-shadow: 0 0 0 2px rgba(212, 82, 82, .14);
-    }
-
-    .badge.ok .dot {
-      background: var(--green);
-      box-shadow: 0 0 0 2px rgba(61, 168, 122, .15);
-      animation: signal-pulse 2.4s ease-in-out infinite;
-    }
-
-    .badge.warn .dot {
-      background: var(--amber);
-      box-shadow: 0 0 0 2px rgba(212, 146, 42, .15);
-    }
-
-    .metrics {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .metric {
-      min-width: 0;
-      min-height: 50px;
-      padding: 9px 11px 8px 15px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(8, 9, 11, .35);
-    }
-
-    .metric:nth-child(odd) { border-right: 1px solid var(--line); }
-    .metric:nth-last-child(-n+2) { border-bottom: 0; }
-
-    .metric span {
-      display: block;
-      color: var(--faint);
-      font: 650 8px/1 var(--font-display);
-      letter-spacing: .15em;
-      text-transform: uppercase;
-    }
-
-    .metric strong {
-      display: block;
-      margin-top: 6px;
-      color: #D5DEE4;
-      font: 550 10px/1.25 var(--font-mono);
-      overflow-wrap: anywhere;
-    }
-
-    .card-actions {
-      margin-top: auto;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 5px;
-      min-height: 50px;
-      padding: 9px 11px 10px 15px;
-      border-top: 1px solid var(--line);
-      background: rgba(8, 9, 11, .5);
-    }
-
-    .mode-switch {
-      width: 100%;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4px;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      padding: 3px;
-      background: var(--surface-deep);
-      margin-bottom: 2px;
-    }
-
-    .mode-switch .button {
-      width: 100%;
-      min-height: 28px;
-      border-color: transparent;
-      background: transparent;
-      color: var(--text-2);
-      font-size: 9px;
+      padding: 5px 6px 4px;
+      border: 1px solid var(--rule-strong);
+      background: var(--paper-deep);
+      color: var(--ink-2);
+      font: 700 11px/1 var(--font-mono);
       letter-spacing: .06em;
     }
 
-    .mode-switch .button.active {
-      border-color: rgba(212, 146, 42, .5);
-      background: rgba(212, 146, 42, .14);
-      color: #F2E3C8;
-    }
-
-    .card-actions .button {
-      height: 29px;
-      min-height: 29px;
-      padding-inline: 9px;
-      font-size: 9.5px;
-      letter-spacing: .05em;
-    }
-
-    /* ---- Bench: credentials + diagnostics -------------------------------- */
-    .bench {
-      display: grid;
-      grid-template-columns: minmax(0, 1.85fr) minmax(280px, 1fr);
-      gap: 10px;
-      margin-top: 10px;
-      align-items: stretch;
-      animation: deck-in .4s .15s ease-out both;
-    }
-
-    .token-panel,
-    .diagnostics {
+    .svc-name {
+      flex: 1;
       min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface);
-      box-shadow: var(--shadow);
     }
 
-    .diagnostics {
-      display: grid;
-      grid-template-rows: auto 1fr;
-    }
-
-    .token-panel-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--line);
-      background:
-        linear-gradient(90deg, rgba(212, 146, 42, .06), transparent 38%),
-        linear-gradient(180deg, rgba(255, 255, 255, .02), transparent);
-    }
-
-    .token-panel-head .eyebrow {
-      margin-bottom: 6px;
-      font-size: 9px;
-    }
-
-    .token-panel-head h2 {
+    .svc-name h2 {
       margin: 0;
-      font: 650 16px/1.2 var(--font-display);
+      font: 700 15px/1.2 var(--font-display);
+      font-stretch: semi-condensed;
+      letter-spacing: .015em;
+      text-transform: uppercase;
+      overflow-wrap: anywhere;
     }
 
-    .token-panel-head p {
-      max-width: 760px;
+    .svc-meta {
       margin: 4px 0 0;
-      color: var(--text-2);
-      font-size: 11px;
-      line-height: 1.4;
+      overflow-wrap: anywhere;
+      color: var(--ink-2);
+      font: 9.5px/1.4 var(--font-mono);
     }
 
-    .token-path {
+    /* Rubber stamp — rotated, multiply-blended onto the paper */
+    .stamp {
+      position: relative;
       flex: 0 0 auto;
-      border: 1px solid var(--line);
-      border-radius: 3px;
-      background: var(--surface-deep);
-      padding: 6px 8px;
-      color: var(--text-2);
-      font: 10px/1 var(--font-mono);
+      padding: 5px 9px 4px;
+      border: 2px solid currentColor;
+      border-radius: 2px;
+      color: var(--ink-2);
+      font: 800 10px/1 var(--font-display);
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      transform: rotate(-2deg);
+      mix-blend-mode: multiply;
+      opacity: .92;
     }
 
-    .token-form { padding: 11px 12px 12px; }
+    .stamp::after {
+      content: "";
+      position: absolute;
+      inset: 2px;
+      border: 1px solid currentColor;
+      border-radius: 1px;
+      opacity: .45;
+    }
 
-    .token-grid {
+    .stamp.ok { color: var(--green); }
+    .stamp.warn { color: var(--amber); }
+    .stamp.off { color: var(--red); }
+
+    .svc.flash .stamp { animation: stamp-hit .5s ease-out; }
+
+    .svc-spec {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
+      gap: 1px;
+      border-block: 1px solid var(--rule);
+      background: var(--rule);
     }
 
-    .token-field {
+    .spec {
       min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      background: rgba(8, 9, 11, .45);
-      padding: 10px;
-      transition: border-color .15s ease, background .15s ease;
+      padding: 8px 12px 7px;
+      background: var(--paper);
+      transition: background .15s ease;
     }
 
-    .token-field:focus-within {
-      border-color: rgba(212, 146, 42, .4);
-      background: rgba(11, 13, 16, .7);
+    .svc:hover .spec { background: var(--paper-raised); }
+
+    .spec span {
+      display: block;
+      color: var(--ink-faint);
+      font: 700 8px/1 var(--font-display);
+      letter-spacing: .16em;
+      text-transform: uppercase;
     }
 
-    .token-label-row {
+    .spec strong {
+      display: block;
+      margin-top: 6px;
+      overflow-wrap: anywhere;
+      font: 550 11px/1.35 var(--font-mono);
+    }
+
+    .svc-ops {
       display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 10px;
-      margin-bottom: 7px;
-    }
-
-    .token-label-row label {
-      font: 650 12px/1 var(--font-display);
-    }
-
-    .token-status {
-      color: var(--text-2);
-      font: 9px/1.3 var(--font-mono);
-      white-space: nowrap;
-    }
-
-    .token-status.configured { color: var(--green-bright); }
-    .token-status.inherited { color: var(--amber-bright); }
-
-    .token-input-row {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto auto;
-      gap: 5px;
-    }
-
-    .token-input {
-      width: 100%;
-      min-width: 0;
-      height: 34px;
-      border: 1px solid var(--line);
-      border-radius: 3px;
-      outline: 0;
-      background: var(--surface-deep);
-      color: var(--text);
-      padding: 0 9px;
-      font: 10px/1 var(--font-mono);
-      transition: border-color .15s ease, box-shadow .15s ease;
-    }
-
-    .token-input::placeholder { color: var(--faint); }
-
-    .token-input:focus {
-      border-color: var(--amber);
-      box-shadow: 0 0 0 2px rgba(212, 146, 42, .13);
-    }
-
-    .token-field .button {
-      min-height: 34px;
-      padding-inline: 9px;
-      font-size: 10px;
-    }
-
-    .token-help {
-      margin: 7px 0 0;
-      color: var(--text-2);
-      font-size: 9px;
-      line-height: 1.4;
-    }
-
-    .token-help code {
-      color: #C9D4DB;
-      font-family: var(--font-mono);
-    }
-
-    .token-share {
-      display: inline-flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 6px;
-      margin-top: 7px;
-      color: var(--text-2);
-      font-size: 10px;
-      cursor: pointer;
+      padding: 11px 0 13px;
     }
 
-    .token-share input {
-      width: 14px;
-      height: 14px;
-      accent-color: var(--amber);
+    .push { margin-left: auto; }
+
+    .mode-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px;
+      border: 1.5px solid var(--ink);
+      border-radius: 2px;
+      background: var(--paper-deep);
+      padding: 2px;
+      margin-right: 6px;
     }
 
-    .token-form-footer {
+    .mode-switch .button {
+      min-height: 27px;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      color: var(--ink-2);
+      font-size: 9px;
+      letter-spacing: .08em;
+      padding-inline: 10px;
+    }
+
+    .mode-switch .button:hover { background: var(--paper-raised); }
+
+    .mode-switch .button.active {
+      background: var(--ink);
+      color: var(--paper-raised);
+    }
+
+    .svc-ops .button {
+      min-height: 31px;
+      padding-inline: 11px;
+      font-size: 9.5px;
+      letter-spacing: .07em;
+    }
+
+    /* ---- 03 · Records: credentials form + database ledger ------------------- */
+    .bench {
+      display: grid;
+      grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr);
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .panel {
+      min-width: 0;
+      border: 1.5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--hard-shadow);
+    }
+
+    .panel-tag {
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 12px;
-      margin-top: 9px;
-    }
-
-    .token-form-footer p {
-      margin: 0;
-      color: var(--text-2);
-      font-size: 9px;
-      line-height: 1.4;
-    }
-
-    .token-form-footer .button { flex: 0 0 auto; }
-
-    .panel-section {
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .panel-section:last-child { border-bottom: 0; }
-
-    .panel-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin: 0 0 10px;
-      color: var(--text-2);
-      font: 700 9px/1 var(--font-display);
-      letter-spacing: .15em;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--ink);
+      background: var(--paper-deep);
+      color: var(--ink-2);
+      font: 700 9.5px/1 var(--font-display);
+      letter-spacing: .16em;
       text-transform: uppercase;
     }
 
-    .panel-title::before {
-      content: "";
-      width: 12px;
-      height: 3px;
-      border-radius: 1px;
-      background: var(--amber);
-    }
-
-    .kv {
-      display: grid;
-      grid-template-columns: 82px minmax(0, 1fr);
-      gap: 6px 8px;
-    }
-
-    .kv span {
-      color: var(--text-2);
-      font-size: 9px;
+    .path-chip {
+      flex: 0 0 auto;
+      padding: 4px 7px;
+      border: 1px solid var(--rule-strong);
+      background: var(--paper-raised);
+      color: var(--ink-2);
+      font: 500 9px/1 var(--font-mono);
       letter-spacing: .03em;
-    }
-
-    .kv strong {
-      min-width: 0;
-      color: #D5DEE4;
-      font: 550 9px/1.35 var(--font-mono);
-      overflow-wrap: anywhere;
-    }
-
-    /* ---- Output monitor --------------------------------------------------- */
-    .monitor {
-      position: relative;
-      margin-top: 12px;
+      text-transform: lowercase;
       overflow: hidden;
-      border: 1px solid var(--line-light);
-      border-radius: var(--radius);
-      background: var(--surface);
-      box-shadow: var(--shadow);
-      animation: deck-in .4s .2s ease-out both;
+      text-overflow: ellipsis;
+      max-width: 55%;
     }
 
-    .monitor::before {
-      content: "";
-      position: absolute;
-      inset: 0 0 auto;
-      z-index: 2;
-      height: 2px;
-      background: linear-gradient(90deg, var(--amber) 0%, rgba(212, 146, 42, .25) 45%, transparent 75%, rgba(72, 144, 194, .4) 100%);
-      pointer-events: none;
+    .cred-desc {
+      margin: 0;
+      padding: 13px 15px 0;
+      color: var(--ink-2);
+      font-size: 11.5px;
+      line-height: 1.55;
     }
 
-    .monitor-head {
+    .token-form { padding: 12px 15px 15px; }
+
+    .cred-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .field {
+      min-width: 0;
+      padding: 12px 13px 13px;
+      border: 1px dashed var(--rule-strong);
+      background: rgba(255, 255, 255, .28);
+      transition: border-color .15s ease;
+    }
+
+    .field:focus-within { border-color: var(--ink-2); }
+
+    .field-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 9px;
+    }
+
+    .field-top label { font: 700 12.5px/1 var(--font-display); }
+
+    .cred-state {
+      color: var(--ink-faint);
+      font: 500 9px/1.4 var(--font-mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cred-state.configured { color: var(--green); font-weight: 600; }
+    .cred-state.inherited { color: var(--amber); font-weight: 600; }
+
+    .input-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 6px;
+    }
+
+    .cred-input {
+      width: 100%;
+      min-width: 0;
+      height: 34px;
+      border: 0;
+      border-bottom: 1.5px solid var(--ink);
+      border-radius: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--ink);
+      padding: 0 2px;
+      font: 500 11px/1 var(--font-mono);
+      letter-spacing: .02em;
+      transition: border-color .15s ease, background .15s ease;
+    }
+
+    .cred-input::placeholder { color: var(--ink-faint); }
+
+    .cred-input:focus {
+      border-bottom-color: var(--red);
+      background: rgba(178, 58, 46, .05);
+    }
+
+    .field .button {
+      min-height: 34px;
+      padding-inline: 10px;
+      font-size: 9.5px;
+    }
+
+    .field-help {
+      margin: 9px 0 0;
+      color: var(--ink-2);
+      font-size: 9.5px;
+      line-height: 1.55;
+    }
+
+    .field-help code {
+      font-family: var(--font-mono);
+      color: var(--ink);
+      background: var(--paper-deep);
+      padding: 1px 4px;
+    }
+
+    .share {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 11px;
+      color: var(--ink-2);
+      font-size: 10.5px;
+      cursor: pointer;
+    }
+
+    .share input {
+      width: 13px;
+      height: 13px;
+      accent-color: var(--ink);
+    }
+
+    .form-foot {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      margin-top: 15px;
+      padding-top: 13px;
+      border-top: 1px solid var(--rule-strong);
+    }
+
+    .form-foot p {
+      margin: 0;
+      max-width: 540px;
+      color: var(--ink-faint);
+      font-size: 9.5px;
+      line-height: 1.55;
+    }
+
+    .form-foot .button { flex: 0 0 auto; }
+
+    /* Database ledger — dotted leaders between label and value */
+    .ledger {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: baseline;
+      column-gap: 9px;
+      padding: 2px 15px 6px;
+    }
+
+    .ledger span {
+      padding: 10px 0 9px;
+      border-bottom: 1px solid var(--rule);
+      color: var(--ink-2);
+      font: 700 8.5px/1.2 var(--font-display);
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    .ledger i {
+      align-self: center;
+      height: 1px;
+      border-top: 1px dotted var(--rule-strong);
+    }
+
+    .ledger strong {
+      min-width: 0;
+      max-width: 100%;
+      padding: 10px 0 9px;
+      border-bottom: 1px solid var(--rule);
+      overflow-wrap: anywhere;
+      text-align: right;
+      font: 550 10.5px/1.4 var(--font-mono);
+    }
+
+    .ledger strong.good { color: var(--green); font-weight: 600; }
+    .ledger strong.bad { color: var(--red); font-weight: 600; }
+
+    /* ---- 04 · Output recorder — graph paper --------------------------------- */
+    .recorder-frame {
+      overflow: hidden;
+      border: 1.5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--hard-shadow);
+    }
+
+    .rec-head {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 10px 16px;
+      gap: 10px 14px;
       padding: 11px 14px;
-      border-bottom: 1px solid var(--line);
-      background:
-        linear-gradient(90deg, rgba(212, 146, 42, .05), transparent 40%),
-        linear-gradient(180deg, rgba(255, 255, 255, .02), transparent);
+      border-bottom: 1px solid var(--ink);
+      background: var(--paper-deep);
     }
 
-    .monitor-id {
+    .rec-id {
       display: flex;
       align-items: center;
       gap: 10px;
@@ -2071,184 +2124,175 @@ function html() {
 
     .tally-light {
       flex: 0 0 auto;
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: #3A2225;
-      box-shadow: inset 0 0 3px rgba(0, 0, 0, .8);
+      width: 11px;
+      height: 11px;
+      border-radius: 2px;
+      border: 1px solid var(--rule-strong);
+      background: var(--paper-raised);
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, .25);
       transition: background .2s ease, box-shadow .2s ease;
     }
 
     .tally-light.is-live {
       background: var(--red);
-      box-shadow: 0 0 9px rgba(212, 82, 82, .7), 0 0 0 2px rgba(212, 82, 82, .2);
-      animation: tally-pulse 1.7s ease-in-out infinite;
+      border-color: var(--red-deep);
+      box-shadow: 0 0 8px rgba(178, 58, 46, .65);
+      animation: rec-blink 1.6s ease-in-out infinite;
     }
 
-    .monitor-title {
+    .rec-title {
       margin: 0;
-      font: 650 12px/1 var(--font-display);
-      letter-spacing: .16em;
+      font: 700 12px/1 var(--font-display);
+      letter-spacing: .22em;
       text-transform: uppercase;
     }
 
     .live-state {
-      min-width: 62px;
-      height: 23px;
-      border: 1px solid var(--line);
-      border-radius: 3px;
       display: inline-flex;
       align-items: center;
-      justify-content: center;
       gap: 6px;
-      color: var(--text-2);
+      height: 22px;
       padding: 0 8px;
+      border: 1px solid var(--rule-strong);
+      background: var(--paper-raised);
+      color: var(--ink-2);
       font: 700 8.5px/1 var(--font-display);
-      letter-spacing: .1em;
+      letter-spacing: .12em;
       text-transform: uppercase;
     }
 
     .live-state-dot {
       width: 5px;
       height: 5px;
-      border-radius: 50%;
       background: currentColor;
     }
 
-    .live-state.live { color: var(--green-bright); }
-    .live-state.syncing { color: var(--blue-bright); }
-    .live-state.paused { color: var(--amber-bright); }
-    .live-state.error { color: var(--red-bright); }
+    .live-state.live { color: var(--green); }
+    .live-state.syncing { color: var(--blue); }
+    .live-state.paused { color: var(--amber); }
+    .live-state.error { color: var(--red); }
 
-    .live-state.live .live-state-dot {
-      animation: signal-pulse 2.4s ease-in-out infinite;
-    }
-
-    .channel-tabs {
+    .chan-tabs {
       display: flex;
       flex-wrap: wrap;
       gap: 5px;
       margin-inline: auto;
     }
 
-    .channel-tab {
-      height: 32px;
+    .chan-tab {
       display: inline-flex;
       align-items: center;
       gap: 7px;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      background: var(--surface-raised);
-      color: var(--text-2);
-      padding: 0 13px;
+      height: 30px;
+      padding: 0 12px;
+      border: 1.5px solid var(--rule-strong);
+      border-radius: 2px;
+      background: var(--paper-raised);
+      color: var(--ink-2);
       cursor: pointer;
-      font: 600 10px/1 var(--font-display);
-      letter-spacing: .1em;
+      font: 700 9.5px/1 var(--font-display);
+      letter-spacing: .12em;
       text-transform: uppercase;
-      transition: border-color .15s ease, background .15s ease, color .15s ease, box-shadow .15s ease;
+      transition: border-color .12s ease, background .12s ease, color .12s ease;
     }
 
     .tab-led {
       width: 6px;
       height: 6px;
-      border-radius: 50%;
-      background: var(--faint);
-      opacity: .55;
-      transition: background .2s ease, box-shadow .2s ease, opacity .2s ease;
+      background: var(--ink-faint);
+      opacity: .6;
+      transition: background .2s ease, opacity .2s ease;
     }
 
-    .channel-tab.is-online .tab-led {
+    .chan-tab.is-online .tab-led {
       background: var(--green);
       opacity: 1;
-      box-shadow: 0 0 5px rgba(61, 168, 122, .55);
     }
 
-    .channel-tab:hover {
-      border-color: var(--line-light);
-      background: var(--surface-overlay);
-      color: var(--text);
+    .chan-tab:hover {
+      border-color: var(--ink);
+      color: var(--ink);
     }
 
-    .channel-tab.active {
-      border-color: rgba(212, 146, 42, .55);
-      background: rgba(212, 146, 42, .12);
-      color: #F4E7CD;
-      box-shadow: inset 0 -2px 0 var(--amber);
+    .chan-tab.active {
+      border-color: var(--ink);
+      background: var(--ink);
+      color: var(--paper-raised);
+      box-shadow: 2px 2px 0 rgba(38, 36, 25, .22);
     }
 
-    .channel-tab:disabled { opacity: .5; cursor: wait; }
+    .chan-tab.active .tab-led { opacity: 1; }
+    .chan-tab:disabled { opacity: .5; cursor: wait; }
 
-    .monitor-controls {
+    .rec-controls {
       display: flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
       margin-left: auto;
     }
 
     .rate-switch {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 4px;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      padding: 3px;
-      background: var(--surface-deep);
-    }
-
-    .monitor-controls .button {
-      min-height: 28px;
-      padding-inline: 10px;
-      font-size: 9.5px;
-      letter-spacing: .05em;
+      gap: 2px;
+      border: 1.5px solid var(--ink);
+      border-radius: 2px;
+      background: var(--paper);
+      padding: 2px;
     }
 
     .rate-switch .button {
       min-height: 24px;
-      border-color: transparent;
+      border: 0;
       background: transparent;
-      color: var(--text-2);
+      box-shadow: none;
+      color: var(--ink-2);
+      padding-inline: 10px;
+      font-size: 9px;
     }
 
     .rate-switch .button.active {
-      border-color: rgba(212, 146, 42, .5);
-      background: rgba(212, 146, 42, .14);
-      color: #F2E3C8;
+      background: var(--ink);
+      color: var(--paper-raised);
     }
 
-    .monitor-screen {
-      position: relative;
-      background: var(--surface-deep);
+    .rec-controls > .button {
+      min-height: 30px;
+      padding-inline: 11px;
+      font-size: 9.5px;
     }
 
-    /* Scanlines + vignette — the "monitor glass" */
-    .monitor-screen::after {
+    .rec-screen { position: relative; background: var(--screen); }
+
+    /* Graph-paper baselines + the red margin rule */
+    .rec-screen::before {
       content: "";
       position: absolute;
       inset: 0;
       z-index: 1;
       pointer-events: none;
       background:
-        repeating-linear-gradient(0deg, rgba(226, 232, 238, .015) 0 1px, transparent 1px 3px),
-        radial-gradient(130% 100% at 50% 0%, transparent 62%, rgba(0, 0, 0, .34));
+        repeating-linear-gradient(0deg, rgba(58, 100, 145, .07) 0 1px, transparent 1px 26px),
+        linear-gradient(90deg, transparent 44px, rgba(178, 58, 46, .3) 44px, rgba(178, 58, 46, .3) 45px, transparent 45px);
     }
 
     .log {
       position: relative;
-      z-index: auto;
-      height: 400px;
+      height: 420px;
       margin: 0;
       overflow: auto;
-      padding: 2px 0 16px;
-      font: 12.5px/1.7 var(--font-mono);
-      scrollbar-color: var(--surface-overlay) var(--surface-deep);
+      padding: 4px 0 18px;
+      font: 12px/1.7 var(--font-mono);
+      scrollbar-color: var(--rule-strong) var(--screen);
     }
 
     .log::-webkit-scrollbar { width: 10px; height: 10px; }
     .log::-webkit-scrollbar-track { background: transparent; }
+
     .log::-webkit-scrollbar-thumb {
-      background: var(--surface-overlay);
+      background: var(--rule-strong);
       border-radius: 5px;
-      border: 2px solid var(--surface-deep);
+      border: 2px solid var(--screen);
     }
 
     .stream-gutter {
@@ -2256,9 +2300,9 @@ function html() {
       align-items: center;
       gap: 10px;
       margin-top: 6px;
-      padding: 10px 18px 5px;
-      border-top: 1px dashed rgba(83, 96, 112, .4);
-      font: 700 9px/1 var(--font-display);
+      padding: 10px 18px 4px 58px;
+      border-top: 1px dashed var(--rule-strong);
+      font: 700 8.5px/1 var(--font-display);
       letter-spacing: .18em;
       text-transform: uppercase;
     }
@@ -2267,52 +2311,51 @@ function html() {
 
     .stream-gutter::before {
       content: "";
-      width: 16px;
+      width: 14px;
       height: 3px;
-      border-radius: 1px;
       background: currentColor;
     }
 
-    .stream-stdout .stream-gutter { color: var(--green-bright); }
-    .stream-stderr .stream-gutter { color: var(--red-bright); }
+    .stream-stdout .stream-gutter { color: var(--green); }
+    .stream-stderr .stream-gutter { color: var(--red); }
 
     .stream-name { flex: 0 0 auto; }
 
     .stream-file {
-      color: var(--faint);
-      font: 9px/1 var(--font-mono);
-      letter-spacing: .04em;
-      text-transform: lowercase;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      color: var(--ink-faint);
+      font: 9px/1 var(--font-mono);
+      letter-spacing: .04em;
+      text-transform: lowercase;
     }
 
     .stream-body {
       margin: 0;
-      padding: 2px 18px 12px;
+      padding: 2px 18px 12px 58px;
       font: inherit;
     }
 
     .stream-line {
       display: block;
-      color: #A9B9C4;
+      color: #3B382C;
       white-space: pre-wrap;
       word-break: break-word;
     }
 
-    .stream-stderr .stream-line { color: #C09599; }
+    .stream-stderr .stream-line { color: #7E322A; }
 
     .stream-line.line-warn {
-      color: var(--amber-bright);
+      color: var(--amber);
       box-shadow: inset 2px 0 0 var(--amber);
       padding-left: 6px;
     }
 
     .stream-line.line-err {
-      color: var(--red-bright);
+      color: var(--red-deep);
       font-weight: 600;
-      background: rgba(212, 82, 82, .09);
+      background: rgba(178, 58, 46, .08);
       box-shadow: inset 2px 0 0 var(--red);
       padding-left: 6px;
     }
@@ -2329,54 +2372,54 @@ function html() {
       text-align: center;
     }
 
+    /* Mini scale ruler as the empty-state mark */
     .log-empty::before {
       content: "";
-      width: 76px;
-      height: 7px;
-      border-radius: 2px;
-      margin-bottom: 12px;
-      background: linear-gradient(90deg,
-        #b4b4b4 0 14.28%, #b4b44b 0 28.57%, #4bb4b4 0 42.85%,
-        #4bb44b 0 57.14%, #b44bb4 0 71.42%, #b44b4b 0 85.71%, #4b4bb4 0 100%);
-      opacity: .45;
+      width: 130px;
+      height: 12px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--rule-strong);
+      background:
+        repeating-linear-gradient(90deg, var(--rule-strong) 0 1px, transparent 1px 10px) left bottom / 100% 6px no-repeat,
+        repeating-linear-gradient(90deg, var(--ink-2) 0 1px, transparent 1px 40px) left bottom / 100% 11px no-repeat;
     }
 
-    .log-empty.is-busy::before { animation: signal-breathe 1.4s ease-in-out infinite; }
+    .log-empty.is-busy::before { animation: breathe 1.4s ease-in-out infinite; }
 
     .log-empty p {
       margin: 0;
-      color: var(--text-2);
+      color: var(--ink-2);
       font: 500 12.5px/1.5 var(--font-display);
       letter-spacing: .04em;
     }
 
     .log-empty .log-empty-sub {
-      color: var(--faint);
-      font-size: 10px;
+      color: var(--ink-faint);
+      font-size: 9.5px;
     }
 
-    .monitor-foot {
+    .rec-foot {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 8px 16px;
       padding: 9px 14px 10px;
-      border-top: 1px solid var(--line);
-      background: var(--surface);
+      border-top: 1px solid var(--ink);
+      background: var(--paper-deep);
     }
 
     .follow-pill {
       flex: 0 0 auto;
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
       height: 20px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 0 9px;
-      color: var(--faint);
-      font: 700 8.5px/1 var(--font-display);
-      letter-spacing: .11em;
+      padding: 0 8px;
+      border: 1px solid var(--rule-strong);
+      background: var(--paper-raised);
+      color: var(--ink-faint);
+      font: 700 8px/1 var(--font-display);
+      letter-spacing: .14em;
       text-transform: uppercase;
     }
 
@@ -2384,69 +2427,68 @@ function html() {
       content: "";
       width: 5px;
       height: 5px;
-      border-radius: 50%;
       background: currentColor;
     }
 
     .follow-pill.on {
-      color: var(--green-bright);
-      border-color: rgba(61, 168, 122, .4);
+      color: var(--green);
+      border-color: var(--green);
     }
 
     .output-meta {
       margin: 0;
       min-height: 14px;
-      color: var(--text-2);
-      font: 9.5px/1.4 var(--font-mono);
       overflow-wrap: anywhere;
+      color: var(--ink-2);
+      font: 9.5px/1.5 var(--font-mono);
     }
 
     .action-readout {
       margin: 0 0 0 auto;
       max-width: 46%;
-      color: var(--amber-bright);
-      font: 9.5px/1.4 var(--font-mono);
-      text-align: right;
       overflow-wrap: anywhere;
+      color: var(--blue);
+      font: 600 9.5px/1.5 var(--font-mono);
+      text-align: right;
     }
 
     .action-readout:empty { display: none; }
 
-    .action-readout.error { color: var(--red-bright); }
+    .action-readout.error { color: var(--red); }
 
     .log-paths {
       flex-basis: 100%;
       margin: 0;
       padding-top: 7px;
-      border-top: 1px dashed var(--line);
-      color: var(--faint);
-      font: 9px/1.4 var(--font-mono);
+      border-top: 1px dashed var(--rule-strong);
       overflow-wrap: anywhere;
+      color: var(--ink-faint);
+      font: 9px/1.5 var(--font-mono);
     }
 
     .log-paths:empty { display: none; }
 
-    /* ---- Toast ------------------------------------------------------------ */
+    /* ---- Memo slip (toast) --------------------------------------------------- */
     .toast {
       position: fixed;
-      right: 14px;
-      bottom: 14px;
-      z-index: 60;
+      right: 16px;
+      bottom: 16px;
+      z-index: 80;
       max-width: min(460px, calc(100vw - 36px));
-      border: 1px solid var(--line-light);
-      border-left: 3px solid var(--amber);
-      border-radius: 4px;
-      background: var(--surface-raised);
-      box-shadow: var(--shadow);
-      padding: 11px 13px;
-      color: var(--text);
-      font-size: 11px;
-      line-height: 1.45;
-      transform: translateY(12px);
+      border: 1.5px solid var(--ink);
+      border-left: 4px solid var(--blue);
+      border-radius: 2px;
+      background: var(--paper-raised);
+      box-shadow: 6px 6px 0 rgba(38, 36, 25, .2);
+      padding: 12px 14px;
+      color: var(--ink);
+      font-size: 11.5px;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+      transform: translateY(10px);
       opacity: 0;
       pointer-events: none;
       transition: transform .18s ease, opacity .18s ease;
-      overflow-wrap: anywhere;
     }
 
     .toast.show {
@@ -2454,59 +2496,110 @@ function html() {
       opacity: 1;
     }
 
-    /* ---- Motion ------------------------------------------------------------ */
-    @keyframes deck-in {
-      from { opacity: 0; transform: translateY(8px); }
+    /* ---- Work order (confirm dialog) ------------------------------------------ */
+    dialog.action-dialog {
+      padding: 0;
+      border: 1.5px solid var(--ink);
+      border-radius: 2px;
+      background: var(--paper-raised);
+      color: var(--ink);
+      max-width: min(480px, 92vw);
+      box-shadow: 10px 10px 0 rgba(38, 36, 25, .22);
+    }
+
+    dialog.action-dialog::backdrop { background: rgba(38, 36, 25, .45); }
+
+    .dlg-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--ink);
+      background: var(--paper-deep);
+    }
+
+    .dlg-head h2 {
+      margin: 0;
+      font: 700 11px/1.3 var(--font-display);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    .dlg-stamp { font-size: 8.5px; padding: 4px 7px 3px; }
+
+    .dlg-body {
+      margin: 0;
+      padding: 15px 16px;
+      color: var(--ink-2);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .dlg-ops {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 0 16px 16px;
+    }
+
+    /* ---- Motion ---------------------------------------------------------------- */
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
     }
 
-    @keyframes signal-pulse {
-      0%, 100% { box-shadow: 0 0 0 2px rgba(61, 168, 122, .15); }
-      50% { box-shadow: 0 0 0 4px rgba(61, 168, 122, .05), 0 0 8px rgba(61, 168, 122, .3); }
+    @keyframes svc-flash {
+      0% { box-shadow: inset 0 0 0 2px var(--red); }
+      70% { box-shadow: inset 0 0 0 2px rgba(178, 58, 46, .35); }
+      100% { box-shadow: inset 0 0 0 2px transparent; }
     }
 
-    @keyframes tally-pulse {
-      0%, 100% { box-shadow: 0 0 9px rgba(212, 82, 82, .7), 0 0 0 2px rgba(212, 82, 82, .2); }
-      50% { box-shadow: 0 0 3px rgba(212, 82, 82, .4), 0 0 0 2px rgba(212, 82, 82, .12); }
+    @keyframes stamp-hit {
+      0% { transform: rotate(-2deg) scale(1.28); opacity: .35; }
+      60% { transform: rotate(-3deg) scale(.96); opacity: 1; }
+      100% { transform: rotate(-2deg) scale(1); }
     }
 
-    @keyframes vu {
-      0%, 100% { transform: scaleY(.42); }
-      50% { transform: scaleY(1); }
+    @keyframes breathe {
+      0%, 100% { opacity: .25; }
+      50% { opacity: .85; }
     }
 
-    @keyframes signal-breathe {
-      0%, 100% { opacity: .2; }
-      50% { opacity: .6; }
+    @keyframes rec-blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .5; }
     }
 
-    @keyframes card-flash {
-      0% {
-        border-color: var(--amber);
-        box-shadow: 0 0 0 1px var(--amber), 0 0 26px rgba(212, 146, 42, .3);
-      }
-      100% {
-        border-color: var(--line);
-        box-shadow: 0 0 0 0 transparent;
-      }
+    /* First paint only: stagger the equipment rows in, then retire the flag */
+    .boot .svc { animation: rise .4s ease-out both; }
+    .boot .svc:nth-child(1) { animation-delay: .05s; }
+    .boot .svc:nth-child(2) { animation-delay: .12s; }
+    .boot .svc:nth-child(3) { animation-delay: .19s; }
+    .boot .svc:nth-child(4) { animation-delay: .26s; }
+
+    /* ---- Responsive -------------------------------------------------------------- */
+    @media (max-width: 1200px) {
+      .masthead { grid-template-columns: 1fr; }
+      .mast-side { justify-items: start; }
+      .commands { justify-items: start; }
+      .toolbar { justify-content: flex-start; }
+      .command-label::before { content: ""; width: 20px; height: 1px; background: var(--rule-strong); }
+      .command-label::after { display: none; }
     }
 
-    /* ---- Responsive -------------------------------------------------------- */
-    @media (max-width: 1460px) {
-      .service-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    @media (max-width: 1100px) {
       .bench { grid-template-columns: 1fr; }
-      .diagnostics { grid-template-rows: none; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .panel-section:last-child { border-bottom: 0; }
-      .masthead { grid-template-columns: minmax(0, 1fr) auto; }
-      .command-deck { grid-column: 2; grid-row: 1; }
-      .tally { grid-column: 1 / -1; grid-row: 2; justify-self: start; }
-      .masthead::after { display: none; }
+      .ledger strong { max-width: 60%; }
     }
 
-    @media (max-width: 980px) {
-      .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .monitor-head { align-items: flex-start; }
-      .channel-tabs {
+    @media (max-width: 900px) {
+      .tb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .tb-field { border-top: 1px solid var(--rule-strong); }
+      .tb-field:nth-child(-n+2) { border-top: 0; }
+      .tb-field:nth-child(odd) { border-left: 0; }
+      .rec-head { align-items: flex-start; }
+      .chan-tabs {
         order: 3;
         flex-basis: 100%;
         margin-inline: 0;
@@ -2514,44 +2607,44 @@ function html() {
         overflow-x: auto;
         padding-bottom: 2px;
       }
-      .channel-tab { flex: 1 0 auto; justify-content: center; }
-      .log { height: 320px; }
-      .action-readout { max-width: 100%; margin-left: 0; flex-basis: 100%; order: 5; text-align: left; }
+      .chan-tab { flex: 1 0 auto; justify-content: center; }
+      .log { height: 340px; }
+      .action-readout {
+        max-width: 100%;
+        margin-left: 0;
+        flex-basis: 100%;
+        order: 5;
+        text-align: left;
+      }
     }
 
-    @media (max-width: 760px) {
-      main { width: min(100% - 18px, 1560px); padding-top: 14px; }
-      .masthead { grid-template-columns: 1fr; gap: 14px; }
-      .command-deck { grid-column: auto; grid-row: auto; justify-items: start; }
-      .command-label { display: none; }
-      .toolbar { width: 100%; justify-content: flex-start; }
-      .diagnostics { grid-template-columns: 1fr; }
-      .panel-section { border-bottom: 1px solid var(--line); }
-      .panel-section:last-child { border-bottom: 0; }
-      .token-grid { grid-template-columns: 1fr; }
-      .token-panel-head { display: block; }
-      .token-path { display: inline-block; margin-top: 8px; }
+    @media (max-width: 700px) {
+      main.sheet { width: calc(100% - 22px); margin: 14px auto 36px; }
+      .masthead { padding: 18px 16px 14px; }
+      .ruler { margin: 0 16px; }
+      .section { padding: 20px 16px 0; }
+      .cred-grid { grid-template-columns: 1fr; }
+      .toolbar { width: 100%; }
+      .toolbar .button { flex: 1 1 auto; }
+      .input-row { grid-template-columns: minmax(0, 1fr) auto; }
+      .input-row .button[data-token-toggle] { grid-column: 1 / -1; }
+      .form-foot { align-items: stretch; flex-direction: column; }
+      .form-foot .button { width: 100%; }
+      .panel-tag { flex-wrap: wrap; }
+      .path-chip { max-width: 100%; }
+      .log { height: 300px; }
+      .stream-gutter, .stream-body { padding-inline: 14px; }
     }
 
-    @media (max-width: 620px) {
-      .service-grid { grid-template-columns: 1fr; }
-      .card-head { min-height: auto; }
-      .toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .toolbar .button { width: 100%; }
-      .token-input-row { grid-template-columns: minmax(0, 1fr) auto; }
-      .token-input-row .button[data-token-toggle] { grid-column: 1 / -1; }
-      .token-form-footer { align-items: stretch; flex-direction: column; }
-      .token-form-footer .button { width: 100%; }
-      .brand-mark { display: none; }
+    @media (max-width: 480px) {
+      .record { grid-template-columns: 1fr; }
+      .record-cell { border-left: 0; border-top: 1px solid var(--rule-strong); }
+      .record-cell:first-child { border-top: 0; }
+      .record-cell { min-height: 0; }
+      .svc-ident { flex-wrap: wrap; gap: 10px; }
+      .svc-name { flex-basis: calc(100% - 60px); }
+      .rec-controls { width: 100%; justify-content: space-between; }
       .log { height: 260px; font-size: 11.5px; }
-      .stream-gutter, .stream-body { padding-inline: 12px; }
-      .monitor-foot { gap: 6px 12px; }
-    }
-
-    @media (max-width: 500px) {
-      .status-strip { grid-template-columns: 1fr; }
-      .status-tile { min-height: 60px; }
-      .monitor-controls { width: 100%; justify-content: space-between; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -2565,127 +2658,189 @@ function html() {
   </style>
 </head>
 <body>
-  <main id="managerApp" aria-busy="false">
+  <main id="managerApp" class="sheet boot" aria-busy="false">
     <header class="masthead">
       <div class="identity">
-        <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
-        <div class="identity-copy">
-          <p class="eyebrow">Master Control<span class="eyebrow-tag">MMVB · Reference Room</span></p>
-          <h1>Service Manager</h1>
-          <p class="subhead">Live process control, diagnostics, and publishing credentials for the local media stack.</p>
-        </div>
+        <p class="eyebrow">MMVB · Master Control<span class="eyebrow-tag">Form SM-01 · Local Ops</span></p>
+        <h1>Service Manager</h1>
+        <p class="subhead">Live process control, diagnostics, and publishing credentials for the local media stack.</p>
+        <div class="tally" id="tally" aria-label="Service tally — select to locate a row"></div>
       </div>
-      <div class="tally" id="tally" aria-label="Service tally — select to locate a card"></div>
-      <div class="command-deck">
-        <p class="command-label">Stack commands</p>
-        <div class="toolbar" role="group" aria-label="Full stack controls">
-          <button class="button primary" type="button" data-stack="start-all">Start All</button>
-          <button class="button warn" type="button" data-stack="restart-all">Restart All</button>
-          <button class="button danger" type="button" data-stack="stop-all">Stop All</button>
-          <button class="button" type="button" id="refreshButton">Refresh</button>
+      <div class="mast-side">
+        <div class="titleblock" aria-label="Manager runtime">
+          <div class="tb-tag"><span>Control unit</span><span>MMVB/SM</span></div>
+          <div class="tb-grid" id="managerMeta"></div>
+        </div>
+        <div class="commands">
+          <p class="command-label">Stack commands</p>
+          <div class="toolbar" role="group" aria-label="Full stack controls">
+            <button class="button primary" type="button" data-stack="start-all">Start All</button>
+            <button class="button warn" type="button" data-stack="restart-all">Restart All</button>
+            <button class="button danger" type="button" data-stack="stop-all">Stop All</button>
+            <button class="button" type="button" id="refreshButton">Refresh</button>
+          </div>
         </div>
       </div>
     </header>
 
-    <section class="status-strip" id="summary" aria-label="Stack status overview"></section>
+    <div class="ruler" aria-hidden="true"></div>
 
-    <section class="service-grid" id="cards" aria-label="Managed services"></section>
-
-    <section class="bench" aria-label="Credentials and diagnostics">
-      <section class="token-panel" aria-labelledby="uploadTokensTitle">
-        <div class="token-panel-head">
-          <div>
-            <p class="eyebrow">Credentials</p>
-            <h2 id="uploadTokensTitle">Upload tokens</h2>
-            <p>Manage browser publishing credentials in one place. Existing values stay hidden; each save restarts the Upload API so changes take effect immediately.</p>
-          </div>
-          <span class="token-path" id="tokenPath">apps/api/.env</span>
+    <section class="section">
+      <div class="section-head">
+        <span class="section-no">01</span>
+        <h2 class="section-name">Status record</h2>
+        <span class="section-rule" aria-hidden="true"></span>
+        <span class="section-note">Auto-sync 2s</span>
+      </div>
+      <div class="record" id="summary" aria-label="Stack status overview">
+        <div class="record-cell" id="sumRunning">
+          <span class="record-label">Running</span>
+          <strong class="record-value">—</strong>
         </div>
-        <form class="token-form" id="tokenForm">
-          <div class="token-grid">
-            <div class="token-field">
-              <div class="token-label-row">
-                <label for="uploadToken">Video &amp; albums</label>
-                <span class="token-status" id="uploadTokenStatus">Checking...</span>
-              </div>
-              <div class="token-input-row">
-                <input class="token-input" id="uploadToken" name="uploadToken" type="password" autocomplete="new-password" spellcheck="false" minlength="24" maxlength="256" placeholder="Leave blank to keep current" aria-describedby="uploadTokenHelp" />
-                <button class="button" type="button" data-token-generate="uploadToken">Generate</button>
-                <button class="button" type="button" data-token-toggle="uploadToken" aria-label="Show video and album token">Show</button>
-              </div>
-              <p class="token-help" id="uploadTokenHelp"><code>UPLOAD_API_TOKEN</code> protects video uploads, albums, photos, and film-scan jobs.</p>
-            </div>
-
-            <div class="token-field">
-              <div class="token-label-row">
-                <label for="articleToken">Articles</label>
-                <span class="token-status" id="articleTokenStatus">Checking...</span>
-              </div>
-              <div class="token-input-row">
-                <input class="token-input" id="articleToken" name="articleToken" type="password" autocomplete="new-password" spellcheck="false" minlength="24" maxlength="256" placeholder="Leave blank to keep current" aria-describedby="articleTokenHelp" />
-                <button class="button" type="button" data-token-generate="articleToken">Generate</button>
-                <button class="button" type="button" data-token-toggle="articleToken" aria-label="Show article token">Show</button>
-              </div>
-              <label class="token-share" for="articleUsesUploadToken">
-                <input id="articleUsesUploadToken" name="articleUsesUploadToken" type="checkbox" />
-                Use the video &amp; album token for articles
-              </label>
-              <p class="token-help" id="articleTokenHelp"><code>ARTICLE_API_TOKEN</code> protects the article editor and can intentionally share the primary token.</p>
-            </div>
-          </div>
-          <div class="token-form-footer">
-            <p>Stored token text is never returned to this page. The short code beside each status is a one-way fingerprint for identifying the active credential.</p>
-            <button class="button primary" type="submit" id="saveTokensButton">Save tokens &amp; restart API</button>
-          </div>
-        </form>
-      </section>
-
-      <aside class="diagnostics" aria-label="System diagnostics">
-        <section class="panel-section">
-          <h2 class="panel-title">Manager</h2>
-          <div class="kv" id="managerMeta"></div>
-        </section>
-        <section class="panel-section">
-          <h2 class="panel-title">Database</h2>
-          <div class="kv" id="databaseMeta"></div>
-        </section>
-      </aside>
-    </section>
-
-    <section class="monitor" id="outputMonitor" aria-label="Live output monitor">
-      <header class="monitor-head">
-        <div class="monitor-id">
-          <span class="tally-light" id="tallyLight" aria-hidden="true"></span>
-          <h2 class="monitor-title">Output Monitor</h2>
-          <span class="live-state" id="liveLogState"><span class="live-state-dot" aria-hidden="true"></span><span id="liveLogStateText">Idle</span></span>
+        <div class="record-cell" id="sumHealthy">
+          <span class="record-label">Healthy</span>
+          <strong class="record-value">—</strong>
         </div>
-        <div class="channel-tabs" role="group" aria-label="Live output source">
-          <button class="channel-tab" type="button" data-log="web" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Web</button>
-          <button class="channel-tab" type="button" data-log="api" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>API</button>
-          <button class="channel-tab" type="button" data-log="cms" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>CMS</button>
-          <button class="channel-tab" type="button" data-log="manager" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Manager</button>
+        <div class="record-cell" id="sumStopped">
+          <span class="record-label">Stopped</span>
+          <strong class="record-value">—</strong>
         </div>
-        <div class="monitor-controls">
-          <div class="rate-switch" role="group" aria-label="Live output refresh interval">
-            <button class="button active" type="button" data-log-interval="3000" aria-pressed="true">3s</button>
-            <button class="button" type="button" data-log-interval="10000" aria-pressed="false">10s</button>
-          </div>
-          <button class="button" type="button" id="toggleLogPolling" aria-pressed="false">Pause</button>
-        </div>
-      </header>
-      <div class="monitor-screen">
-        <div class="log" id="log" role="region" aria-label="Live service output" aria-live="off" tabindex="0">
-          <div class="log-empty is-busy"><p>Acquiring Web channel</p><p class="log-empty-sub">Connecting to the live output buffer...</p></div>
+        <div class="record-cell" id="sumSync">
+          <span class="record-label">Last sync</span>
+          <strong class="record-value">—</strong>
         </div>
       </div>
-      <footer class="monitor-foot">
-        <span class="follow-pill on" id="followPill" title="Auto-scrolling to newest output">Follow</span>
-        <p class="output-meta" id="liveLogMeta" role="status" aria-live="polite">Waiting for a log source.</p>
-        <p class="action-readout" id="actionReadout" role="status" aria-live="polite"></p>
-        <p class="log-paths" id="logPaths"></p>
-      </footer>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <span class="section-no">02</span>
+        <h2 class="section-name">Equipment bay</h2>
+        <span class="section-rule" aria-hidden="true"></span>
+        <span class="section-note">4 units · local stack</span>
+      </div>
+      <div class="bay" id="cards" aria-label="Managed services"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <span class="section-no">03</span>
+        <h2 class="section-name">Records</h2>
+        <span class="section-rule" aria-hidden="true"></span>
+        <span class="section-note">credentials · database</span>
+      </div>
+      <div class="bench">
+        <section class="panel" aria-label="Publishing credentials">
+          <div class="panel-tag">
+            <span>Part A · Publishing credentials</span>
+            <span class="path-chip" id="tokenPath">apps/api/.env</span>
+          </div>
+          <p class="cred-desc">Manage browser publishing credentials in one place. Existing values stay hidden; each save restarts the Upload API so changes take effect immediately.</p>
+          <form class="token-form" id="tokenForm" novalidate>
+            <div class="cred-grid">
+              <div class="field">
+                <div class="field-top">
+                  <label for="uploadToken">Video &amp; albums</label>
+                  <span class="cred-state" id="uploadTokenStatus">Checking...</span>
+                </div>
+                <div class="input-row">
+                  <input class="cred-input" id="uploadToken" name="uploadToken" type="password" autocomplete="new-password" spellcheck="false" minlength="24" maxlength="256" placeholder="Leave blank to keep current" aria-describedby="uploadTokenHelp" />
+                  <button class="button" type="button" data-token-generate="uploadToken">Generate</button>
+                  <button class="button" type="button" data-token-toggle="uploadToken" aria-label="Show video and album token">Show</button>
+                </div>
+                <p class="field-help" id="uploadTokenHelp"><code>UPLOAD_API_TOKEN</code> protects video uploads, albums, photos, and film-scan jobs.</p>
+              </div>
+
+              <div class="field">
+                <div class="field-top">
+                  <label for="articleToken">Articles</label>
+                  <span class="cred-state" id="articleTokenStatus">Checking...</span>
+                </div>
+                <div class="input-row">
+                  <input class="cred-input" id="articleToken" name="articleToken" type="password" autocomplete="new-password" spellcheck="false" minlength="24" maxlength="256" placeholder="Leave blank to keep current" aria-describedby="articleTokenHelp" />
+                  <button class="button" type="button" data-token-generate="articleToken">Generate</button>
+                  <button class="button" type="button" data-token-toggle="articleToken" aria-label="Show article token">Show</button>
+                </div>
+                <label class="share" for="articleUsesUploadToken">
+                  <input id="articleUsesUploadToken" name="articleUsesUploadToken" type="checkbox" />
+                  Use the video &amp; album token for articles
+                </label>
+                <p class="field-help" id="articleTokenHelp"><code>ARTICLE_API_TOKEN</code> protects the article editor and can intentionally share the primary token.</p>
+              </div>
+            </div>
+            <div class="form-foot">
+              <p>Stored token text is never returned to this page. The short code beside each status is a one-way fingerprint for identifying the active credential.</p>
+              <button class="button primary" type="submit" id="saveTokensButton">Save tokens &amp; restart API</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="panel" aria-label="Database register">
+          <div class="panel-tag">
+            <span>Part B · Database register</span>
+            <span class="path-chip">PostgreSQL</span>
+          </div>
+          <div class="ledger" id="databaseMeta"></div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <span class="section-no">04</span>
+        <h2 class="section-name">Output recorder</h2>
+        <span class="section-rule" aria-hidden="true"></span>
+        <span class="section-note">web · api · cms · manager</span>
+      </div>
+      <section class="recorder-frame" id="outputMonitor" aria-label="Live output monitor">
+        <header class="rec-head">
+          <div class="rec-id">
+            <span class="tally-light" id="tallyLight" aria-hidden="true"></span>
+            <h3 class="rec-title">Signal</h3>
+            <span class="live-state" id="liveLogState"><span class="live-state-dot" aria-hidden="true"></span><span id="liveLogStateText">Idle</span></span>
+          </div>
+          <div class="chan-tabs" role="group" aria-label="Live output source">
+            <button class="chan-tab" type="button" data-log="web" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Web</button>
+            <button class="chan-tab" type="button" data-log="api" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>API</button>
+            <button class="chan-tab" type="button" data-log="cms" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>CMS</button>
+            <button class="chan-tab" type="button" data-log="manager" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Manager</button>
+          </div>
+          <div class="rec-controls">
+            <div class="rate-switch" role="group" aria-label="Live output refresh interval">
+              <button class="button active" type="button" data-log-interval="3000" aria-pressed="true">3s</button>
+              <button class="button" type="button" data-log-interval="10000" aria-pressed="false">10s</button>
+            </div>
+            <button class="button" type="button" id="toggleLogPolling" aria-pressed="false">Pause</button>
+          </div>
+        </header>
+        <div class="rec-screen">
+          <div class="log" id="log" role="region" aria-label="Live service output" aria-live="off" tabindex="0">
+            <div class="log-empty is-busy"><p>Acquiring Web channel</p><p class="log-empty-sub">Connecting to the live output buffer...</p></div>
+          </div>
+        </div>
+        <footer class="rec-foot">
+          <span class="follow-pill on" id="followPill" title="Auto-scrolling to newest output">Follow</span>
+          <p class="output-meta" id="liveLogMeta" role="status" aria-live="polite">Waiting for a log source.</p>
+          <p class="action-readout" id="actionReadout" role="status" aria-live="polite"></p>
+          <p class="log-paths" id="logPaths"></p>
+        </footer>
+      </section>
     </section>
   </main>
+
+  <dialog id="actionDialog" class="action-dialog" aria-labelledby="actionDialogTitle" aria-describedby="actionDialogMessage">
+    <form method="dialog">
+      <div class="dlg-head">
+        <h2 id="actionDialogTitle">Confirm service operation</h2>
+        <span class="stamp off dlg-stamp" aria-hidden="true">Review</span>
+      </div>
+      <p class="dlg-body" id="actionDialogMessage"></p>
+      <div class="dlg-ops">
+        <button class="button" value="cancel" autofocus>Cancel</button>
+        <button class="button warn" id="actionDialogConfirm" value="confirm">Continue</button>
+      </div>
+    </form>
+  </dialog>
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <script>
@@ -2707,7 +2862,6 @@ function html() {
     const WARN_PATTERN = /warn|deprecat|retry|slow|pending/i;
 
     const managerApp = document.getElementById("managerApp");
-    const summary = document.getElementById("summary");
     const tally = document.getElementById("tally");
     const cards = document.getElementById("cards");
     const managerMeta = document.getElementById("managerMeta");
@@ -2732,11 +2886,12 @@ function html() {
 
     let state = null;
     let busy = false;
+    let bootDone = false;
     let tokenFormDirty = false;
     let toastTimer = null;
-    let readoutTimer = null;
     let refreshPromise = null;
     let statusRefreshing = false;
+    let statusGeneration = 0;
     let activeLogService = "web";
     let logPollingEnabled = true;
     let logPollIntervalMs = 3000;
@@ -2758,6 +2913,7 @@ function html() {
 
     function setBusy(nextBusy) {
       busy = nextBusy;
+      if (nextBusy) statusGeneration++;
       managerApp.setAttribute("aria-busy", String(nextBusy));
       document.querySelectorAll("button, input, select").forEach((control) => {
         control.disabled = nextBusy;
@@ -2780,6 +2936,22 @@ function html() {
       });
     }
 
+    let confirmationPending = false;
+    async function confirmAction(message, label) {
+      if (confirmationPending || busy) return false;
+      confirmationPending = true;
+      const dialog = document.getElementById("actionDialog");
+      document.getElementById("actionDialogMessage").textContent = message;
+      document.getElementById("actionDialogConfirm").textContent = label;
+      dialog.returnValue = "cancel";
+      try {
+        return await new Promise((resolve) => {
+          dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), { once: true });
+          dialog.showModal();
+        });
+      } finally { confirmationPending = false; }
+    }
+
     function notify(message) {
       clearTimeout(toastTimer);
       toast.textContent = message;
@@ -2788,15 +2960,8 @@ function html() {
     }
 
     function setActionReadout(text, tone) {
-      clearTimeout(readoutTimer);
       actionReadout.textContent = text || "";
       actionReadout.className = "action-readout" + (tone ? " " + tone : "");
-      if (text) {
-        readoutTimer = setTimeout(() => {
-          actionReadout.textContent = "";
-          actionReadout.className = "action-readout";
-        }, 12000);
-      }
     }
 
     function apiPath(path) {
@@ -2809,13 +2974,13 @@ function html() {
       return { label: "Stopped", cls: "off" };
     }
 
-    function badge(item) {
+    function stampHtml(item) {
       const status = serviceState(item);
-      return '<span class="badge ' + status.cls + '" aria-label="Status: ' + esc(status.label) + '"><span class="dot" aria-hidden="true"></span>' + status.label + '</span>';
+      return '<span class="stamp ' + status.cls + '" aria-label="Status: ' + esc(status.label) + '">' + esc(status.label) + '</span>';
     }
 
-    function metric(label, value) {
-      return '<div class="metric"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>';
+    function specCell(label, value) {
+      return '<div class="spec"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>';
     }
 
     function serviceCard(item, index) {
@@ -2824,33 +2989,36 @@ function html() {
         ? item.serviceName
         : item.healthUrl;
       const pids = item.pids && item.pids.length ? item.pids.join(", ") : "N/A";
-      const metrics = item.kind === "windows-service"
-        ? [
-            metric("Service", item.serviceName),
-            metric("Status", item.status),
-            metric("Start type", item.startType),
-            metric("DB check", item.error || (item.healthy ? "OK" : "N/A"))
-          ].join("")
-        : item.id === "web"
-          ? [
-              metric("Port", item.port),
-              metric("PID", pids),
-              metric("HTTP", item.status || item.error),
-              metric("Latency", item.elapsed != null ? item.elapsed + "ms" : "N/A"),
-              metric("Mode", item.modeLabel),
-              metric("Script", item.startScript)
-            ].join("")
-        : [
-            metric("Port", item.port),
-            metric("PID", pids),
-            metric("HTTP", item.status || item.error),
-            metric("Latency", item.elapsed != null ? item.elapsed + "ms" : "N/A")
-          ].join("");
+      let specs;
+      if (item.kind === "windows-service") {
+        specs = [
+          specCell("Service", item.serviceName),
+          specCell("State", item.status),
+          specCell("Start type", item.startType),
+          specCell("DB check", item.error || (item.healthy ? "OK" : "N/A"))
+        ];
+      } else if (item.id === "web") {
+        specs = [
+          specCell("Port", item.port),
+          specCell("PID", pids),
+          specCell("HTTP", item.status || item.error),
+          specCell("Latency", item.elapsed != null ? item.elapsed + "ms" : "N/A"),
+          specCell("Mode", item.modeLabel),
+          specCell("Script", item.startScript)
+        ];
+      } else {
+        specs = [
+          specCell("Port", item.port),
+          specCell("PID", pids),
+          specCell("HTTP", item.status || item.error),
+          specCell("Latency", item.elapsed != null ? item.elapsed + "ms" : "N/A")
+        ];
+      }
       const open = item.openUrl
         ? '<a class="button" href="' + esc(item.openUrl) + '" target="_blank" rel="noreferrer" aria-label="Open ' + esc(item.name) + '">Open</a>'
         : "";
       const logs = item.logName
-        ? '<button class="button" type="button" data-log="' + esc(item.id) + '" aria-label="Watch ' + esc(item.name) + ' in the output monitor">Logs</button>'
+        ? '<button class="button" type="button" data-log="' + esc(item.id) + '" aria-label="Watch ' + esc(item.name) + ' in the output recorder">Logs</button>'
         : "";
       const rebuild = item.id === "web"
         ? '<button class="button" type="button" data-action="rebuild-restart" data-id="' + esc(item.id) + '" aria-label="Build and restart ' + esc(item.name) + '">Build + Restart</button>'
@@ -2862,30 +3030,33 @@ function html() {
           + '</div>'
         : "";
 
-      return '<article class="service-card ' + status.cls + '" data-card="' + esc(item.id) + '" aria-labelledby="service-' + esc(item.id) + '-title">'
-        + '<header class="card-head">'
-        + '<div class="card-id"><span class="card-index" aria-hidden="true">' + String(index + 1).padStart(2, "0") + '</span>'
-        + '<div class="card-title"><h2 id="service-' + esc(item.id) + '-title">' + esc(item.name) + '</h2>'
-        + '<p class="card-meta">' + esc(item.category) + " · " + esc(meta) + '</p></div></div>'
-        + badge(item)
-        + '</header>'
-        + '<div class="metrics">' + metrics + '</div>'
-        + '<footer class="card-actions">'
+      return '<article class="svc ' + status.cls + '" data-card="' + esc(item.id) + '" aria-labelledby="service-' + esc(item.id) + '-title">'
+        + '<div class="svc-ident">'
+        + '<span class="svc-no" aria-hidden="true">' + String(index + 1).padStart(2, "0") + '</span>'
+        + '<div class="svc-name"><h2 id="service-' + esc(item.id) + '-title">' + esc(item.name) + '</h2>'
+        + '<p class="svc-meta">' + esc(item.category) + " · " + esc(meta) + '</p></div>'
+        + stampHtml(item)
+        + '</div>'
+        + '<div class="svc-spec">' + specs.join("") + '</div>'
+        + '<div class="svc-ops">'
         + webMode
-        + '<button class="button primary" type="button" data-action="start" data-id="' + esc(item.id) + '" aria-label="Start ' + esc(item.name) + '">Start</button>'
+        + '<button class="button primary push" type="button" data-action="start" data-id="' + esc(item.id) + '" aria-label="Start ' + esc(item.name) + '">Start</button>'
         + '<button class="button warn" type="button" data-action="restart" data-id="' + esc(item.id) + '" aria-label="Restart ' + esc(item.name) + '">Restart</button>'
         + rebuild
         + '<button class="button danger" type="button" data-action="stop" data-id="' + esc(item.id) + '" aria-label="Stop ' + esc(item.name) + '">Stop</button>'
         + open
         + logs
-        + '</footer>'
+        + '</div>'
         + '</article>';
     }
 
-    function kv(data) {
-      return Object.entries(data).map(([key, value]) =>
-        '<span>' + esc(key) + '</span><strong>' + esc(value) + '</strong>'
-      ).join("");
+    function tbField(label, value) {
+      return '<div class="tb-field"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>';
+    }
+
+    function ledgerRow(label, value, tone) {
+      return '<span>' + esc(label) + '</span><i aria-hidden="true"></i><strong'
+        + (tone ? ' class="' + tone + '"' : '') + '>' + esc(value) + '</strong>';
     }
 
     function renderTally(data) {
@@ -2917,7 +3088,7 @@ function html() {
         element.textContent = item.configured
           ? (item.inherited ? "Shared · " : "Active · ") + item.masked
           : "Not configured";
-        element.className = "token-status"
+        element.className = "cred-state"
           + (item.configured ? " configured" : "")
           + (item.inherited ? " inherited" : "");
       }
@@ -2928,42 +3099,54 @@ function html() {
       }
     }
 
-    function render(data) {
-      state = data;
+    function setRecordCell(id, value, tone) {
+      const cell = document.getElementById(id);
+      if (!cell) return;
+      cell.querySelector(".record-value").textContent = value;
+      cell.classList.toggle("ok", tone === "ok");
+      cell.classList.toggle("alert", tone === "alert");
+    }
+
+    function renderSummary(data) {
+      const total = data.services.length;
       const running = data.services.filter((item) => item.running).length;
       const healthy = data.services.filter((item) => item.healthy).length;
-      const stopped = data.services.length - running;
-      summary.innerHTML = [
-        summaryItem("Running", running + " / " + data.services.length, "info"),
-        summaryItem("Healthy", healthy + " / " + data.services.length, "ok"),
-        summaryItem("Stopped", stopped, stopped > 0 ? "alert" : "neutral"),
-        summaryItem("Last sync", new Date(data.updatedAt).toLocaleTimeString(), "neutral")
-      ].join("");
-      document.title = healthy + "/" + data.services.length + " healthy · Service Manager";
+      const stopped = total - running;
+      setRecordCell("sumRunning", running + " / " + total, running === total ? "ok" : "");
+      setRecordCell("sumHealthy", healthy + " / " + total, healthy === total ? "ok" : "");
+      setRecordCell("sumStopped", String(stopped), stopped > 0 ? "alert" : "");
+      setRecordCell("sumSync", new Date(data.updatedAt).toLocaleTimeString(), "");
+    }
+
+    function render(data) {
+      state = data;
+      renderSummary(data);
+      document.title = data.services.filter((item) => item.healthy).length + "/" + data.services.length + " healthy · Service Manager";
 
       renderTally(data);
       cards.innerHTML = data.services.map(serviceCard).join("");
+      if (busy) cards.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      if (!bootDone) {
+        bootDone = true;
+        setTimeout(() => managerApp.classList.remove("boot"), 800);
+      }
       updateLogControls();
       renderUploadTokens(data.uploadTokens);
-      managerMeta.innerHTML = kv({
-        Host: data.manager.host + ":" + data.manager.port,
-        PID: data.manager.pid,
-        Uptime: data.manager.uptime + "s",
-        Node: data.manager.node
-      });
-      databaseMeta.innerHTML = kv({
-        Status: data.database.healthy ? "Healthy" : "Unavailable",
-        Path: data.database.path,
-        Tables: data.database.tables,
-        Posts: data.database.posts,
-        Projects: data.database.projects,
-        Masters: data.database.masters,
-        Error: data.database.error || "N/A"
-      });
-    }
-
-    function summaryItem(label, value, tone) {
-      return '<div class="status-tile ' + esc(tone) + '"><span class="tile-label">' + esc(label) + '</span><strong class="tile-value" title="' + esc(value) + '">' + esc(value) + '</strong></div>';
+      managerMeta.innerHTML = [
+        tbField("Host", data.manager.host + ":" + data.manager.port),
+        tbField("PID", data.manager.pid),
+        tbField("Uptime", data.manager.uptime + "s"),
+        tbField("Node", data.manager.node)
+      ].join("");
+      databaseMeta.innerHTML = [
+        ledgerRow("Status", data.database.healthy ? "Healthy" : "Unavailable", data.database.healthy ? "good" : "bad"),
+        ledgerRow("Path", data.database.path),
+        ledgerRow("Tables", data.database.tables),
+        ledgerRow("Posts", data.database.posts),
+        ledgerRow("Projects", data.database.projects),
+        ledgerRow("Masters", data.database.masters),
+        ledgerRow("Error", data.database.error || "N/A", data.database.error ? "bad" : "")
+      ].join("");
     }
 
     function refresh(silent = false) {
@@ -2972,14 +3155,15 @@ function html() {
         statusRefreshing = true;
         updateLogControls();
       }
+      const generation = statusGeneration;
       refreshPromise = (async () => {
         try {
-          const response = await fetch(apiPath("/api/status"), { cache: "no-store" });
+          const response = await fetch(apiPath("/api/status"), { cache: "no-store", signal: AbortSignal.timeout(15000) });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || "Status request failed");
-          render(data);
+          if (generation === statusGeneration) render(data);
         } catch (error) {
-          if (!silent) {
+          if (!silent && generation === statusGeneration) {
             setActionReadout("Status refresh failed: " + error.message, "error");
             notify(error.message);
           }
@@ -3011,7 +3195,8 @@ function html() {
       } catch (error) {
         setActionReadout("Error: " + error.message, "error");
         notify(error.message);
-        await refresh(true).catch(() => {});
+        await refreshPromise;
+        await refresh(true);
       } finally {
         setBusy(false);
       }
@@ -3019,8 +3204,8 @@ function html() {
 
     async function runStackAction(action) {
       if (busy) return;
-      if (action === "stop-all" && !confirm("Stop all managed services, including PostgreSQL?")) return;
-      if (action === "restart-all" && !confirm("Restart the full managed stack?")) return;
+      if (action === "stop-all" && !await confirmAction("Stop all managed services, including PostgreSQL?", "Stop all")) return;
+      if (action === "restart-all" && !await confirmAction("Restart the full managed stack?", "Restart all")) return;
       setBusy(true);
       setActionReadout("Running " + action + "...");
       try {
@@ -3037,7 +3222,8 @@ function html() {
       } catch (error) {
         setActionReadout("Error: " + error.message, "error");
         notify(error.message);
-        await refresh(true).catch(() => {});
+        await refreshPromise;
+        await refresh(true);
       } finally {
         setBusy(false);
       }
@@ -3052,7 +3238,7 @@ function html() {
         return;
       }
 
-      if (mode === "production" && !confirm("Switch Frontend Web to Production mode? This will build and restart the frontend.")) {
+      if (mode === "production" && !await confirmAction("Switch Frontend Web to Production mode? The frontend will stop while the production build runs.", "Switch to Production")) {
         return;
       }
 
@@ -3071,7 +3257,8 @@ function html() {
       } catch (error) {
         setActionReadout("Error: " + error.message, "error");
         notify(error.message);
-        await refresh(true).catch(() => {});
+        await refreshPromise;
+        await refresh(true);
       } finally {
         setBusy(false);
       }
@@ -3080,7 +3267,10 @@ function html() {
     async function saveUploadTokens() {
       if (busy) return;
       if (!tokenForm.checkValidity()) {
-        tokenForm.reportValidity();
+        const invalid = tokenForm.querySelector(":invalid");
+        invalid?.setAttribute("aria-invalid", "true");
+        invalid?.focus();
+        setActionReadout("Token validation failed: " + (invalid?.validationMessage || "Check the token fields."), "error");
         return;
       }
 
@@ -3117,12 +3307,13 @@ function html() {
         tokenFormDirty = false;
         render(data.status);
         const message = data.result.message || "Upload tokens updated.";
-        setActionReadout(message);
+        setActionReadout(message, data.result.restartOk === false ? "error" : "");
         notify(message);
       } catch (error) {
         setActionReadout("Error: " + error.message, "error");
         notify(error.message);
-        await refresh(true).catch(() => {});
+        await refreshPromise;
+        await refresh(true);
       } finally {
         setBusy(false);
       }
@@ -3435,7 +3626,7 @@ function html() {
 
       const logButton = event.target.closest("[data-log]");
       if (logButton) {
-        if (!logButton.closest(".monitor")) {
+        if (!logButton.closest(".recorder-frame")) {
           outputMonitor.scrollIntoView({ behavior: "smooth", block: "start" });
         }
         selectLogSource(logButton.dataset.log);
@@ -3466,7 +3657,8 @@ function html() {
       }
     });
 
-    tokenForm.addEventListener("input", () => {
+    tokenForm.addEventListener("input", (event) => {
+      event.target.removeAttribute("aria-invalid");
       tokenFormDirty = true;
     });
     articleUsesUploadToken.addEventListener("change", syncArticleTokenInput);

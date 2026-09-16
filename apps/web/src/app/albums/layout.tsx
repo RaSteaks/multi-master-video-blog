@@ -7,7 +7,7 @@ export default function AlbumsLayout({
 }) {
   return (
     <>
-      <LiquidBackground variant="gray" />
+      <LiquidBackground />
       {children}
     </>
   );

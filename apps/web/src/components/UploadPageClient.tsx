@@ -26,7 +26,7 @@ export function UploadPageClient() {
 
   return (
     <>
-      <LiquidBackground variant="teal" />
+      <LiquidBackground />
       <main className="shell page-stack upload-page">
       <div className="upload-page-intro">
         <header className="page-header upload-page-header">

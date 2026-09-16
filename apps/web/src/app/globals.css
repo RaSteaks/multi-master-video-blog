@@ -230,6 +230,10 @@ a {
     filter: none !important;
   }
 
+  .liquid-canvas {
+    display: none !important;
+  }
+
   .blob {
     will-change: auto;
   }
@@ -310,8 +314,11 @@ body:has(.orbital-home) .orbital-home {
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(10, 11, 13, 0.68);
   padding: 13px max(20px, calc((100vw - 1120px) / 2));
-  backdrop-filter: blur(48px) saturate(200%) brightness(1.06);
-  -webkit-backdrop-filter: blur(48px) saturate(200%) brightness(1.06);
+  /* Experiment B (docs/performance-optimization-plan.md §6.1): 24px/150%
+     keeps the frosted look at a fraction of the scroll-time GPU cost of
+     48px/200%. Re-run visual regression before changing further. */
+  backdrop-filter: blur(24px) saturate(150%) brightness(1.06);
+  -webkit-backdrop-filter: blur(24px) saturate(150%) brightness(1.06);
   box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.05);
   transition: border-color var(--transition-base);
 }
@@ -1824,6 +1831,46 @@ h3 {
   gap: 9px;
 }
 
+
+.liquid-settings { display: grid; gap: 10px; }
+.liquid-settings .bg-control-note { color: var(--text-secondary); }
+.liquid-color-heading,
+.liquid-editor-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.liquid-color-heading { color: var(--text-secondary); font-size: 0.75rem; }
+.liquid-color-heading code { font-family: var(--font-mono); }
+.liquid-swatches { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.liquid-slot { min-width: 0; }
+.liquid-swatch {
+  display: grid; gap: 5px; width: 100%; padding: 6px;
+  border: 1px solid var(--line-light); border-radius: 8px;
+  background: var(--surface); color: var(--text-secondary);
+  font: inherit; font-size: 0.68rem; cursor: pointer;
+}
+.liquid-swatch > span:first-child {
+  display: grid; place-items: center; height: 28px;
+  border: 1px solid var(--line-light); border-radius: 4px;
+  font-size: 1rem;
+}
+.liquid-swatch[aria-pressed="true"] { border-color: var(--accent-readable); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-readable); }
+.liquid-slot-actions { display: flex; min-height: 28px; }
+.liquid-slot-actions button,
+.liquid-save-feedback button {
+  min-height: 28px; padding: 3px 6px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--text-secondary); cursor: pointer; font: inherit; font-size: 0.65rem;
+}
+.liquid-slot-actions button { flex: 1; }
+.liquid-editor-toggle {
+  min-height: 36px; padding: 8px 10px;
+  border: 1px solid var(--line-light); border-radius: 7px;
+  background: var(--surface); color: var(--text); cursor: pointer; font: inherit; font-size: 0.75rem;
+}
+.liquid-save-feedback { display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--text-secondary); font-size: 0.68rem; line-height: 1.5; }
+.liquid-save-feedback span { flex: 1; }
+.liquid-settings button:hover { border-color: var(--accent-readable); background-color: var(--surface-overlay); color: var(--text); }
+.liquid-settings button:active { background-color: var(--surface-raised); }
+.liquid-settings button:focus-visible,
+.sv-plane:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 2px; }
+
 .color-encoding-preview {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 132px));
@@ -1983,7 +2030,7 @@ h3 {
 
 .hsv-number-grid label > span,
 .hsv-hex-output > span {
-  color: var(--muted);
+  color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 0.66rem;
   font-weight: 700;
@@ -3539,7 +3586,7 @@ h3 {
 
 /* ==========================================================================
    Liquid Background
-   Reference Room variants: very muted, low-distraction, near-neutral
+   Shared palette: original video gray by default, independent HSV override
    ========================================================================== */
 
 .liquid-bg {
@@ -3555,6 +3602,30 @@ h3 {
   inset: -10%;
 }
 
+.liquid-canvas {
+  position: absolute;
+  inset: -18px;
+  width: calc(100% + 36px);
+  height: calc(100% + 36px);
+  max-width: none;
+  display: block;
+  opacity: 0;
+  visibility: hidden;
+  transform: scale(1.02);
+  filter: blur(14px);
+  will-change: opacity, transform;
+  pointer-events: none;
+}
+
+.liquid-bg[data-liquid-renderer="webgl"] .liquid-canvas {
+  opacity: 1;
+  visibility: visible;
+}
+
+.liquid-bg[data-liquid-renderer="webgl"] .liquid-blobs {
+  display: none;
+}
+
 .blob {
   position: absolute;
   border-radius: 50%;
@@ -3562,148 +3633,31 @@ h3 {
   will-change: transform;
 }
 
-/* ---- Global accent (home) — exact base color at restrained opacity ---- */
-.liquid-bg--accent::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  z-index: 1;
-  height: 42%;
-  background: radial-gradient(
-    ellipse at 50% 0%,
-    rgb(var(--accent-rgb) / 0.12),
-    transparent 68%
-  );
-  pointer-events: none;
-}
-
-.liquid-bg--accent .blob-1 {
-  top: -18%;
-  left: -12%;
-  width: 70vw;
-  height: 70vw;
-  max-width: 1100px;
-  max-height: 1100px;
-  background: radial-gradient(
-    circle at 35% 45%,
-    rgb(var(--accent-rgb) / 0.28),
-    rgb(var(--accent-rgb) / 0.1),
-    transparent 65%
-  );
-  animation: float-blob-1 18s ease-in-out infinite;
-}
-
-.liquid-bg--accent .blob-2 {
-  top: 35%;
-  right: -14%;
-  width: 60vw;
-  height: 60vw;
-  max-width: 900px;
-  max-height: 900px;
-  background: radial-gradient(
-    circle at 60% 35%,
-    rgb(var(--accent-rgb) / 0.22),
-    rgb(var(--accent-rgb) / 0.07),
-    transparent 65%
-  );
-  animation: float-blob-2 20s ease-in-out infinite;
-}
-
-.liquid-bg--accent .blob-3 {
-  bottom: -20%;
-  left: 22%;
-  width: 55vw;
-  height: 55vw;
-  max-width: 800px;
-  max-height: 800px;
-  background: radial-gradient(
-    circle at 50% 50%,
-    rgb(var(--accent-rgb) / 0.2),
-    rgb(var(--accent-rgb) / 0.06),
-    transparent 65%
-  );
-  animation: float-blob-3 19s ease-in-out infinite;
-}
-
-/* ---- Neutral gray (upload) — fixed grading-room background ---- */
-.liquid-bg--teal::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 40%;
-  z-index: 1;
-  background: radial-gradient(ellipse at 50% 0%,
-    rgba(200, 205, 218, 0.08), transparent 65%);
-  pointer-events: none;
-}
-.liquid-bg--teal .blob-1 {
-  width: 70vw; height: 70vw; max-width: 1100px; max-height: 1100px;
-  background: radial-gradient(circle at 35% 45%,
-    rgba(112, 118, 132, 0.24), rgba(64, 68, 78, 0.09), transparent 65%);
-  top: -18%; left: -12%;
-  animation: float-blob-1 18s ease-in-out infinite;
-}
-.liquid-bg--teal .blob-2 {
-  width: 60vw; height: 60vw; max-width: 900px; max-height: 900px;
-  background: radial-gradient(circle at 60% 35%,
-    rgba(122, 120, 118, 0.18), rgba(70, 68, 66, 0.08), transparent 65%);
-  top: 35%; right: -14%;
-  animation: float-blob-2 20s ease-in-out infinite;
-}
-.liquid-bg--teal .blob-3 {
-  width: 55vw; height: 55vw; max-width: 800px; max-height: 800px;
-  background: radial-gradient(circle at 50% 50%,
-    rgba(102, 106, 118, 0.18), rgba(58, 60, 70, 0.07), transparent 65%);
-  bottom: -20%; left: 22%;
-  animation: float-blob-3 19s ease-in-out infinite;
-}
-/* ---- Blue (posts) — cool D65 reference blue, near-neutral ---- */
-.liquid-bg--blue { background: #09090C; }
-.liquid-bg--blue .blob-1 {
-  width: 65vw; height: 65vw; max-width: 1000px; max-height: 1000px;
-  background: radial-gradient(circle at 35% 45%,
-    rgba(60, 100, 180, 0.28), rgba(20, 40, 90, 0.12), transparent 65%);
-  top: -18%; left: -12%;
-  animation: float-blob-1 18s ease-in-out infinite;
-}
-.liquid-bg--blue .blob-2 {
-  width: 55vw; height: 55vw; max-width: 800px; max-height: 800px;
-  background: radial-gradient(circle at 60% 35%,
-    rgba(72, 90, 160, 0.22), rgba(30, 36, 80, 0.10), transparent 65%);
-  top: 35%; right: -14%;
-  animation: float-blob-2 20s ease-in-out infinite;
-}
-.liquid-bg--blue .blob-3 {
-  width: 50vw; height: 50vw; max-width: 700px; max-height: 700px;
-  background: radial-gradient(circle at 50% 50%,
-    rgba(40, 120, 180, 0.20), rgba(15, 55, 90, 0.10), transparent 65%);
-  bottom: -20%; left: 22%;
-  animation: float-blob-3 19s ease-in-out infinite;
-}
 /* ---- Gray (videos) — brighter neutral surround with visible liquid motion ---- */
-.liquid-bg--gray { background: #121518; }
-.liquid-bg--gray .blob-1 {
+.liquid-bg { background: var(--liquid-base, #121518); }
+.liquid-bg .blob-1 {
   width: 70vw; height: 70vw; max-width: 1100px; max-height: 1100px;
   background: radial-gradient(circle at 40% 40%,
-    rgba(130, 134, 138, 0.18), transparent 64%);
+    rgb(var(--liquid-blob-1, 130 134 138) / 0.18), transparent 64%);
   top: -20%; left: -15%;
-  animation: float-blob-1 20s ease-in-out infinite;
+  animation: float-blob-1 var(--liquid-duration-1, 20s) ease-in-out infinite;
+  animation-play-state: var(--liquid-play-state, running);
 }
-.liquid-bg--gray .blob-2 {
+.liquid-bg .blob-2 {
   width: 60vw; height: 60vw; max-width: 900px; max-height: 900px;
   background: radial-gradient(circle at 55% 40%,
-    rgba(108, 112, 116, 0.16), transparent 64%);
+    rgb(var(--liquid-blob-2, 108 112 116) / 0.16), transparent 64%);
   top: 30%; right: -16%;
-  animation: float-blob-2 23s ease-in-out infinite;
+  animation: float-blob-2 var(--liquid-duration-2, 23s) ease-in-out infinite;
+  animation-play-state: var(--liquid-play-state, running);
 }
-.liquid-bg--gray .blob-3 {
+.liquid-bg .blob-3 {
   width: 55vw; height: 55vw; max-width: 800px; max-height: 800px;
   background: radial-gradient(circle at 50% 50%,
-    rgba(118, 122, 126, 0.15), transparent 64%);
+    rgb(var(--liquid-blob-3, 118 122 126) / 0.15), transparent 64%);
   bottom: -22%; left: 20%;
-  animation: float-blob-3 22s ease-in-out infinite;
+  animation: float-blob-3 var(--liquid-duration-3, 22s) ease-in-out infinite;
+  animation-play-state: var(--liquid-play-state, running);
 }
 /* ---- Blob keyframes (slower = less distraction) ---- */
 @keyframes float-blob-1 {

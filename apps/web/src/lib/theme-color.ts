@@ -172,9 +172,10 @@ export function hexToHsv(value: string): HsvColor {
 }
 
 export function hsvToRgb(value: HsvColor): RgbColor {
-  const hue = clamp(value.h, 0, 359.999999);
-  const saturation = clamp(value.s, 0, 100) / 100;
-  const brightness = clamp(value.v, 0, 100) / 100;
+  // Self-contained: also serialized into the pre-hydration background script.
+  const hue = Math.min(359.999999, Math.max(0, value.h));
+  const saturation = Math.min(100, Math.max(0, value.s)) / 100;
+  const brightness = Math.min(100, Math.max(0, value.v)) / 100;
   const chroma = brightness * saturation;
   const segment = hue / 60;
   const x = chroma * (1 - Math.abs((segment % 2) - 1));

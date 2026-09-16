@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 export default function WritePage() {
   return (
     <>
-      <LiquidBackground variant="teal" />
+      <LiquidBackground />
       <ArticleEditor />
     </>
   );

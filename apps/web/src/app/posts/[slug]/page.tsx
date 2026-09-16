@@ -8,9 +8,16 @@ import {
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownImageComponent } from "@/components/MarkdownImage";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
 import { GaussianSplatEmbed } from "@/components/GaussianSplatEmbed";
-import { assetUrl, getPost } from "@/lib/directus";
+import {
+  assetIdsFromMarkdown,
+  assetUrl,
+  getAssetDimensions,
+  getPost,
+  type AssetDimensions,
+} from "@/lib/directus";
 import { parseGaussianSplatConfig } from "@/lib/gaussian-splat";
 import { siteConfig } from "@/lib/site-config";
 
@@ -54,7 +61,11 @@ export default async function PostPage({ params }: PostPageProps) {
   const hasToc = tocItems.length > 0;
   const coverImageUrl = assetUrl(post.cover_image, "content-hero");
   const bgImageUrl = assetUrl(post.backgroundimage, "site-background");
-  const markdownComponents = createMarkdownComponents();
+  // Inline markdown images get intrinsic width/height to prevent layout shift.
+  const assetDimensions = await getAssetDimensions(
+    assetIdsFromMarkdown(content),
+  );
+  const markdownComponents = createMarkdownComponents(assetDimensions);
 
   return (
     <>
@@ -140,7 +151,9 @@ export default async function PostPage({ params }: PostPageProps) {
   );
 }
 
-function createMarkdownComponents(): Components {
+function createMarkdownComponents(
+  assetDimensions: Map<string, AssetDimensions>,
+): Components {
   const slugHeading = createSlugger();
 
   return {
@@ -151,6 +164,7 @@ function createMarkdownComponents(): Components {
     h5: headingComponent("h5", 5, slugHeading),
     h6: headingComponent("h6", 6, slugHeading),
     pre: markdownPreComponent,
+    img: markdownImageComponent(assetDimensions),
   };
 }
 

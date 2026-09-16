@@ -10,6 +10,7 @@ import {
   resolveThemeColor,
   rgbChannels,
 } from "@/lib/theme-color";
+import { LIQUID_BOOTSTRAP_SCRIPT } from "@/lib/liquid-preferences";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -54,6 +55,7 @@ export default async function RootLayout({
       }
     >
       <head>
+        <script dangerouslySetInnerHTML={{ __html: LIQUID_BOOTSTRAP_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
       </head>
       <body>
