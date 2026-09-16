@@ -12,6 +12,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
+import type { SiteBackgroundImage } from "@/lib/directus";
 import {
   COLOR_CHECKER_PRESETS,
   DEFAULT_ACCENT_HEX,
@@ -125,7 +126,7 @@ export function AppearanceControl({
   defaultBlur = 8,
   siteAccentColor = DEFAULT_ACCENT_HEX,
 }: {
-  images: string[];
+  images: SiteBackgroundImage[];
   defaultBlur?: number;
   siteAccentColor?: string;
 }) {
@@ -174,7 +175,7 @@ export function AppearanceControl({
   const presetsPanelId = useId();
   const customPanelId = useId();
 
-  const currentImage = image ?? images[0] ?? null;
+  const currentImage = image ?? images[0]?.url ?? null;
   const effectiveMode: BgMode =
     mode ?? (liquidSections.has(section) || !hasImage ? "liquid" : "image");
   const effectiveTheme = storedTheme
@@ -196,7 +197,7 @@ export function AppearanceControl({
     }
 
     const savedImage = window.localStorage.getItem(IMAGE_KEY);
-    if (savedImage && images.includes(savedImage)) {
+    if (savedImage && images.some((candidate) => candidate.url === savedImage)) {
       setImageState(savedImage);
     }
 
@@ -435,7 +436,7 @@ export function AppearanceControl({
     : "站点默认";
 
   const customImage =
-    effectiveMode === "image" && currentImage && currentImage !== images[0]
+    effectiveMode === "image" && currentImage && currentImage !== images[0]?.url
       ? currentImage
       : null;
 
@@ -461,14 +462,14 @@ export function AppearanceControl({
         <SlidersIcon />
       </button>
 
-      <div
-        ref={panelRef}
-        id={panelId}
-        className={`bg-control-panel${open ? " open" : ""}`}
-        role="dialog"
-        aria-labelledby={panelTitleId}
-        aria-hidden={!open}
-      >
+      {open ? (
+        <div
+          ref={panelRef}
+          id={panelId}
+          className="bg-control-panel open"
+          role="dialog"
+          aria-labelledby={panelTitleId}
+        >
         <header className="appearance-panel-header">
           <div>
             <span>DISPLAY</span>
@@ -889,16 +890,16 @@ export function AppearanceControl({
                   role="radiogroup"
                   aria-label="选择背景图片"
                 >
-                  {images.map((url, index) => (
+                  {images.map((candidate, index) => (
                     <button
-                      key={url}
+                      key={candidate.url}
                       type="button"
                       role="radio"
-                      aria-checked={currentImage === url}
+                      aria-checked={currentImage === candidate.url}
                       aria-label={`背景图片 ${index + 1}`}
-                      className={currentImage === url ? "active" : ""}
-                      style={{ backgroundImage: `url(${url})` }}
-                      onClick={() => selectImage(url)}
+                      className={currentImage === candidate.url ? "active" : ""}
+                      style={{ backgroundImage: `url(${candidate.thumbnailUrl})` }}
+                      onClick={() => selectImage(candidate.url)}
                     />
                   ))}
                 </div>
@@ -931,7 +932,8 @@ export function AppearanceControl({
           )}
           </section>
         )}
-      </div>
+        </div>
+      ) : null}
 
       {mounted &&
       effectiveMode === "liquid" &&

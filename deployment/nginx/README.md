@@ -14,7 +14,7 @@ Only placeholders are allowed in this repository:
 example.com
 C:/path/to/fullchain.pem
 C:/path/to/privkey.pem
-D:/multi-master-video-blog/media/
+D:/path/to/media/
 ```
 
 Keep real certificates, private keys, domains, public IPs, database passwords, and backend secrets in the actual server configuration only.

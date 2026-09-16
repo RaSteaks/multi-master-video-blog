@@ -21,7 +21,7 @@ export async function generateMetadata({ params }: VideoPageProps) {
       title: video.title,
       description: video.description || undefined,
       type: "video.other" as const,
-      images: video.cover_image ? [assetUrl(video.cover_image)!] : [],
+      images: video.cover_image ? [assetUrl(video.cover_image, "content-hero")!] : [],
     },
   };
 }
@@ -34,7 +34,7 @@ export default async function VideoPage({ params }: VideoPageProps) {
     notFound();
   }
 
-  const poster = assetUrl(video.cover_image);
+  const poster = assetUrl(video.cover_image, "content-hero");
   const masterCount = video.masters?.length || 0;
 
   return (

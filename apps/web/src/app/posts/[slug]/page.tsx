@@ -36,7 +36,7 @@ export async function generateMetadata({ params }: PostPageProps) {
     openGraph: {
       title: post.title,
       type: "article" as const,
-      images: post.cover_image ? [assetUrl(post.cover_image)!] : [],
+      images: post.cover_image ? [assetUrl(post.cover_image, "content-hero")!] : [],
     },
   };
 }
@@ -52,8 +52,8 @@ export default async function PostPage({ params }: PostPageProps) {
   const content = post.content || "";
   const tocItems = extractTocItems(content);
   const hasToc = tocItems.length > 0;
-  const coverImageUrl = assetUrl(post.cover_image);
-  const bgImageUrl = assetUrl(post.backgroundimage);
+  const coverImageUrl = assetUrl(post.cover_image, "content-hero");
+  const bgImageUrl = assetUrl(post.backgroundimage, "site-background");
   const markdownComponents = createMarkdownComponents();
 
   return (

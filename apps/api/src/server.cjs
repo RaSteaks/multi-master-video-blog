@@ -1,4 +1,4 @@
-const Busboy = require("busboy");
+const { buildNegativeDensityFilter } = require("./film-negative.cjs");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
@@ -6,6 +6,15 @@ const http = require("node:http");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { Readable } = require("node:stream");
+const zlib = require("node:zlib");
+const { createMultipartParser } = require("./multipart-utils.cjs");
+const {
+  acceptsEncoding,
+  fileEtag,
+  ifRangeMatches,
+  parseByteRange,
+  requestIsFresh
+} = require("./http-utils.cjs");
 const {
   HDR_IMAGE_MIME_EXTENSIONS,
   SDR_IMAGE_MIME_EXTENSIONS,
@@ -120,7 +129,15 @@ const ARTICLE_IMAGE_MIME_EXTENSIONS = new Map([
 const ARTICLE_IMAGE_PREFIX = "article-image://";
 const ARTICLE_IMAGE_TARGET_PATTERN =
   /!\[([^\]\r\n]*)\]\(article-image:\/\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,127})\)/g;
-const ALBUM_ASSET_PRESETS = new Set(["album-cover", "album-thumb"]);
+const ASSET_PRESETS = new Set([
+  "album-cover",
+  "album-thumb",
+  "content-card",
+  "content-hero",
+  "site-background",
+  "site-background-thumb"
+]);
+const JSON_COMPRESSION_MIN_BYTES = 1024;
 const COLOR_REQUIRED_FIELDS = [
   "colorPrimaries",
   "colorTransfer",
@@ -177,11 +194,30 @@ function positiveInteger(value, fallback) {
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
+  const bodyBuffer = Buffer.from(body);
+  const acceptsGzip = acceptsEncoding(
+    res.req?.headers["accept-encoding"],
+    "gzip"
+  );
+
+  if (acceptsGzip && bodyBuffer.length >= JSON_COMPRESSION_MIN_BYTES) {
+    res.writeHead(statusCode, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Encoding": "gzip",
+      Vary: "Accept-Encoding"
+    });
+    Readable.from([bodyBuffer])
+      .pipe(zlib.createGzip({ level: 5 }))
+      .pipe(res);
+    return;
+  }
+
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": Buffer.byteLength(body)
+    "Content-Length": bodyBuffer.length,
+    Vary: "Accept-Encoding"
   });
-  res.end(body);
+  res.end(bodyBuffer);
 }
 
 function requireUploadAuth(req) {
@@ -444,7 +480,7 @@ async function parseMultipart(req) {
     let rejected = false;
 
     const files = {};
-    const busboy = Busboy({
+    const busboy = createMultipartParser({
       headers: req.headers,
       limits: {
         files: 500,
@@ -574,7 +610,7 @@ async function parseArticleMultipart(req) {
     let busboy;
 
     try {
-      busboy = Busboy({
+      busboy = createMultipartParser({
         headers: req.headers,
         limits: {
           files: MAX_ARTICLE_IMAGES + 1,
@@ -850,7 +886,7 @@ async function parseFilmScanMultipart(req) {
     };
 
     try {
-      busboy = Busboy({
+      busboy = createMultipartParser({
         headers: req.headers,
         limits: {
           files: MAX_FILM_SCAN_SOURCES,
@@ -1030,7 +1066,7 @@ async function parseAlbumMultipart(req) {
     let busboy;
 
     try {
-      busboy = Busboy({
+      busboy = createMultipartParser({
         headers: req.headers,
         limits: {
           files: MAX_ALBUM_PHOTOS * 2,
@@ -5087,7 +5123,9 @@ function serializeFilmScanJob(job, sources = [], frames = []) {
     pushPull: Number(job.push_pull || 0),
     rollAdjustments: normalizeAdjustments(jsonObject(job.roll_adjustments)),
     progress: Number(job.progress || 0),
-    warnings: jsonArray(job.warnings),
+    warnings: jsonArray(job.warnings).filter(
+      (warning) => !String(warning).includes("增强 TIFF 方式解码")
+    ),
     error: job.error_message || null,
     experimentalCompatibility: parseBoolean(job.experimental_compatibility, true),
     startedAt: job.started_at || null,
@@ -5255,6 +5293,94 @@ function filmScanSourcePath(relativePath) {
   return filePath;
 }
 
+function filmScanJobDirectory(jobId) {
+  const normalizedJobId = String(jobId || "");
+  if (!/^[1-9]\d*$/.test(normalizedJobId)) {
+    throw new Error("胶片扫描任务编号无效，拒绝清理文件。");
+  }
+  const jobDir = path.resolve(FILM_SCAN_ROOT, normalizedJobId);
+  assertInside(FILM_SCAN_ROOT, jobDir);
+  return jobDir;
+}
+
+function cleanupFilmScanJobAssets(token, jobId, context) {
+  return enqueueFilmScanPreview(() => cleanupFilmScanJobAssetsNow(token, jobId, context));
+}
+
+async function cleanupFilmScanJobAssetsNow(token, jobId, context) {
+  if (!token) {
+    try {
+      await fsp.access(path.join(filmScanJobDirectory(jobId), "rollback.json"));
+      return { filesDeleted: false, metadataDeleted: false };
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  if (token) {
+    try { await cleanupFilmScanPartialCommit(token, { id: jobId }); }
+    catch (error) {
+      console.error(`[film-scan] Rollback for job ${jobId} retained for retry: ${error.message}`);
+      return { filesDeleted: false, metadataDeleted: false };
+    }
+  }
+  const failures = [];
+  let filesDeleted = false;
+  try {
+    await fsp.rm(filmScanJobDirectory(jobId), {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 150
+    });
+    filesDeleted = true;
+  } catch (error) {
+    failures.push(`文件目录清理失败：${error.message}`);
+  }
+
+  if (token) {
+    let frames = [];
+    let sources = [];
+    try {
+      frames = await listFilmScanFrames(token, jobId);
+    } catch (error) {
+      failures.push(`帧记录读取失败：${error.message}`);
+    }
+    for (const frame of frames) {
+      try {
+        await directusRequest(`/items/film_scan_frames/${frame.id}`, token, {
+          method: "DELETE"
+        });
+      } catch (error) {
+        failures.push(`帧 ${frame.id} 清理失败：${error.message}`);
+      }
+    }
+    try {
+      sources = await listFilmScanSources(token, jobId);
+    } catch (error) {
+      failures.push(`原档记录读取失败：${error.message}`);
+    }
+    for (const source of sources) {
+      try {
+        await directusRequest(`/items/film_scan_sources/${source.id}`, token, {
+          method: "DELETE"
+        });
+      } catch (error) {
+        failures.push(`原档 ${source.id} 清理失败：${error.message}`);
+      }
+    }
+  }
+
+  if (failures.length) {
+    console.error(
+      `[film-scan] Cleanup for job ${jobId} (${context}) was partial: ${failures.join(
+        " "
+      )}`
+    );
+  }
+  return {
+    filesDeleted,
+    metadataDeleted: Boolean(token) && failures.length === 0
+  };
+}
+
 function filmScanFrameCrop(frame) {
   return normalizeCrop({
     x: Number(frame.crop_x),
@@ -5326,18 +5452,22 @@ async function drainFilmScanQueue() {
     );
   } catch (error) {
     console.error(`[film-scan] Job ${jobId} failed: ${error.stack || error.message}`);
+    let cleanupToken = null;
     try {
-      const token = await directusLogin();
+      cleanupToken = await directusLogin();
       const current = (
-        await directusRequest(`/items/film_scan_jobs/${jobId}?fields=status`, token)
+        await directusRequest(
+          `/items/film_scan_jobs/${jobId}?fields=status`,
+          cleanupToken
+        )
       ).data;
       if (error.filmScanCanceled) {
-        await updateFilmScanJob(token, jobId, {
+        await updateFilmScanJob(cleanupToken, jobId, {
           status: "canceled",
           error_message: null
         });
       } else if (current?.status !== "canceled") {
-        await updateFilmScanJob(token, jobId, {
+        await updateFilmScanJob(cleanupToken, jobId, {
           status: "failed",
           error_message: error.message
         });
@@ -5345,6 +5475,12 @@ async function drainFilmScanQueue() {
     } catch (updateError) {
       console.error(
         `[film-scan] Could not persist failure for ${jobId}: ${updateError.message}`
+      );
+    } finally {
+      await cleanupFilmScanJobAssets(
+        cleanupToken,
+        jobId,
+        error.filmScanCanceled ? "analysis canceled" : "analysis failed"
       );
     }
   } finally {
@@ -5384,6 +5520,7 @@ async function analyzeFilmScanJob(jobId, signal) {
   const warnings = [];
   let order = 0;
   let rollMask = null;
+  const previewRenders = [];
 
   for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
     throwIfFilmScanAborted(signal);
@@ -5412,11 +5549,6 @@ async function analyzeFilmScanJob(jobId, signal) {
           updated_at: new Date().toISOString()
         }
       });
-      if (source.format === "fff") {
-        warnings.push(
-          `${source.original_name} 以增强 TIFF 方式解码；X5 FFF/3F 兼容仍为实验性。`
-        );
-      }
       const analysis = await createAnalysisImage(sourcePath);
       throwIfFilmScanAborted(signal);
       const detections = detectFilmFrames(analysis, {
@@ -5468,20 +5600,22 @@ async function analyzeFilmScanJob(jobId, signal) {
         ).data;
         const previewPath = path.join(previewDir, `${frameCreated.id}.jpg`);
         const adjustments = normalizeAdjustments(jsonObject(job.roll_adjustments));
-        await renderReviewedFilmFrame({
+        const previewOptions = {
           sourcePath,
           outputPath: previewPath,
           crop: detection.crop,
           rotation: 0,
           filmType: job.film_type,
           adjustments,
-          maskRgb: adjustments.maskRgb || rollMask || base.rgb,
+          maskRgb: adjustments.maskRgb || rollMask,
           tempDir: previewDir,
           key: `preview-${frameCreated.id}`,
           maximumDimension: 1400,
           quality: 88,
           signal
-        });
+        };
+        await renderReviewedFilmFrame(previewOptions);
+        previewRenders.push(previewOptions);
         throwIfFilmScanAborted(signal);
         const previewRelative = path.relative(MEDIA_ROOT, previewPath);
         await directusRequest(`/items/film_scan_frames/${frameCreated.id}`, token, {
@@ -5536,6 +5670,15 @@ async function analyzeFilmScanJob(jobId, signal) {
     }
   }
   throwIfFilmScanAborted(signal);
+  // A later frame may provide the first reliable film base. Refresh earlier
+  // previews with the final roll mask so review and commit use the same basis.
+  for (const preview of previewRenders) {
+    if (job.film_type === "color-negative" &&
+        JSON.stringify(preview.maskRgb) !== JSON.stringify(adjustments.maskRgb)) {
+      throwIfFilmScanAborted(signal);
+      await renderReviewedFilmFrame({ ...preview, adjustments, maskRgb: adjustments.maskRgb });
+    }
+  }
   const finalState = (
     await directusRequest(`/items/film_scan_jobs/${jobId}?fields=status`, token)
   ).data?.status;
@@ -5686,17 +5829,36 @@ async function handleFilmScanCreate(req, res, albumId) {
     sendJson(res, 202, { status: "ok", job: responseJob });
     enqueueFilmScanJob(job.id);
   } catch (error) {
+    let cleanup = { filesDeleted: !finalDir, metadataDeleted: false };
     if (job?.id && token) {
       await updateFilmScanJob(token, job.id, {
         status: "failed",
         error_message: error.message
       }).catch(() => {});
+      cleanup = await cleanupFilmScanJobAssets(
+        token,
+        job.id,
+        "upload failed"
+      );
+    } else if (finalDir) {
+      try {
+        await fsp.rm(finalDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 3,
+          retryDelay: 150
+        });
+        cleanup.filesDeleted = true;
+      } catch {
+        cleanup.filesDeleted = false;
+      }
     }
     if (!res.headersSent) {
       sendJson(res, error.statusCode || 500, {
         status: "error",
         error: error.message,
-        preservedJobId: job?.id || null
+        failedJobId: job?.id || null,
+        filesDeleted: cleanup.filesDeleted
       });
     }
   } finally {
@@ -5738,31 +5900,7 @@ function pickFilmScanJobPatch(body) {
 
 async function renderOpticalDensityNegative(inputPath, outputPath, maskRgb, signal) {
   throwIfFilmScanAborted(signal);
-  const mask =
-    Array.isArray(maskRgb) && maskRgb.length === 3
-      ? maskRgb.map((channel) =>
-          Math.max(0.01, Math.min(1, Number(channel)))
-        )
-      : [0.82, 0.61, 0.39];
-  const linearMask = mask.map((channel) =>
-    channel <= 0.04045
-      ? channel / 12.92
-      : ((channel + 0.055) / 1.055) ** 2.4
-  );
-  const densityRange = (2.4 * Math.log(10)).toFixed(6);
-  const channelExpression = (channel, sample) =>
-    `clip(log(${channel.toFixed(6)}/max(${sample}(X,Y),0.000015))/${densityRange},0,1)`;
-  const filter = [
-    "setparams=color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709",
-    "zscale=transfer=linear:npl=100",
-    "format=gbrpf32le",
-    [
-      `geq=r='${channelExpression(linearMask[0], "r")}'`,
-      `g='${channelExpression(linearMask[1], "g")}'`,
-      `b='${channelExpression(linearMask[2], "b")}'`
-    ].join(":"),
-    "format=gbrp16le"
-  ].join(",");
+  const filter = buildNegativeDensityFilter(maskRgb);
   await runProcess(
     FFMPEG_PATH,
     [
@@ -5855,7 +5993,50 @@ async function renderReviewedFilmFrame(options) {
   }
 }
 
-async function renderFilmScanFramePreviewNow(token, job, frame) {
+async function resolveFilmScanPreviewAdjustments(
+  token,
+  job,
+  frame,
+  rollAdjustments,
+  frameOverrides
+) {
+  const roll = normalizeAdjustments(
+    rollAdjustments ?? jsonObject(job.roll_adjustments)
+  );
+  const sample = roll.filmBaseSample;
+  if (sample && roll.maskMode === "manual") {
+    const sources = await listFilmScanSources(token, job.id);
+    const source =
+      sources.find(
+        (candidate) => String(candidate.id) === String(sample.sourceId || "")
+      ) ||
+      sources.find(
+        (candidate) =>
+          String(candidate.id) ===
+          String(directusRelationId(frame.source_id))
+      ) ||
+      sources[0];
+    if (!source) throw httpError(409, "任务中没有可供片基取样的原档。");
+    roll.maskRgb = await sampleFilmBaseAtPoint(
+      filmScanSourcePath(source.relative_path),
+      sample
+    );
+    roll.filmBaseSample = {
+      x: sample.x,
+      y: sample.y,
+      sourceId: Number(source.id)
+    };
+  }
+  return {
+    roll,
+    adjustments: mergeFrameAdjustments(
+      roll,
+      frameOverrides ?? jsonObject(frame.adjustment_overrides)
+    )
+  };
+}
+
+async function renderFilmScanFramePreviewNow(token, job, frame, options = {}) {
   const sources = await listFilmScanSources(token, job.id);
   const source = sources.find(
     (candidate) => String(candidate.id) === String(directusRelationId(frame.source_id))
@@ -5863,10 +6044,12 @@ async function renderFilmScanFramePreviewNow(token, job, frame) {
   if (!source) throw httpError(404, "帧对应的原档不存在。");
   const previewPath = filmScanSourcePath(frame.preview_path);
   await fsp.mkdir(path.dirname(previewPath), { recursive: true });
-  const roll = normalizeAdjustments(jsonObject(job.roll_adjustments));
-  const adjustments = mergeFrameAdjustments(
-    roll,
-    jsonObject(frame.adjustment_overrides)
+  const preview = await resolveFilmScanPreviewAdjustments(
+    token,
+    job,
+    frame,
+    options.rollAdjustments,
+    options.frameOverrides
   );
   await renderReviewedFilmFrame({
     sourcePath: filmScanSourcePath(source.relative_path),
@@ -5874,19 +6057,22 @@ async function renderFilmScanFramePreviewNow(token, job, frame) {
     crop: filmScanFrameCrop(frame),
     rotation: Number(frame.rotation || 0),
     filmType: job.film_type,
-    adjustments,
-    maskRgb: adjustments.maskRgb,
+    adjustments: preview.adjustments,
+    maskRgb: preview.adjustments.maskRgb,
     tempDir: path.dirname(previewPath),
     key: `preview-${frame.id}`,
     maximumDimension: 1400,
     quality: 88
   });
+  return preview;
 }
 
-function rerenderFilmScanFrame(token, job, frame) {
-  return enqueueFilmScanPreview(() =>
-    renderFilmScanFramePreviewNow(token, job, frame)
-  );
+function rerenderFilmScanFrame(token, job, frame, options) {
+  return enqueueFilmScanPreview(async () => {
+    const current = (await directusRequest(`/items/film_scan_jobs/${job.id}?fields=status`, token)).data;
+    if (current?.status !== "review_required") throw filmScanCanceledError();
+    return renderFilmScanFramePreviewNow(token, job, frame, options);
+  });
 }
 
 async function handleFilmScanJobPatch(req, res, albumId, jobId) {
@@ -6166,10 +6352,21 @@ async function handleFilmScanPreview(req, res, albumId, jobId) {
     jobId,
     frameId
   );
-  await rerenderFilmScanFrame(token, job, frame);
+  if (job.status !== "review_required") {
+    throw httpError(409, "仅待审核任务可刷新预览。");
+  }
+  const preview = await rerenderFilmScanFrame(token, job, frame, {
+    rollAdjustments: Object.hasOwn(body, "rollAdjustments")
+      ? body.rollAdjustments
+      : undefined,
+    frameOverrides: Object.hasOwn(body, "frameOverrides")
+      ? jsonObject(body.frameOverrides)
+      : undefined
+  });
   sendJson(res, 200, {
     status: "ok",
     frameId: Number(frameId),
+    rollAdjustments: preview.roll,
     previewEndpoint: `/api/albums/${albumId}/film-scans/${jobId}/frames/${frameId}/preview`
   });
 }
@@ -6472,6 +6669,9 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
         title
       );
       uploadedFileIds.push(sdrFileId);
+      await saveFilmScanRollback(jobId, {
+        photos: createdPhotoIds, renditions: createdRenditionIds, files: uploadedFileIds
+      });
       let pqFileId = null;
       let hlgFileId = null;
       if (pqPath) {
@@ -6485,6 +6685,9 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
           `${title} PQ`
         );
         uploadedFileIds.push(pqFileId);
+        await saveFilmScanRollback(jobId, {
+          photos: createdPhotoIds, renditions: createdRenditionIds, files: uploadedFileIds
+        });
       }
       if (hlgPath) {
         hlgFileId = await directusUploadFile(
@@ -6497,6 +6700,9 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
           `${title} HLG`
         );
         uploadedFileIds.push(hlgFileId);
+        await saveFilmScanRollback(jobId, {
+          photos: createdPhotoIds, renditions: createdRenditionIds, files: uploadedFileIds
+        });
       }
 
       const now = new Date().toISOString();
@@ -6528,6 +6734,9 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
         })
       ).data;
       createdPhotoIds.push(photo.id);
+      await saveFilmScanRollback(jobId, {
+        photos: createdPhotoIds, renditions: createdRenditionIds, files: uploadedFileIds
+      });
       const renditions = [
         {
           kind: "sdr",
@@ -6576,6 +6785,9 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
           })
         ).data;
         createdRenditionIds.push(created.id);
+        await saveFilmScanRollback(jobId, {
+          photos: createdPhotoIds, renditions: createdRenditionIds, files: uploadedFileIds
+        });
       }
       await directusRequest(`/items/film_scan_frames/${frame.id}`, token, {
         method: "PATCH",
@@ -6622,21 +6834,9 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
       createdPhotoIds: createdPhotoIds.map(Number)
     });
   } catch (error) {
-    for (const renditionId of [...createdRenditionIds].reverse()) {
-      await directusRequest(`/items/album_photo_renditions/${renditionId}`, token, {
-        method: "DELETE"
-      }).catch(() => {});
-    }
-    for (const photoId of [...createdPhotoIds].reverse()) {
-      await directusRequest(`/items/album_photos/${photoId}`, token, {
-        method: "DELETE"
-      }).catch(() => {});
-    }
-    for (const fileId of [...uploadedFileIds].reverse()) {
-      await directusRequest(`/files/${fileId}`, token, { method: "DELETE" }).catch(
-        () => {}
-      );
-    }
+    await saveFilmScanRollback(jobId, {
+      photos: createdPhotoIds, renditions: createdRenditionIds, files: uploadedFileIds
+    });
     await updateFilmScanJob(
       token,
       jobId,
@@ -6644,6 +6844,11 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
         ? { status: "canceled", error_message: null, warnings }
         : { status: "failed", error_message: error.message, warnings }
     ).catch(() => {});
+    await cleanupFilmScanJobAssets(
+      token,
+      jobId,
+      error.filmScanCanceled ? "rendering canceled" : "rendering failed"
+    );
     throw error;
   } finally {
     releaseFilmScanController(jobId, controller);
@@ -6655,92 +6860,76 @@ async function handleFilmScanRetry(res, albumId, jobId) {
   const token = await directusLogin();
   const job = await getFilmScanJobRecord(token, albumId, jobId);
   if (job.status !== "failed") throw httpError(409, "仅失败任务可以重试。");
-  const [sources, frames] = await Promise.all([
-    listFilmScanSources(token, jobId),
-    listFilmScanFrames(token, jobId)
-  ]);
-  await cleanupFilmScanPartialCommit(token, job, frames);
-  const canResumeReview =
-    frames.length > 0 &&
-    sources.length > 0 &&
-    sources.every((source) => source.decode_status === "decoded");
-  if (canResumeReview) {
-    await updateFilmScanJob(token, jobId, {
-      status: "review_required",
-      progress: 100,
-      error_message: null
-    });
-    sendJson(res, 200, {
-      status: "ok",
-      jobId: Number(jobId),
-      resumedAt: "review_required"
-    });
-    return;
+  await cleanupFilmScanJobAssets(token, jobId, "legacy retry request");
+  throw httpError(410, "失败任务的服务器原档已清理，请重新上传原片。");
+}
+
+async function saveFilmScanRollback(jobId, resources) {
+  const directory = filmScanJobDirectory(jobId);
+  await fsp.mkdir(directory, { recursive: true });
+  const filename = path.join(directory, "rollback.json");
+  let previous = {};
+  try { previous = JSON.parse(await fsp.readFile(filename, "utf8")); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const ledger = {};
+  for (const kind of ["photos", "renditions", "files"]) {
+    ledger[kind] = [...new Set([...(previous[kind] || []), ...(resources[kind] || [])].map(String))];
   }
-  await updateFilmScanJob(token, jobId, {
-    status: "uploaded",
-    progress: 0,
-    error_message: null
-  });
-  enqueueFilmScanJob(jobId);
-  sendJson(res, 202, { status: "ok", jobId: Number(jobId) });
+  await fsp.writeFile(filename + ".tmp", JSON.stringify(ledger));
+  await fsp.rename(filename + ".tmp", filename);
+  return ledger;
 }
 
 async function cleanupFilmScanPartialCommit(token, job, providedFrames = null) {
   const frames = providedFrames || (await listFilmScanFrames(token, job.id));
-  if (!frames.length) return;
-  const frameIds = frames.map((frame) => String(frame.id));
-  const params = new URLSearchParams({
-    "filter[film_scan_frame_id][_in]": frameIds.join(","),
-    fields: ALBUM_PHOTO_FIELDS,
-    limit: "-1"
-  });
-  const photos = (
-    await directusRequest(`/items/album_photos?${params.toString()}`, token)
-  ).data;
-  for (const photo of Array.isArray(photos) ? photos : []) {
-    const fileIds = [
-      ...new Set(
-        [
-          directusFileId(photo.sdr_image),
-          directusFileId(photo.hdr_image),
-          ...(Array.isArray(photo.renditions)
-            ? photo.renditions.map((rendition) => directusFileId(rendition.file))
-            : [])
-        ].filter(Boolean)
-      )
-    ];
-    await directusRequest(`/items/album_photos/${photo.id}`, token, {
-      method: "DELETE"
-    }).catch(() => {});
-    for (const fileId of fileIds) {
-      await deleteDirectusFileSafely(
-        token,
-        fileId,
-        `partial film-scan job ${job.id}`
-      );
+  const resources = { photos: [], renditions: [], files: [] };
+  if (frames.length) {
+    const params = new URLSearchParams({
+      "filter[film_scan_frame_id][_in]": frames.map(frame => String(frame.id)).join(","),
+      fields: ALBUM_PHOTO_FIELDS, limit: "-1"
+    });
+    const photos = (await directusRequest(`/items/album_photos?${params}`, token)).data;
+    for (const photo of Array.isArray(photos) ? photos : []) {
+      resources.photos.push(photo.id);
+      resources.files.push(...[
+        directusFileId(photo.sdr_image), directusFileId(photo.hdr_image),
+        ...(Array.isArray(photo.renditions) ? photo.renditions.map(r => directusFileId(r.file)) : [])
+      ].filter(Boolean));
     }
   }
-  for (const frame of frames.filter((candidate) =>
-    directusRelationId(candidate.album_photo_id)
-  )) {
+  // Persist file IDs before deleting their owning records; retain this ledger on any failure.
+  const ledger = await saveFilmScanRollback(job.id, resources);
+  const filename = path.join(filmScanJobDirectory(job.id), "rollback.json");
+  for (const [kind, prefix] of [
+    ["renditions", "/items/album_photo_renditions/"],
+    ["photos", "/items/album_photos/"],
+    ["files", "/files/"]
+  ]) {
+    for (const id of [...ledger[kind]].reverse()) {
+      try { await directusRequest(prefix + encodeURIComponent(id), token, { method: "DELETE" }); }
+      catch (error) { if (error.directusHttpStatus !== 404) throw error; }
+      ledger[kind] = ledger[kind].filter(value => value !== id);
+      await fsp.writeFile(filename + ".tmp", JSON.stringify(ledger));
+      await fsp.rename(filename + ".tmp", filename);
+    }
+  }
+  for (const frame of frames.filter(candidate => directusRelationId(candidate.album_photo_id))) {
     await directusRequest(`/items/film_scan_frames/${frame.id}`, token, {
-      method: "PATCH",
-      body: {
+      method: "PATCH", body: {
         album_photo_id: null,
-        review_status:
-          Number(frame.confidence || 0) < 0.85 ? "confirmed" : "auto",
+        review_status: Number(frame.confidence || 0) < 0.85 ? "confirmed" : "auto",
         updated_at: new Date().toISOString()
       }
-    }).catch(() => {});
+    });
   }
+  await fsp.rm(filename, { force: true });
 }
 
 async function handleFilmScanCancel(res, albumId, jobId) {
   const token = await directusLogin();
   const job = await getFilmScanJobRecord(token, albumId, jobId);
-  if (["committed", "canceled"].includes(job.status)) {
-      throw httpError(409, "已提交或已取消任务不能再次取消。");
+  if (job.status === "committed") {
+      throw httpError(409, "已提交任务不能取消。");
   }
   const controller = filmScanJobControllers.get(String(jobId));
   if (controller && !controller.signal.aborted) {
@@ -6752,7 +6941,18 @@ async function handleFilmScanCancel(res, albumId, jobId) {
   });
   const index = filmScanQueue.findIndex((queued) => String(queued) === String(jobId));
   if (index >= 0) filmScanQueue.splice(index, 1);
-  sendJson(res, 200, { status: "ok", jobId: Number(jobId), state: "canceled" });
+  // An active worker owns rollback and cleanup after it observes the abort.
+  const cleanup = controller
+    ? { filesDeleted: false, metadataDeleted: false }
+    : await cleanupFilmScanJobAssets(token, jobId, "job canceled");
+  const complete = cleanup.filesDeleted && cleanup.metadataDeleted;
+  sendJson(res, complete ? 200 : 202, {
+    status: complete ? "ok" : "partial",
+    jobId: Number(jobId),
+    state: "canceled",
+    filesDeleted: cleanup.filesDeleted,
+    metadataDeleted: cleanup.metadataDeleted
+  });
 }
 
 async function recoverFilmScanQueue() {
@@ -6790,6 +6990,25 @@ async function recoverFilmScanQueue() {
         await updateFilmScanJob(token, job.id, { status: "uploaded", progress: 0 });
       }
       enqueueFilmScanJob(job.id);
+    }
+    const terminalParams = new URLSearchParams({
+      "filter[status][_in]": "failed,canceled",
+      fields: "id,status",
+      sort: "created_at,id",
+      limit: "-1"
+    });
+    const terminalJobs = (
+      await directusRequest(
+        `/items/film_scan_jobs?${terminalParams.toString()}`,
+        token
+      )
+    ).data;
+    for (const job of Array.isArray(terminalJobs) ? terminalJobs : []) {
+      await cleanupFilmScanJobAssets(
+        token,
+        job.id,
+        `startup cleanup for ${job.status} job`
+      );
     }
   } catch (error) {
     console.error(`[film-scan] Queue recovery skipped: ${error.message}`);
@@ -7072,8 +7291,8 @@ async function getAnalyticsItemRecord(token, event) {
   return data.data;
 }
 
-async function syncAnalyticsItem(token, event) {
-  const item = await getAnalyticsItemRecord(token, event);
+async function syncAnalyticsItem(token, event, providedItem = null) {
+  const item = providedItem || await getAnalyticsItemRecord(token, event);
   const itemKey = `${event.itemType}:${event.itemId}`;
   const eventParams = new URLSearchParams({
     "filter[item_key][_eq]": itemKey,
@@ -7157,12 +7376,14 @@ async function handleAnalyticsEvent(req, res) {
       }
     });
 
-    const aggregate = await syncAnalyticsItem(token, event);
-
-    sendJson(res, 201, {
+    sendJson(res, 202, {
       status: "ok",
-      event: created.data.id,
-      aggregate
+      event: created.data.id
+    });
+    void syncAnalyticsItem(token, event, item).catch((error) => {
+      console.error(
+        `[analytics] Aggregate refresh failed for ${itemKey}: ${error.message}`
+      );
     });
   } catch (error) {
     sendJson(res, error.statusCode || 500, {
@@ -7463,7 +7684,7 @@ async function handleHealth(res) {
       requestBytes: MAX_ALBUM_UPLOAD_BYTES,
       imageBytes: MAX_ALBUM_IMAGE_BYTES,
       photosPerBatch: MAX_ALBUM_PHOTOS,
-      assetPresets: [...ALBUM_ASSET_PRESETS]
+      assetPresets: [...ASSET_PRESETS]
     },
     filmScan: {
       enabled: true,
@@ -7498,13 +7719,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && url.pathname.startsWith("/media/")) {
-    await handleMedia(url.pathname, res);
+  if (["GET", "HEAD"].includes(req.method) && url.pathname.startsWith("/media/")) {
+    await handleMedia(req, url.pathname, res);
     return;
   }
 
-  if (req.method === "GET" && url.pathname.startsWith("/assets/")) {
-    await handleAsset(url, res);
+  if (["GET", "HEAD"].includes(req.method) && url.pathname.startsWith("/assets/")) {
+    await handleAsset(req, url, res);
     return;
   }
 
@@ -7539,7 +7760,7 @@ server.listen(PORT, HOST, () => {
   void recoverFilmScanQueue();
 });
 
-async function handleMedia(pathname, res) {
+async function handleMedia(req, pathname, res) {
   try {
     const relativePath = decodeURIComponent(pathname.replace(/^\/media\//, ""));
     const filePath = path.resolve(MEDIA_ROOT, relativePath);
@@ -7550,12 +7771,56 @@ async function handleMedia(pathname, res) {
       throw httpError(404, "Media file not found.");
     }
 
-    res.writeHead(200, {
+    const etag = fileEtag(stat);
+    const lastModified = stat.mtime.toUTCString();
+    const responseHeaders = {
       "Content-Type": contentType(filePath),
-      "Content-Length": stat.size,
-      "Cache-Control": cacheControl(filePath)
+      "Accept-Ranges": "bytes",
+      "Cache-Control": cacheControl(filePath),
+      ETag: etag,
+      "Last-Modified": lastModified
+    };
+
+    if (requestIsFresh(req.headers, etag, stat.mtimeMs)) {
+      res.writeHead(304, responseHeaders);
+      res.end();
+      return;
+    }
+
+    const requestedRange = ifRangeMatches(
+      req.headers["if-range"],
+      etag,
+      stat.mtimeMs
+    )
+      ? parseByteRange(req.headers.range, stat.size)
+      : null;
+    if (requestedRange?.error) {
+      res.writeHead(416, {
+        ...responseHeaders,
+        "Content-Range": `bytes */${stat.size}`
+      });
+      res.end();
+      return;
+    }
+
+    const range = requestedRange || null;
+    res.writeHead(range ? 206 : 200, {
+      ...responseHeaders,
+      "Content-Length": range ? range.length : stat.size,
+      ...(range
+        ? { "Content-Range": `bytes ${range.start}-${range.end}/${stat.size}` }
+        : {})
     });
-    fs.createReadStream(filePath).pipe(res);
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+
+    const stream = fs.createReadStream(filePath, range
+      ? { start: range.start, end: range.end }
+      : undefined);
+    stream.on("error", (error) => res.destroy(error));
+    stream.pipe(res);
   } catch (error) {
     sendJson(res, error.statusCode || 404, {
       status: "error",
@@ -7564,10 +7829,23 @@ async function handleMedia(pathname, res) {
   }
 }
 
-async function fetchDirectusAsset(assetUrl, token, authRetried = false) {
+async function fetchDirectusAsset(
+  assetUrl,
+  token,
+  requestHeaders = {},
+  method = "GET",
+  authRetried = false
+) {
   const response = await fetch(assetUrl, {
+    method,
     headers: {
-      Authorization: `Bearer ${token}`
+      Authorization: `Bearer ${token}`,
+      ...(requestHeaders["if-none-match"]
+        ? { "If-None-Match": requestHeaders["if-none-match"] }
+        : {}),
+      ...(requestHeaders["if-modified-since"]
+        ? { "If-Modified-Since": requestHeaders["if-modified-since"] }
+        : {})
     }
   });
   if (
@@ -7576,12 +7854,18 @@ async function fetchDirectusAsset(assetUrl, token, authRetried = false) {
   ) {
     await response.arrayBuffer().catch(() => {});
     const refreshedToken = await refreshDirectusLogin(token);
-    return fetchDirectusAsset(assetUrl, refreshedToken, true);
+    return fetchDirectusAsset(
+      assetUrl,
+      refreshedToken,
+      requestHeaders,
+      method,
+      true
+    );
   }
   return response;
 }
 
-async function handleAsset(url, res) {
+async function handleAsset(req, url, res) {
   try {
     const pathname = url.pathname;
     const fileId = decodeURIComponent(pathname.replace(/^\/assets\//, "")).split("/")[0];
@@ -7594,7 +7878,7 @@ async function handleAsset(url, res) {
       throw httpError(400, "Only one asset preset may be requested.");
     }
     const preset = requestedKeys[0] || null;
-    if (preset && !ALBUM_ASSET_PRESETS.has(preset)) {
+    if (preset && !ASSET_PRESETS.has(preset)) {
       throw httpError(400, "Unsupported asset preset.");
     }
     for (const parameter of url.searchParams.keys()) {
@@ -7610,19 +7894,57 @@ async function handleAsset(url, res) {
     if (preset) {
       assetUrl.searchParams.set("key", preset);
     }
-    const response = await fetchDirectusAsset(assetUrl, token);
+    const response = await fetchDirectusAsset(
+      assetUrl,
+      token,
+      req.headers,
+      req.method
+    );
+
+    const cacheHeader =
+      "public, max-age=86400, stale-while-revalidate=604800";
+    const validatorHeaders = {
+      "Cache-Control": cacheHeader,
+      ...(response.headers.get("etag")
+        ? { ETag: response.headers.get("etag") }
+        : {}),
+      ...(response.headers.get("last-modified")
+        ? { "Last-Modified": response.headers.get("last-modified") }
+        : {})
+    };
+    const responseEtag = response.headers.get("etag");
+    const responseModifiedAt = Date.parse(
+      response.headers.get("last-modified") || ""
+    );
+    if (
+      response.status === 304 ||
+      (responseEtag &&
+        requestIsFresh(req.headers, responseEtag, responseModifiedAt))
+    ) {
+      if (response.body) {
+        await response.body.cancel().catch(() => {});
+      }
+      res.writeHead(304, validatorHeaders);
+      res.end();
+      return;
+    }
 
     if (!response.ok) {
       throw httpError(response.status, `Directus asset request failed: ${response.statusText}`);
     }
 
-    res.writeHead(200, {
+    res.writeHead(response.status, {
       "Content-Type": response.headers.get("content-type") || "application/octet-stream",
       ...(response.headers.get("content-length")
         ? { "Content-Length": response.headers.get("content-length") }
         : {}),
-      "Cache-Control": "public, max-age=86400"
+      ...validatorHeaders
     });
+
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
 
     if (response.body) {
       Readable.fromWeb(response.body).pipe(res);
@@ -7662,6 +7984,6 @@ function contentType(filePath) {
 
 function cacheControl(filePath) {
   return path.extname(filePath).toLowerCase() === ".m3u8"
-    ? "no-cache, no-store, must-revalidate"
-    : "public, max-age=86400";
+    ? "no-cache, must-revalidate"
+    : "public, max-age=604800, stale-while-revalidate=2592000";
 }

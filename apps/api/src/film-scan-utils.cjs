@@ -1,3 +1,5 @@
+const { normalizeFilmBase, negativeChannel } = require("./film-negative.cjs");
+
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
@@ -405,11 +407,13 @@ function estimateFilmBase(raw, crop = null) {
   }
   const rgb = samples.map((values) => quantile(values, 0.72));
   const spread = Math.max(...rgb) - Math.min(...rgb);
-  const confidence = clamp(
-    samples[0].length >= 48 ? 0.9 - Math.max(0, 0.08 - spread) : 0.55,
-    0.4,
-    0.96
-  );
+  // Texture, blocked holders and clipped borders are not reliable D-min samples.
+  // This remains a heuristic: a uniform subject can still resemble unexposed film.
+  const variation = Math.max(...samples.map(values => quantile(values, 0.9) - quantile(values, 0.1)));
+  const usable = rgb.every(value => value > 0.02 && value < 0.98);
+  const confidence = usable && variation < 0.08 && samples[0].length >= 48
+    ? clamp(0.9 - Math.max(0, 0.08 - spread), 0.4, 0.96)
+    : 0.55;
   return { rgb, confidence, sampleCount: samples[0].length };
 }
 
@@ -498,14 +502,11 @@ async function sampleFilmBaseAtPoint(filePath, point) {
 
 function demaskRgb(rgb, maskRgb, adjustments = {}) {
   const normalized = normalizeAdjustments({ ...adjustments, maskRgb });
-  const mask = normalized.maskRgb || [0.8, 0.6, 0.4];
+  const mask = normalizeFilmBase(normalized.maskRgb);
   return rgb.map((value, index) => {
-    const channel = clamp(value, 0, 1);
     const black = normalized.blackPoint[index];
     const white = Math.max(black + 0.001, normalized.whitePoint[index]);
-    const density = Math.max(0, -Math.log10(Math.max(channel, 1 / 65535)));
-    const baseDensity = -Math.log10(Math.max(mask[index], 1 / 65535));
-    const inverted = clamp((density - baseDensity) / 2.4, 0, 1);
+    const inverted = negativeChannel(value, mask[index]);
     return clamp((inverted - black) / (white - black), 0, 1);
   });
 }
@@ -611,19 +612,22 @@ async function renderFilmSourceContact(filePath, outputPath) {
     .toFile(outputPath);
 }
 
-function applyFilmPipeline(image, filmType, adjustments, maskRgb) {
-  const normalized = normalizeAdjustments({ ...adjustments, maskRgb });
+async function applyFilmPipeline(image, filmType, adjustments, maskRgb) {
+  const normalized = normalizeAdjustments({ ...adjustments, maskRgb: maskRgb ?? adjustments?.maskRgb });
   let next = image;
   if (filmType === "color-negative") {
-    const mask = normalized.maskRgb || [0.82, 0.62, 0.4];
-    const scale = mask.map((channel) => 1 / Math.max(0.08, channel));
-    next = next
-      .linear([-1, -1, -1], mask.map((channel) => channel * 255))
-      .linear(scale, [0, 0, 0]);
+    // Materialize once: Sharp retains only the last call of each operation.
+    const { data, info } = await next.removeAlpha().toColourspace("rgb16")
+      .raw({ depth: "ushort" }).toBuffer({ resolveWithObject: true });
+    const pixels = new Uint16Array(data.buffer, data.byteOffset, data.byteLength / 2);
+    const mask = normalizeFilmBase(normalized.maskRgb);
+    const tables = mask.map((base) => Uint16Array.from({ length: 65536 }, (_, i) =>
+      Math.round(negativeChannel(i / 65535, base) * 65535)));
+    for (let i = 0; i < pixels.length; i += 1) pixels[i] = tables[i % info.channels][pixels[i]];
+    next = loadSharp()(pixels, { raw: { width: info.width, height: info.height, channels: info.channels } });
   } else if (filmType === "bw-negative") {
     next = next.greyscale().negate({ alpha: false });
   }
-
   const exposure = 2 ** normalized.exposure;
   const temperature = normalized.temperature;
   const tint = normalized.tint;
@@ -633,23 +637,16 @@ function applyFilmPipeline(image, filmType, adjustments, maskRgb) {
     exposure * (1 - tint * 0.09) * contrast,
     exposure * (1 - temperature * 0.16 + tint * 0.04) * contrast
   ];
-  next = next.linear(gains, gains.map(() => 128 * (1 - contrast)));
-  const rangeGains = normalized.whitePoint.map(
-    (white, index) => 1 / Math.max(0.001, white - normalized.blackPoint[index])
-  );
-  next = next.linear(
-    rangeGains,
-    rangeGains.map(
-      (gain, index) => -normalized.blackPoint[index] * 255 * gain
-    )
-  );
+  const ranges = normalized.whitePoint.map((white, i) =>
+    1 / Math.max(0.001, white - normalized.blackPoint[i]));
+  // Compose exposure/WB/contrast and levels into ONE affine operation.
+  next = next.linear(gains.map((gain, i) => gain * ranges[i]),
+    ranges.map((range, i) => (128 * (1 - contrast) - normalized.blackPoint[i] * 255) * range));
   if (normalized.saturation !== 0) {
     next = next.modulate({ saturation: Math.max(0, 1 + normalized.saturation) });
   }
   if (normalized.highlightRolloff > 0) {
-    next = next
-      .gamma(1, 1 + normalized.highlightRolloff * 0.65)
-      .linear(1 + normalized.highlightRolloff * 0.08, 0);
+    next = next.gamma(1, 1 + normalized.highlightRolloff * 0.65);
   }
   return next;
 }
@@ -668,7 +665,7 @@ async function renderFilmFrame(options) {
   })
     .extract(extraction)
     .rotate(Number(options.rotation || 0));
-  image = applyFilmPipeline(
+  image = await applyFilmPipeline(
     image,
     options.filmType,
     options.adjustments,
@@ -691,7 +688,7 @@ async function renderFilmFrame(options) {
       .toFile(options.outputPath);
   }
   if (options.outputFormat === "png16") {
-    return image.png({ bitdepth: 16, compressionLevel: 8 }).toFile(options.outputPath);
+    return image.toColourspace("rgb16").png({ compressionLevel: 8 }).toFile(options.outputPath);
   }
   return image
     .jpeg({ quality: options.quality || 92, chromaSubsampling: "4:4:4", mozjpeg: true })

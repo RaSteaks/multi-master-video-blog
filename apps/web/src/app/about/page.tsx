@@ -24,7 +24,7 @@ export default async function AboutPage() {
 
   if (cmsPost) {
     const coverUrl = assetUrl(cmsPost.cover_image);
-    const bgImageUrl = assetUrl(cmsPost.backgroundimage);
+    const bgImageUrl = assetUrl(cmsPost.backgroundimage, "site-background");
     const content = cmsPost.content || "";
 
     return (
@@ -48,11 +48,9 @@ export default async function AboutPage() {
 
             {coverUrl ? (
               <img
-                className="hero-media"
+                className="hero-media about-cover"
                 src={coverUrl}
                 alt={`Cover image for ${cmsPost.title}`}
-                width={1600}
-                height={900}
                 loading="eager"
                 fetchPriority="high"
               />

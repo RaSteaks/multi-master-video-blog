@@ -22,6 +22,7 @@ DIRECTUS_URL=http://127.0.0.1:8055
 DIRECTUS_EMAIL=admin@example.com
 DIRECTUS_PASSWORD=change-this-local-password
 DIRECTUS_SHOW_DRAFTS=true
+DIRECTUS_REVALIDATE=0
 NEXT_PUBLIC_DIRECTUS_URL=http://127.0.0.1:8055
 ```
 
@@ -29,6 +30,7 @@ For production, replace the Directus credentials with a read-only service accoun
 
 ```text
 DIRECTUS_SHOW_DRAFTS=false
+DIRECTUS_REVALIDATE=30
 ```
 
 ## Media Playback
@@ -51,7 +53,7 @@ In local development, Next.js rewrites:
 /media/* -> http://127.0.0.1:8060/media/*
 ```
 
-Production should let Nginx serve `/media/` directly from `D:/multi-master-video-blog/media/`.
+Production should let Nginx serve `/media/` directly from `D:/path/to/media/`.
 
 ## Verification
 

@@ -52,6 +52,20 @@ The Next.js dev server rewrites `/media/*` to the upload API so local playback w
 
 Set `UPLOAD_API_TOKEN` in `apps/api/.env`.
 
+The Service Manager at `/manager/` provides an **Upload tokens** panel for
+rotating both managed credentials:
+
+- **Video & albums** updates `UPLOAD_API_TOKEN`, used by video uploads, album
+  management, photo uploads, and film-scan jobs.
+- **Articles** updates `ARTICLE_API_TOKEN`, or can intentionally share the
+  video and album token.
+
+Existing token text is never sent back to the manager page. The page shows a
+one-way fingerprint for identification, and saving automatically restarts the
+Upload API so the new values take effect. Protect `/manager/` with manager
+authentication and/or the Nginx access controls described in the deployment
+configuration.
+
 Upload requests must include one of:
 
 ```text
@@ -76,8 +90,8 @@ Use one of:
 ```powershell
 curl.exe -X POST http://127.0.0.1:8060/uploads/videos ^
   -H "Authorization: Bearer local-upload-token" ^
-  -F "video=@D:\multi-master-video-blog\exports\test-video-sdr.mp4" ^
-  -F "cover=@D:\multi-master-video-blog\exports\test-cover.jpg" ^
+  -F "video=@D:\path\to\exports\test-video-sdr.mp4" ^
+  -F "cover=@D:\path\to\exports\test-cover.jpg" ^
   -F "title=Test Video" ^
   -F "slug=test-video" ^
   -F "description=Uploaded from the API" ^

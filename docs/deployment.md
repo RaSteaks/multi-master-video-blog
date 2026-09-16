@@ -5,7 +5,7 @@
 Recommended production layout:
 
 ```text
-D:\multi-master-video-blog\
+D:\path\to\project\
 ├── apps\
 │   ├── web\
 │   └── cms\
@@ -95,9 +95,15 @@ npm run web:restart
 npm run health
 ```
 
-`setup:cms-schema` installs the `album-cover` and `album-thumb` Directus asset
-presets and changes asset transforms to preset-only unless the instance was
-already intentionally configured as `all`. The Node asset proxy independently
-rejects every transform query except those two preset keys.
+`setup:cms-schema` installs named WebP presets for album thumbnails, content
+cards, article/video hero images, and full-size/thumbnail site backgrounds. It
+changes asset transforms to preset-only unless the instance was already
+intentionally configured as `all`. The Node asset proxy independently rejects
+arbitrary transform parameters and only accepts these managed preset keys.
+
+The example Nginx config enables gzip for text/JSON responses, streams large
+multipart requests directly to Node, keeps file metadata hot, and caches HLS
+segments for seven days. HLS manifests continue to revalidate so overwritten
+playlists are observed promptly.
 
 For production, replace the Directus admin credentials in API and frontend `.env` files with limited service accounts.

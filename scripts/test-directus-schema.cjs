@@ -469,7 +469,14 @@ async function main() {
       ].join(" ")
     );
     const assetPresets = jsonArray(directusSettings?.storage_asset_presets);
-    for (const key of ["album-cover", "album-thumb"]) {
+    for (const key of [
+      "album-cover",
+      "album-thumb",
+      "content-card",
+      "content-hero",
+      "site-background",
+      "site-background-thumb"
+    ]) {
       if (!assetPresets.some((preset) => preset?.key === key)) {
         throw new Error(`Missing Directus asset preset: ${key}`);
       }

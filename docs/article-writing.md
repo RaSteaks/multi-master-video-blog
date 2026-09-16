@@ -152,7 +152,10 @@ Node API 会依次执行：
 
 `articleId` 目前保存在当前编辑器会话中；刷新或关闭页面后，仍可在 Directus 中管理已保存草稿，但 `/write` 暂不提供按 ID 重新载入旧草稿的界面。
 
-开发环境可以用 `DIRECTUS_SHOW_DRAFTS=true` 查看草稿，生产环境应保持为 `false`。如果设置了 `DIRECTUS_REVALIDATE`，新发布内容可能要等待对应的缓存周期；默认值 `0` 使用无缓存读取。
+开发环境可以用 `DIRECTUS_SHOW_DRAFTS=true` 查看草稿，并显式设置
+`DIRECTUS_REVALIDATE=0` 关闭缓存。生产环境应保持草稿读取为 `false`，并建议
+使用 `DIRECTUS_REVALIDATE=30`；未设置时生产构建也默认短缓存 30 秒，以减少
+Next.js 与 Directus 之间的重复传输。新发布内容最多等待对应缓存周期后可见。
 
 ## Nginx 路由
 

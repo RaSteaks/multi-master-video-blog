@@ -39,6 +39,10 @@
 - `album-cover`：960×640、cover、WebP。
 - `album-thumb`：720×720、contain、WebP。
 
+同一组受管资源预设还包含 `content-card`、`content-hero`、
+`site-background` 与 `site-background-thumb`，分别避免列表、详情页和站点
+背景下载超出其显示尺寸的原图。
+
 页面和 Node 资产代理只会请求 `?key=album-cover` 或
 `?key=album-thumb`；灯箱原图不带转换参数。Directus 的命名预设和
 `key` 访问方式见 [Directus 文件接口](https://docs.directus.io/reference/files)。

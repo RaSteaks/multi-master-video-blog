@@ -3,6 +3,7 @@ import {
   albumPictureSources,
   assetUrl,
   filterPublishedAlbums,
+  siteBackgroundImages,
   type Album,
   type AlbumPhoto,
 } from "./directus";
@@ -22,6 +23,11 @@ function photo(
     hdr_transfer: null,
     hdr_primaries: null,
     hdr_bit_depth: null,
+    film_scan_frame_id: null,
+    film_stock: null,
+    film_process: null,
+    film_scanner: null,
+    film_frame_format: null,
     published,
     sort_order: id,
     created_at: null,
@@ -49,7 +55,7 @@ function album(
 }
 
 describe("album asset URLs", () => {
-  it("uses only the named cover and thumbnail presets", () => {
+  it("uses only managed named presets", () => {
     expect(assetUrl("file-id")).toBe("/api/assets/file-id");
     expect(assetUrl("file-id", "album-cover")).toBe(
       "/api/assets/file-id?key=album-cover",
@@ -57,9 +63,34 @@ describe("album asset URLs", () => {
     expect(assetUrl("file-id", "album-thumb")).toBe(
       "/api/assets/file-id?key=album-thumb",
     );
+    expect(assetUrl("file-id", "site-background")).toBe(
+      "/api/assets/file-id?key=site-background",
+    );
     expect(() =>
       assetUrl("file-id", "arbitrary" as "album-thumb"),
     ).toThrow(/Unsupported asset preset/);
+  });
+
+  it("creates deduplicated full and thumbnail background URLs", () => {
+    expect(
+      siteBackgroundImages({
+        background_image: "background-a",
+        background_blur: 8,
+        background_images: [
+          { directus_files_id: "background-a" },
+          { directus_files_id: "background-b" },
+        ],
+      }),
+    ).toEqual([
+      {
+        url: "/api/assets/background-a?key=site-background",
+        thumbnailUrl: "/api/assets/background-a?key=site-background-thumb",
+      },
+      {
+        url: "/api/assets/background-b?key=site-background",
+        thumbnailUrl: "/api/assets/background-b?key=site-background-thumb",
+      },
+    ]);
   });
 });
 

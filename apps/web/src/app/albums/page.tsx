@@ -60,7 +60,10 @@ export default async function AlbumsPage({
                       <img
                         src={cover}
                         alt=""
-                        loading="lazy"
+                        width={960}
+                        height={640}
+                        loading={index < 2 ? "eager" : "lazy"}
+                        fetchPriority={index === 0 ? "high" : "auto"}
                         decoding="async"
                       />
                     ) : (

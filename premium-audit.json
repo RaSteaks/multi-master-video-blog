@@ -1,0 +1,428 @@
+{
+  "findings": [
+    {
+      "category": "unresolved",
+      "file": "apps/web/src/components/AlbumsToolbar.tsx",
+      "line": 569,
+      "message": "Native select is used without an explicit ownership decision.",
+      "remediation": "Record Select/Listbox as native or reuse the authored canonical owner.",
+      "ruleId": "ownership.native-select-undecided",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "apps/web/src/components/FilmScanImport.tsx",
+      "line": 1488,
+      "message": "Native select is used without an explicit ownership decision.",
+      "remediation": "Record Select/Listbox as native or reuse the authored canonical owner.",
+      "ruleId": "ownership.native-select-undecided",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumsToolbar.tsx",
+      "line": 569,
+      "message": "Native select is used without an explicit ownership decision.",
+      "remediation": "Record Select/Listbox as native or reuse the authored canonical owner.",
+      "ruleId": "ownership.native-select-undecided",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/FilmScanImport.tsx",
+      "line": 1488,
+      "message": "Native select is used without an explicit ownership decision.",
+      "remediation": "Record Select/Listbox as native or reuse the authored canonical owner.",
+      "ruleId": "ownership.native-select-undecided",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/0531test3/dolby-vision/segment_000.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/0531test3/dolby-vision/segment_001.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/0531test3/dolby-vision/segment_002.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/0531test3/dolby-vision/segment_003.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/0531test3/sdr/segment_000.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/0531test3/sdr/segment_001.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/0531test3/sdr/segment_002.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/0531test3/sdr/segment_003.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/api-cover-upload-test/sdr/segment_000.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "media/api-upload-test/sdr/segment_000.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "tmp/imf-preview-test/segment_000.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "tmp/imf-preview-test/segment_001.ts",
+      "line": null,
+      "message": "Configured source file cannot be read as UTF-8 text: 'utf-8' codec can't decode byte 0xf0 in position 6: invalid continuation byte",
+      "remediation": "Convert the source to UTF-8 or remove it from the configured source roots.",
+      "ruleId": "source.unreadable",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AppearanceControl.tsx",
+      "line": 742,
+      "message": "Enabled literal button has no detectable action or submit behavior.",
+      "remediation": "Connect the button to a real action, make it a submit button, or disable/remove it.",
+      "ruleId": "affordance.actionless-button",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AppearanceControl.tsx",
+      "line": 742,
+      "message": "Enabled literal button has no detectable action or submit behavior.",
+      "remediation": "Connect the button to a real action, make it a submit button, or disable/remove it.",
+      "ruleId": "affordance.actionless-button",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AlbumGallery.tsx",
+      "line": 331,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AlbumGallery.tsx",
+      "line": 655,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AlbumGallery.tsx",
+      "line": 780,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AlbumsToolbar.tsx",
+      "line": 347,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AlbumsToolbar.tsx",
+      "line": 563,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/FilmScanImport.tsx",
+      "line": 385,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/UploadVideoForm.tsx",
+      "line": 444,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumGallery.tsx",
+      "line": 331,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumGallery.tsx",
+      "line": 655,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumGallery.tsx",
+      "line": 780,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumsToolbar.tsx",
+      "line": 347,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumsToolbar.tsx",
+      "line": 563,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/FilmScanImport.tsx",
+      "line": 385,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/UploadVideoForm.tsx",
+      "line": 444,
+      "message": "Application-owned form does not declare its validation owner.",
+      "remediation": "Add noValidate/novalidate and implement the canonical validation contract.",
+      "ruleId": "form.novalidate-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AlbumGallery.tsx",
+      "line": 679,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AlbumGallery.tsx",
+      "line": 803,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AlbumsToolbar.tsx",
+      "line": 374,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/AlbumsToolbar.tsx",
+      "line": 757,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/ArticleEditor.tsx",
+      "line": 1329,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumGallery.tsx",
+      "line": 679,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumGallery.tsx",
+      "line": 803,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumsToolbar.tsx",
+      "line": 374,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/AlbumsToolbar.tsx",
+      "line": 757,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/ArticleEditor.tsx",
+      "line": 1329,
+      "message": "Literal product textarea does not show evidence of the canonical resize-none rule.",
+      "remediation": "Use the shared Textarea owner or apply resize-none/resize: none with adequate height or auto-grow behavior.",
+      "ruleId": "form.textarea-resize-missing",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/app/globals.css",
+      "line": 250,
+      "message": "Scrollbar theme does not provide both standards-based scrollbar properties.",
+      "remediation": "Add global scrollbar-color and scrollbar-width standards properties plus fallbacks.",
+      "ruleId": "scrollbar.webkit-only",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "apps/web/src/components/ArticleEditor.module.css",
+      "line": 526,
+      "message": "Scrollbar theme does not provide both standards-based scrollbar properties.",
+      "remediation": "Add global scrollbar-color and scrollbar-width standards properties plus fallbacks.",
+      "ruleId": "scrollbar.webkit-only",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/app/globals.css",
+      "line": 250,
+      "message": "Scrollbar theme does not provide both standards-based scrollbar properties.",
+      "remediation": "Add global scrollbar-color and scrollbar-width standards properties plus fallbacks.",
+      "ruleId": "scrollbar.webkit-only",
+      "severity": "error"
+    },
+    {
+      "category": "violation",
+      "file": "tmp/film-scan-web-build-9dldzM/src/components/ArticleEditor.module.css",
+      "line": 526,
+      "message": "Scrollbar theme does not provide both standards-based scrollbar properties.",
+      "remediation": "Add global scrollbar-color and scrollbar-width standards properties plus fallbacks.",
+      "ruleId": "scrollbar.webkit-only",
+      "severity": "error"
+    }
+  ],
+  "mode": "strict",
+  "projectRoot": "D:\\multi-master-video-blog",
+  "schemaVersion": 1,
+  "summary": {
+    "errors": 46,
+    "total": 46,
+    "unresolved": 16,
+    "violations": 30,
+    "warnings": 0
+  }
+}

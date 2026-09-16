@@ -33,8 +33,8 @@ export default async function VideosPage() {
 
       {videos.length > 0 ? (
         <div className="content-grid">
-          {videos.map((video) => {
-            const cover = assetUrl(video.cover_image);
+          {videos.map((video, index) => {
+            const cover = assetUrl(video.cover_image, "content-card");
             const masterCount = video.masters?.length || 0;
 
             return (
@@ -48,7 +48,11 @@ export default async function VideosPage() {
                   <img
                     alt={`Cover image for ${video.title}`}
                     src={cover}
-                    loading="lazy"
+                    width={960}
+                    height={540}
+                    loading={index < 3 ? "eager" : "lazy"}
+                    fetchPriority={index === 0 ? "high" : "auto"}
+                    decoding="async"
                   />
                 ) : (
                   <div className="media-placeholder" aria-hidden="true">

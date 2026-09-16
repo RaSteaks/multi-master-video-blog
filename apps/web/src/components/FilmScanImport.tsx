@@ -18,6 +18,8 @@ import {
   uploadAlbumFormData,
 } from "@/lib/album-management";
 
+import { createFilmPreviewScheduler } from "@/lib/film-preview";
+
 type AlbumOption = {
   id: number;
   title: string;
@@ -122,9 +124,8 @@ export function FilmScanImport({
   const [filmStock, setFilmStock] = useState("Kodak Portra 400");
   const [iso, setIso] = useState(400);
   const [process, setProcess] = useState("c41");
-  const [pushPull, setPushPull] = useState(0);
+  const [pushPull, setPushPull] = useState("0");
   const [files, setFiles] = useState<File[]>([]);
-  const [resumeJobId, setResumeJobId] = useState("");
   const [job, setJob] = useState<FilmJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -159,36 +160,6 @@ export function FilmScanImport({
     return () => window.clearInterval(timer);
   }, [job, token]);
 
-  async function resumeJob() {
-    const normalizedJobId = resumeJobId.trim();
-    setError("");
-    if (!token.trim()) {
-      setError("请输入管理员令牌。");
-      return;
-    }
-    if (!albumId || !/^\d+$/.test(normalizedJobId)) {
-      setError("请选择目标相簿并输入有效的任务编号。");
-      return;
-    }
-
-    setBusy(true);
-    try {
-      const response = await albumApiRequest<{ status: string; job: FilmJob }>(
-        `/api/albums/${albumId}/film-scans/${normalizedJobId}`,
-        token,
-      );
-      setJob(response.job);
-      setPreviewRevision((value) => value + 1);
-      onCompleted(
-        `胶片扫描任务 #${response.job.id} 已恢复到${filmJobLabel(response.job.status)}。`,
-      );
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "胶片扫描任务恢复失败。");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -220,7 +191,7 @@ export function FilmScanImport({
         filmStock,
         iso,
         process,
-        pushPull,
+        pushPull: Number(pushPull || 0),
         adjustments: DEFAULT_ADJUSTMENTS,
       }),
     );
@@ -402,21 +373,6 @@ export function FilmScanImport({
         onPatchFrame={patchFrame}
         onMoveFrame={moveFrame}
         onCommit={commit}
-        onRetry={async () => {
-          setBusy(true);
-          try {
-            await albumApiRequest(
-              `/api/albums/${job.albumId}/film-scans/${job.id}/retry`,
-              token,
-              { method: "POST", body: "{}" },
-            );
-            await reloadJob();
-          } catch (cause) {
-            setError(cause instanceof Error ? cause.message : "任务重试失败。");
-          } finally {
-            setBusy(false);
-          }
-        }}
         onNew={() => {
           setJob(null);
           setFiles([]);
@@ -431,13 +387,14 @@ export function FilmScanImport({
     <form className="film-scan-form" onSubmit={upload}>
       <div className="film-scan-intro">
         <div>
-          <p className="eyebrow">Experimental scanner workflow</p>
+          <p className="eyebrow">Film scan intake</p>
           <h3>从原始扫描到暗房接触印样</h3>
         </div>
-        <p>
-          自动分帧与去色罩后先进入审核，不会直接公开。FFF/3F 按增强 TIFF
-          解码；在取得三台扫描仪真实样本前均标记为实验性兼容。
-        </p>
+        <div className="film-scan-steps" aria-label="导入流程">
+          <span><b>01</b> 扫描信息</span>
+          <span><b>02</b> 上传原档</span>
+          <span><b>03</b> 暗房审核</span>
+        </div>
       </div>
       <label className="album-field">
         <span>管理员令牌</span>
@@ -449,32 +406,6 @@ export function FilmScanImport({
           required
         />
       </label>
-      <div className="film-scan-resume">
-        <div>
-          <strong>继续已有扫描任务</strong>
-          <small>输入任务编号，恢复分析进度或返回暗房审核。</small>
-        </div>
-        <label>
-          <span>任务编号</span>
-          <input
-            type="number"
-            min={1}
-            step={1}
-            inputMode="numeric"
-            value={resumeJobId}
-            onChange={(event) => setResumeJobId(event.target.value)}
-            placeholder="例如 5"
-          />
-        </label>
-        <button
-          className="album-action-button"
-          type="button"
-          disabled={busy || !resumeJobId.trim()}
-          onClick={() => void resumeJob()}
-        >
-          恢复任务
-        </button>
-      </div>
       <div className="film-scan-fields">
         <SelectField label="目标相簿" value={albumId} onChange={setAlbumId}>
           {albums.map((album) => (
@@ -532,15 +463,17 @@ export function FilmScanImport({
           <option value="other">其他</option>
         </SelectField>
         <label className="album-field">
-          <span>推拉档数</span>
+          <span>迫冲/减冲</span>
           <input
             type="number"
             min={-5}
             max={5}
             step={0.5}
+            aria-describedby="film-push-pull-help"
             value={pushPull}
-            onChange={(event) => setPushPull(Number(event.target.value))}
+            onChange={(event) => setPushPull(event.target.value)}
           />
+          <small id="film-push-pull-help">单位：档。正值为迫冲，负值为减冲，0 为正常冲洗；例如 +1 为迫冲 1 档，-1 为减冲 1 档。</small>
         </label>
       </div>
       <label className="film-scan-drop">
@@ -863,7 +796,6 @@ function FilmReview({
   onPatchFrame,
   onMoveFrame,
   onCommit,
-  onRetry,
   onNew,
 }: {
   job: FilmJob;
@@ -878,11 +810,91 @@ function FilmReview({
   onPatchFrame: (frameId: number, patch: Record<string, unknown>) => Promise<void>;
   onMoveFrame: (frameId: number, direction: -1 | 1) => Promise<void>;
   onCommit: () => Promise<void>;
-  onRetry: () => Promise<void>;
   onNew: () => void;
 }) {
   const [adjustments, setAdjustments] = useState(job.rollAdjustments);
-  useEffect(() => setAdjustments(job.rollAdjustments), [job.rollAdjustments]);
+  const [activeFrameId, setActiveFrameId] = useState(
+    job.frames.find((frame) => frame.accepted)?.id ?? job.frames[0]?.id ?? 0,
+  );
+  const [frameRevisions, setFrameRevisions] = useState<Record<number, number>>({});
+  const [previewState, setPreviewState] = useState<
+    "idle" | "waiting" | "rendering" | "synced" | "error"
+  >("idle");
+  const [previewScheduler] = useState(createFilmPreviewScheduler);
+  const adjustmentSignature = JSON.stringify(adjustments);
+  const persistedAdjustmentSignature = JSON.stringify(job.rollAdjustments);
+  const hasUnsavedAdjustments = adjustmentSignature !== persistedAdjustmentSignature;
+
+  useEffect(() => {
+    setAdjustments(job.rollAdjustments);
+  }, [persistedAdjustmentSignature]);
+
+  useEffect(() => {
+    if (job.frames.some((frame) => frame.id === activeFrameId)) return;
+    setActiveFrameId(
+      job.frames.find((frame) => frame.accepted)?.id ?? job.frames[0]?.id ?? 0,
+    );
+  }, [activeFrameId, job.frames]);
+
+  useEffect(() => {
+    if (busy || !activeFrameId || job.status !== "review_required") {
+      setPreviewState("idle");
+      return;
+    }
+    // Saved values must also replace any draft already written to this frame.
+    setPreviewState("waiting");
+    return previewScheduler.schedule({
+      onStart: () => setPreviewState("rendering"),
+      render: () => albumApiRequest<{
+        status: string;
+        frameId: number;
+        rollAdjustments: FilmAdjustments;
+      }>(
+        `/api/albums/${job.albumId}/film-scans/${job.id}/preview`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            frameId: activeFrameId,
+            rollAdjustments: adjustments,
+          }),
+        },
+      ),
+      onSuccess: (response) => {
+        setFrameRevisions((current) => ({
+          ...current,
+          [activeFrameId]: (current[activeFrameId] ?? 0) + 1,
+        }));
+        if (
+          adjustments.maskMode === "manual" &&
+          adjustments.filmBaseSample &&
+          response.rollAdjustments.maskRgb &&
+          JSON.stringify(adjustments.maskRgb) !==
+            JSON.stringify(response.rollAdjustments.maskRgb)
+        ) {
+          setAdjustments((current) => ({
+            ...current,
+            maskRgb: response.rollAdjustments.maskRgb,
+          }));
+        }
+        setPreviewState("synced");
+      },
+      onError: () => setPreviewState("error"),
+    });
+  }, [
+    activeFrameId,
+    adjustmentSignature,
+    busy,
+    job.albumId,
+    job.id,
+    job.status,
+    persistedAdjustmentSignature,
+    previewScheduler,
+    token,
+  ]);
+
+  const activeFrame =
+    job.frames.find((frame) => frame.id === activeFrameId) ?? job.frames[0];
   const pendingConfirmation = job.frames.filter(
     (frame) =>
       frame.accepted &&
@@ -917,55 +929,106 @@ function FilmReview({
 
       {job.status === "failed" ? (
         <div className="film-review-error" role="alert">
-          <strong>处理失败，原档已保留</strong>
+          <strong>处理失败，服务器原档已清理</strong>
           <p>{job.error}</p>
-          <button className="album-action-button" type="button" onClick={() => void onRetry()} disabled={busy}>重试分析</button>
+          <button className="album-action-button" type="button" onClick={onNew} disabled={busy}>重新选择原片</button>
         </div>
       ) : null}
 
       {job.status === "review_required" ? (
         <>
-          <FilmRollControls
-            value={adjustments}
-            disabled={busy}
-            onChange={setAdjustments}
-            onSave={() => void onSaveRoll(adjustments)}
-            onSavePreset={() => void onSavePreset(adjustments)}
-          />
           {job.warnings.length ? (
             <div className="film-warning-list">
               <strong>审核提示</strong>
               <ul>{job.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul>
             </div>
           ) : null}
-          <div className="film-contact-sheet">
+          <div className="film-darkroom-workbench">
+            <FilmRollControls
+              value={adjustments}
+              disabled={busy}
+              previewState={previewState}
+              onChange={setAdjustments}
+              onSave={() => void onSaveRoll(adjustments)}
+              onSavePreset={() => void onSavePreset(adjustments)}
+            />
+            <section className="film-darkroom-stage" aria-label="当前帧工作区">
+              <header className="film-stage-header">
+                <div>
+                  <p className="eyebrow">Selected frame</p>
+                  <h4>
+                    当前帧 #{String(
+                      Math.max(
+                        1,
+                        job.frames.findIndex(
+                          (frame) => frame.id === activeFrame?.id,
+                        ) + 1,
+                      ),
+                    ).padStart(2, "0")}
+                  </h4>
+                </div>
+                <LivePreviewState state={previewState} />
+              </header>
+              {activeFrame ? (
+                <FilmFrameCard
+                  key={activeFrame.id}
+                  job={job}
+                  frame={activeFrame}
+                  index={job.frames.findIndex(
+                    (frame) => frame.id === activeFrame.id,
+                  )}
+                  token={token}
+                  disabled={busy}
+                  previewRevision={
+                    previewRevision + (frameRevisions[activeFrame.id] ?? 0)
+                  }
+                  onPatch={(patch) => onPatchFrame(activeFrame.id, patch)}
+                  onMove={(direction) => onMoveFrame(activeFrame.id, direction)}
+                  sampleEnabled={
+                    job.filmType === "color-negative" &&
+                    adjustments.maskMode === "manual"
+                  }
+                  onSampleFilmBase={(point) => {
+                    setAdjustments({
+                      ...adjustments,
+                      maskMode: "manual",
+                      filmBaseSample: {
+                        ...point,
+                        sourceId: activeFrame.sourceId,
+                      },
+                    });
+                  }}
+                />
+              ) : (
+                <p className="film-stage-empty">没有可审核的帧。</p>
+              )}
+            </section>
+          </div>
+          <section className="film-contact-sheet" aria-label="接触印样">
+            <header>
+              <div>
+                <p className="eyebrow">Contact sheet</p>
+                <h4>整卷帧序</h4>
+              </div>
+              <span>{job.frames.length} 帧 · 点击切换当前帧</span>
+            </header>
+            <div className="film-contact-strip">
             {job.frames.map((frame, index) => (
-              <FilmFrameCard
+              <FilmFrameThumbnail
                 key={frame.id}
                 job={job}
                 frame={frame}
                 index={index}
                 token={token}
-                disabled={busy}
-                previewRevision={previewRevision}
-                onPatch={(patch) => onPatchFrame(frame.id, patch)}
-                onMove={(direction) => onMoveFrame(frame.id, direction)}
-                sampleEnabled={
-                  job.filmType === "color-negative" &&
-                  adjustments.maskMode === "manual"
+                active={frame.id === activeFrame?.id}
+                previewRevision={
+                  previewRevision + (frameRevisions[frame.id] ?? 0)
                 }
-                onSampleFilmBase={(point) => {
-                  const next = {
-                    ...adjustments,
-                    maskMode: "manual" as const,
-                    filmBaseSample: { ...point, sourceId: frame.sourceId },
-                  };
-                  setAdjustments(next);
-                  return onSaveRoll(next);
-                }}
+                onSelect={() => setActiveFrameId(frame.id)}
               />
             ))}
-          </div>
+            </div>
+          </section>
           <footer className="film-commit-bar">
             <label className="album-switch">
               <input type="checkbox" checked={publish} onChange={(event) => onPublish(event.target.checked)} />
@@ -977,11 +1040,19 @@ function FilmReview({
             <div>
               <span>{job.frames.filter((frame) => frame.accepted).length} 帧保留</span>
               {pendingConfirmation ? <strong>{pendingConfirmation} 帧待确认</strong> : null}
+              {hasUnsavedAdjustments ? (
+                <strong id="film-unsaved-adjustments" role="status">
+                  参数尚未保存，请先点击“应用到整卷”再生成照片。
+                </strong>
+              ) : null}
               <button
                 className="album-action-button album-action-button--primary"
                 type="button"
-                disabled={busy || pendingConfirmation > 0}
-                onClick={() => void onCommit()}
+                disabled={busy || pendingConfirmation > 0 || hasUnsavedAdjustments}
+                aria-describedby={hasUnsavedAdjustments ? "film-unsaved-adjustments" : undefined}
+                onClick={() => {
+                  if (!hasUnsavedAdjustments) void onCommit();
+                }}
               >
                 {busy ? "处理中…" : "生成 SDR / PQ / HLG 并写入相簿"}
               </button>
@@ -1002,15 +1073,37 @@ function FilmReview({
   );
 }
 
+function LivePreviewState({
+  state,
+}: {
+  state: "idle" | "waiting" | "rendering" | "synced" | "error";
+}) {
+  const labels = {
+    idle: "预览待更新",
+    waiting: "等待参数调整完成",
+    rendering: "正在显影当前帧",
+    synced: "实时预览已更新",
+    error: "预览更新失败",
+  };
+  return (
+    <span className={`film-live-state is-${state}`} role="status">
+      <i aria-hidden="true" />
+      {labels[state]}
+    </span>
+  );
+}
+
 function FilmRollControls({
   value,
   disabled,
+  previewState,
   onChange,
   onSave,
   onSavePreset,
 }: {
   value: FilmAdjustments;
   disabled: boolean;
+  previewState: "idle" | "waiting" | "rendering" | "synced" | "error";
   onChange: (value: FilmAdjustments) => void;
   onSave: () => void;
   onSavePreset: () => void;
@@ -1022,13 +1115,14 @@ function FilmRollControls({
   return (
     <section className="film-roll-controls">
       <header>
-        <div><p className="eyebrow">Whole roll baseline</p><h4>整卷去色罩与色彩基准</h4></div>
-        <div className="film-roll-actions">
-          <button className="album-action-button" type="button" disabled={disabled} onClick={onSavePreset}>保存为自定义预设</button>
-          <button className="album-action-button" type="button" disabled={disabled} onClick={onSave}>应用到整卷并刷新预览</button>
+        <div>
+          <p className="eyebrow">Whole roll tools</p>
+          <h4>整卷暗房工具</h4>
+          <small>调整后自动显影当前帧；确认后再应用整卷。</small>
         </div>
       </header>
-      <div className="film-control-grid">
+      <div className="film-tool-section">
+        <h5><span>01</span> 片基与色罩</h5>
         <SelectField label="去色罩" value={value.maskMode} onChange={(next) => set("maskMode", next as FilmAdjustments["maskMode"])}>
           <option value="auto">自动片基采样</option>
           <option value="manual">手动 RGB</option>
@@ -1055,12 +1149,18 @@ function FilmRollControls({
             </small>
           </div>
         ) : null}
+      </div>
+      <div className="film-tool-section">
+        <h5><span>02</span> 影调与色彩</h5>
         <RangeField label="曝光" value={value.exposure} min={-3} max={3} step={0.1} onChange={(next) => set("exposure", next)} />
         <RangeField label="色温" value={value.temperature} min={-1} max={1} step={0.02} onChange={(next) => set("temperature", next)} />
         <RangeField label="色调" value={value.tint} min={-1} max={1} step={0.02} onChange={(next) => set("tint", next)} />
         <RangeField label="对比度" value={value.contrast} min={-1} max={1} step={0.02} onChange={(next) => set("contrast", next)} />
         <RangeField label="饱和度" value={value.saturation} min={-1} max={1.5} step={0.02} onChange={(next) => set("saturation", next)} />
         <RangeField label="高光滚降" value={value.highlightRolloff} min={0} max={1} step={0.02} onChange={(next) => set("highlightRolloff", next)} />
+      </div>
+      <div className="film-tool-section">
+        <h5><span>03</span> 通道端点</h5>
         <ChannelPoints
           label="通道黑点"
           value={value.blackPoint}
@@ -1071,6 +1171,11 @@ function FilmRollControls({
           value={value.whitePoint}
           onChange={(next) => set("whitePoint", next)}
         />
+      </div>
+      <div className="film-roll-actions">
+        <LivePreviewState state={previewState} />
+        <button className="album-action-button" type="button" disabled={disabled} onClick={onSavePreset}>保存为预设</button>
+        <button className="album-action-button album-action-button--primary" type="button" disabled={disabled} onClick={onSave}>应用到整卷</button>
       </div>
     </section>
   );
@@ -1109,6 +1214,89 @@ function ChannelPoints({
   );
 }
 
+function useAuthenticatedImage(
+  url: string | null,
+  token: string,
+  revision = 0,
+) {
+  const [image, setImage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!url) {
+      setImage(null);
+      return;
+    }
+    let objectUrl: string | null = null;
+    let canceled = false;
+    fetch(`${url}${url.includes("?") ? "&" : "?"}v=${revision}`, {
+      headers: { Authorization: `Bearer ${token.trim()}` },
+      cache: "no-store",
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("预览载入失败");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (canceled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setImage(objectUrl);
+      })
+      .catch(() => {
+        if (!canceled) setImage(null);
+      });
+    return () => {
+      canceled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [revision, token, url]);
+  return image;
+}
+
+function FilmFrameThumbnail({
+  job,
+  frame,
+  index,
+  token,
+  active,
+  previewRevision,
+  onSelect,
+}: {
+  job: FilmJob;
+  frame: FilmFrame;
+  index: number;
+  token: string;
+  active: boolean;
+  previewRevision: number;
+  onSelect: () => void;
+}) {
+  const preview = useAuthenticatedImage(
+    `/api/albums/${job.albumId}/film-scans/${job.id}/frames/${frame.id}/preview`,
+    token,
+    previewRevision,
+  );
+  return (
+    <button
+      className={`film-contact-frame${active ? " is-active" : ""}${frame.accepted ? "" : " is-rejected"}`}
+      type="button"
+      aria-pressed={active}
+      onClick={onSelect}
+    >
+      <span className="film-contact-frame-image">
+        {preview ? (
+          <img src={preview} alt="" />
+        ) : (
+          <i aria-hidden="true" />
+        )}
+      </span>
+      <span className="film-contact-frame-meta">
+        <strong>#{String(index + 1).padStart(2, "0")}</strong>
+        <small className={frame.confidence < 0.85 ? "is-low" : ""}>
+          {Math.round(frame.confidence * 100)}%
+        </small>
+      </span>
+    </button>
+  );
+}
+
 function FilmFrameCard({
   job,
   frame,
@@ -1130,12 +1318,19 @@ function FilmFrameCard({
   onPatch: (patch: Record<string, unknown>) => Promise<void>;
   onMove: (direction: -1 | 1) => Promise<void>;
   sampleEnabled: boolean;
-  onSampleFilmBase: (point: { x: number; y: number }) => Promise<void>;
+  onSampleFilmBase: (point: { x: number; y: number }) => void;
 }) {
   const [crop, setCrop] = useState(frame.crop);
   const [exposure, setExposure] = useState(frame.adjustmentOverrides.exposure ?? 0);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [sourcePreview, setSourcePreview] = useState<string | null>(null);
+  const preview = useAuthenticatedImage(
+    `/api/albums/${job.albumId}/film-scans/${job.id}/frames/${frame.id}/preview`,
+    token,
+    previewRevision,
+  );
+  const sourcePreview = useAuthenticatedImage(
+    `/api/albums/${job.albumId}/film-scans/${job.id}/sources/${frame.sourceId}/preview`,
+    token,
+  );
   const [cropGesture, setCropGesture] = useState<{
     mode: "move" | "resize";
     x: number;
@@ -1143,50 +1338,6 @@ function FilmFrameCard({
     crop: FilmFrame["crop"];
   } | null>(null);
   useEffect(() => setCrop(frame.crop), [frame.crop]);
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    let canceled = false;
-    fetch(
-      `/api/albums/${job.albumId}/film-scans/${job.id}/frames/${frame.id}/preview?v=${previewRevision}`,
-      { headers: { Authorization: `Bearer ${token.trim()}` }, cache: "no-store" },
-    )
-      .then((response) => {
-        if (!response.ok) throw new Error("预览载入失败");
-        return response.blob();
-      })
-      .then((blob) => {
-        if (canceled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setPreview(objectUrl);
-      })
-      .catch(() => setPreview(null));
-    return () => {
-      canceled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [frame.id, job.albumId, job.id, previewRevision, token]);
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    let canceled = false;
-    fetch(
-      `/api/albums/${job.albumId}/film-scans/${job.id}/sources/${frame.sourceId}/preview`,
-      { headers: { Authorization: `Bearer ${token.trim()}` }, cache: "no-store" },
-    )
-      .then((response) => {
-        if (!response.ok) throw new Error("原档接触印样载入失败");
-        return response.blob();
-      })
-      .then((blob) => {
-        if (canceled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setSourcePreview(objectUrl);
-      })
-      .catch(() => setSourcePreview(null));
-    return () => {
-      canceled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [frame.sourceId, job.albumId, job.id, token]);
 
   function startCropGesture(
     event: ReactPointerEvent<HTMLElement>,
@@ -1237,19 +1388,29 @@ function FilmFrameCard({
       x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))),
       y: Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height))),
     };
-    void onSampleFilmBase(point);
+    onSampleFilmBase(point);
   }
 
   return (
     <article className={`film-frame${frame.accepted ? "" : " is-rejected"}`}>
-      <div className="film-frame-image">
-        {preview ? <img src={preview} alt={`胶片帧 ${index + 1} 审核预览`} /> : <span>正在载入预览…</span>}
-        <div className="film-frame-badges">
-          <strong>#{String(index + 1).padStart(2, "0")}</strong>
-          <span className={frame.confidence < 0.85 ? "is-low" : ""}>{Math.round(frame.confidence * 100)}%</span>
+      <div className="film-frame-preview">
+        <div className="film-frame-image">
+          {preview ? <img src={preview} alt={`胶片帧 ${index + 1} 审核预览`} /> : <span>正在载入预览…</span>}
+          <div className="film-frame-badges">
+            <strong>#{String(index + 1).padStart(2, "0")}</strong>
+            <span className={frame.confidence < 0.85 ? "is-low" : ""}>{Math.round(frame.confidence * 100)}%</span>
+          </div>
         </div>
+        <p>SDR 审核预览 · 整卷参数与当前帧覆盖</p>
       </div>
       <div className="film-frame-editor">
+        <header>
+          <div>
+            <span>Frame tools</span>
+            <strong>裁切与单帧覆盖</strong>
+          </div>
+          <small>{frame.reviewStatus === "confirmed" ? "已确认" : "待确认"}</small>
+        </header>
         {sourcePreview ? (
           <div
             className={`film-crop-stage${sampleEnabled ? " is-sampling-film-base" : ""}`}

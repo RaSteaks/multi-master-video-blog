@@ -32,8 +32,8 @@ export default async function PostsPage() {
 
       {posts.length > 0 ? (
         <div className="content-grid">
-          {posts.map((post) => {
-            const cover = assetUrl(post.cover_image);
+          {posts.map((post, index) => {
+            const cover = assetUrl(post.cover_image, "content-card");
 
             return (
               <Link
@@ -46,7 +46,11 @@ export default async function PostsPage() {
                   <img
                     alt={`Cover image for ${post.title}`}
                     src={cover}
-                    loading="lazy"
+                    width={960}
+                    height={540}
+                    loading={index < 3 ? "eager" : "lazy"}
+                    fetchPriority={index === 0 ? "high" : "auto"}
+                    decoding="async"
                   />
                 ) : (
                   <div className="media-placeholder" aria-hidden="true">

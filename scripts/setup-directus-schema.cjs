@@ -1261,7 +1261,7 @@ const analyticsPanels = [
   }
 ];
 
-const albumAssetPresets = [
+const managedAssetPresets = [
   {
     key: "album-cover",
     fit: "cover",
@@ -1277,6 +1277,42 @@ const albumAssetPresets = [
     width: 720,
     height: 720,
     quality: 86,
+    withoutEnlargement: true,
+    format: "webp"
+  },
+  {
+    key: "content-card",
+    fit: "cover",
+    width: 960,
+    height: 540,
+    quality: 82,
+    withoutEnlargement: true,
+    format: "webp"
+  },
+  {
+    key: "content-hero",
+    fit: "cover",
+    width: 1600,
+    height: 900,
+    quality: 85,
+    withoutEnlargement: true,
+    format: "webp"
+  },
+  {
+    key: "site-background",
+    fit: "cover",
+    width: 1920,
+    height: 1080,
+    quality: 82,
+    withoutEnlargement: true,
+    format: "webp"
+  },
+  {
+    key: "site-background-thumb",
+    fit: "cover",
+    width: 320,
+    height: 180,
+    quality: 72,
     withoutEnlargement: true,
     format: "webp"
   }
@@ -1390,7 +1426,7 @@ async function ensureSiteSettingsAccentDefault(token) {
   }
 }
 
-async function ensureAlbumAssetPresets(token) {
+async function ensureAssetPresets(token) {
   const response = await request(
     "/settings?fields=storage_asset_transform,storage_asset_presets",
     { token }
@@ -1399,17 +1435,17 @@ async function ensureAlbumAssetPresets(token) {
   const currentPresets = Array.isArray(settings.storage_asset_presets)
     ? settings.storage_asset_presets
     : [];
-  const managedKeys = new Set(albumAssetPresets.map((preset) => preset.key));
+  const managedKeys = new Set(managedAssetPresets.map((preset) => preset.key));
   const unmanagedPresets = currentPresets.filter(
     (preset) => !managedKeys.has(preset?.key)
   );
-  const nextPresets = [...unmanagedPresets, ...albumAssetPresets];
+  const nextPresets = [...unmanagedPresets, ...managedAssetPresets];
   const currentManaged = currentPresets.filter((preset) =>
     managedKeys.has(preset?.key)
   );
   const presetsChanged =
-    currentManaged.length !== albumAssetPresets.length ||
-    albumAssetPresets.some((expected) => {
+    currentManaged.length !== managedAssetPresets.length ||
+    managedAssetPresets.some((expected) => {
       const current = currentManaged.find((preset) => preset.key === expected.key);
       return !current || !assetPresetMatches(current, expected);
     });
@@ -1420,7 +1456,7 @@ async function ensureAlbumAssetPresets(token) {
     !presetsChanged &&
     settings.storage_asset_transform === nextTransformMode
   ) {
-    console.log("album asset presets exist");
+    console.log("managed asset presets exist");
     return;
   }
 
@@ -1432,7 +1468,7 @@ async function ensureAlbumAssetPresets(token) {
       storage_asset_presets: nextPresets
     }
   });
-  console.log("album asset presets ready");
+  console.log("managed asset presets ready");
 }
 
 async function ensureAlbumFieldDefaults(token) {
@@ -1731,7 +1767,7 @@ async function main() {
   }
 
   await ensureAlbumFieldDefaults(token);
-  await ensureAlbumAssetPresets(token);
+  await ensureAssetPresets(token);
   await ensureBuiltInFilmStockPresets(token);
   await ensureSiteSettingsAccentDefault(token);
   await ensurePublicSiteSettingsPermission(token);

@@ -1,0 +1,42 @@
+{
+  "unique_pdfs_validated": 312,
+  "historical_name_code_groups": 96,
+  "pdfs_with_curve_heading": 254,
+  "official_host_unique_pdfs": 43,
+  "parser_warning_files": [
+    "output/pdf/kodak/still-color-negative/1f3430cd8e1b-e4051.pdf",
+    "output/pdf/kodak/still-color-negative/598f44c39c2c-E7023_max_400.pdf",
+    "output/pdf/kodak/still-black-and-white/9bd252fdcf37-f4043_TMax_400-2016.pdf",
+    "output/pdf/kodak/still-black-and-white/dfa8d5f4f09b-f4001-P3200TMZ-2019.pdf",
+    "output/pdf/kodak/still-black-and-white/9590131941e4-f4016-TMAX-2007b.pdf",
+    "output/pdf/kodak/still-black-and-white/a9899179ed86-f4016_TMax_100-2016.pdf",
+    "output/pdf/kodak/still-black-and-white/7a3a28f38f26-F4001-P3200TMZ-2018.pdf",
+    "output/pdf/kodak/specialty-and-post/1c851a679722-p255-2001_05.pdf",
+    "output/pdf/kodak/specialty-and-post/e771ae23aa8c-f11-Duplicating_SO-132-200105.pdf",
+    "output/pdf/kodak/specialty-and-post/ef1623f27192-f13-HIE-200006.pdf",
+    "output/pdf/kodak/still-color-negative/a635048fc5e5-e4051_Portra_160-2016.pdf",
+    "output/pdf/kodak/still-color-negative/640c9723c362-e4051-Portra-160.pdf",
+    "output/pdf/kodak/still-color-negative/15880457c150-E7023-Ultra_Max_400.pdf",
+    "output/pdf/kodak/still-reversal/c8ef61b50e5f-e88-2002_03.pdf",
+    "output/pdf/kodak/reference-and-unclassified/4ded1bed943b-KODAKPROFESSIONAL_Film_Brochure2018.pdf",
+    "output/pdf/kodak/reference-and-unclassified/08151185f45c-j5.pdf",
+    "output/pdf/kodak/still-black-and-white/51d738f4f996-f4017_TriX.pdf",
+    "output/pdf/kodak/reference-and-unclassified/9287c8980eeb-kodak-essential-reference-guide-for-filmmakers.pdf",
+    "output/pdf/kodak/reference-and-unclassified/69442acdadc3-Basic-Photographic-Sensitometry-Workbook.pdf",
+    "output/pdf/kodak/specialty-and-post/1134ec4aa7cb-Processing-KODAK-Aerial-Film-in-Rewind-Equipment-and-Spiral-Reels-datasheet-EN.pdf",
+    "output/pdf/kodak/motion-picture/f700fc0e600d-5207-Vision3-250D.pdf",
+    "output/pdf/kodak/motion-picture/78c71ec0ec71-5213-Vision3-200T.pdf",
+    "output/pdf/kodak/motion-picture/f0426f691b85-5219-Vision3-500T-tech.pdf",
+    "output/pdf/kodak/motion-picture/160640e5aeed-5230-TI2654.pdf",
+    "output/pdf/kodak/motion-picture/c4776eee3117-5260-Vision2-500T.pdf",
+    "output/pdf/kodak/motion-picture/34cb0415eb47-5293.pdf",
+    "output/pdf/kodak/motion-picture/6bed15838ee4-CIS287.pdf",
+    "output/pdf/kodak/motion-picture/360e86495710-KODAK_VISION3_200T_5213_7213_Product_Information.pdf"
+  ],
+  "no_kodak_text": [
+    "output/pdf/kodak/specialty-and-post/47362985e331-5246-1983_09.pdf",
+    "output/pdf/kodak/specialty-and-post/3cb37913072d-2475.pdf",
+    "output/pdf/kodak/reference-and-unclassified/4ded1bed943b-KODAKPROFESSIONAL_Film_Brochure2018.pdf",
+    "output/pdf/kodak/reference-and-unclassified/fb97f0896630-Monitor-luminance-calibration-procedure-EN.pdf"
+  ]
+}

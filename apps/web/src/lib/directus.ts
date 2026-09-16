@@ -1,5 +1,20 @@
 export type DirectusFileId = string | null;
-export type AlbumAssetPreset = "album-cover" | "album-thumb";
+export type AssetPreset =
+  | "album-cover"
+  | "album-thumb"
+  | "content-card"
+  | "content-hero"
+  | "site-background"
+  | "site-background-thumb";
+
+const ASSET_PRESETS = new Set<AssetPreset>([
+  "album-cover",
+  "album-thumb",
+  "content-card",
+  "content-hero",
+  "site-background",
+  "site-background-thumb",
+]);
 
 export type Post = {
   id: number;
@@ -143,6 +158,9 @@ const VIDEO_DETAIL_FIELDS =
   "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at,masters.*";
 const ALBUM_LIST_FIELDS =
   "id,title,slug,description,cover_image,published,created_at,updated_at," +
+  "photos.id,photos.sdr_image,photos.hdr_image,photos.published,photos.sort_order";
+const ALBUM_DETAIL_FIELDS =
+  "id,title,slug,description,cover_image,published,created_at,updated_at," +
   "photos.id,photos.album_id,photos.sdr_image,photos.hdr_image,photos.caption," +
   "photos.alt_text,photos.hdr_transfer,photos.hdr_primaries,photos.hdr_bit_depth," +
   "photos.film_scan_frame_id,photos.film_stock,photos.film_process,photos.film_scanner," +
@@ -150,7 +168,6 @@ const ALBUM_LIST_FIELDS =
   "photos.renditions.file,photos.renditions.transfer,photos.renditions.primaries," +
   "photos.renditions.bit_depth,photos.renditions.is_default," +
   "photos.published,photos.sort_order,photos.created_at,photos.updated_at";
-const ALBUM_DETAIL_FIELDS = ALBUM_LIST_FIELDS;
 
 /* ---- Config ---- */
 let cachedToken: string | null = null;
@@ -164,9 +181,12 @@ const directusUrl = stripTrailingSlash(
 
 const showDrafts = process.env.DIRECTUS_SHOW_DRAFTS === "true";
 
-const REVALIDATE_SECONDS = process.env.DIRECTUS_REVALIDATE
-  ? Number(process.env.DIRECTUS_REVALIDATE)
-  : 0;
+const configuredRevalidate = Number(process.env.DIRECTUS_REVALIDATE);
+const REVALIDATE_SECONDS = Number.isFinite(configuredRevalidate)
+  ? Math.max(0, configuredRevalidate)
+  : process.env.NODE_ENV === "production"
+    ? 30
+    : 0;
 
 function stripTrailingSlash(value: string) {
   return value.replace(/\/$/, "");
@@ -242,10 +262,10 @@ async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
 
 export function assetUrl(
   fileId: DirectusFileId,
-  preset?: AlbumAssetPreset,
+  preset?: AssetPreset,
 ) {
   if (!fileId) return null;
-  if (preset && preset !== "album-cover" && preset !== "album-thumb") {
+  if (preset && !ASSET_PRESETS.has(preset)) {
     throw new Error(`Unsupported asset preset: ${preset}`);
   }
   const suffix = preset ? `?key=${encodeURIComponent(preset)}` : "";
@@ -404,18 +424,26 @@ export async function getSiteSettings(): Promise<SiteSettings | null> {
   }
 }
 
-/** All configured background image URLs: default first, then the gallery. */
-export function siteBackgroundUrls(settings: SiteSettings | null): string[] {
+export type SiteBackgroundImage = {
+  url: string;
+  thumbnailUrl: string;
+};
+
+/** Sized background assets: default first, then the deduplicated gallery. */
+export function siteBackgroundImages(
+  settings: SiteSettings | null,
+): SiteBackgroundImage[] {
   if (!settings) return [];
 
-  const urls = [
-    assetUrl(settings.background_image),
-    ...(settings.background_images ?? []).map((row) =>
-      assetUrl(row.directus_files_id)
-    ),
-  ].filter((url): url is string => Boolean(url));
+  const fileIds = [
+    settings.background_image,
+    ...(settings.background_images ?? []).map((row) => row.directus_files_id),
+  ].filter((fileId): fileId is string => Boolean(fileId));
 
-  return [...new Set(urls)];
+  return [...new Set(fileIds)].map((fileId) => ({
+    url: assetUrl(fileId, "site-background")!,
+    thumbnailUrl: assetUrl(fileId, "site-background-thumb")!,
+  }));
 }
 
 export async function getCounts() {

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { BackgroundControl } from "@/components/BackgroundControl";
 import { NavBar } from "@/components/NavBar";
 import { PageTransition } from "@/components/PageTransition";
-import { getSiteSettings, siteBackgroundUrls } from "@/lib/directus";
+import { getSiteSettings, siteBackgroundImages } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
 import {
   THEME_BOOTSTRAP_SCRIPT,
@@ -34,8 +34,8 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const settings = await getSiteSettings();
-  const bgImages = siteBackgroundUrls(settings);
-  const bgUrl = bgImages[0] ?? null;
+  const bgImages = siteBackgroundImages(settings);
+  const bgUrl = bgImages[0]?.url ?? null;
   const blur = settings?.background_blur ?? 8;
   const siteTheme = resolveThemeColor(settings?.accent_color);
 

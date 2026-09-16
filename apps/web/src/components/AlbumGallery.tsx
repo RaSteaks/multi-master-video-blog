@@ -431,7 +431,10 @@ export function AlbumGallery({
                     <img
                       src={photo.thumbnailUrl}
                       alt={photo.altText || ""}
-                      loading="lazy"
+                      width={720}
+                      height={720}
+                      loading={index < 3 ? "eager" : "lazy"}
+                      fetchPriority={index === 0 ? "high" : "auto"}
                       decoding="async"
                     />
                     <span className="album-photo-number" aria-hidden="true">

@@ -52,7 +52,7 @@ export const siteConfig = {
       "SITE_HOME_COLLECTION_ALBUM_LABEL",
       "Album",
     ),
-    collectionAboutLabel: envText("SITE_HOME_COLLECTION_ABOUT_LABEL", "Web About"),
+    collectionAboutLabel: envText("SITE_HOME_COLLECTION_ABOUT_LABEL", "个人简介"),
     collectionAboutValue: envText("SITE_HOME_COLLECTION_ABOUT_VALUE", "Info"),
   },
   about: {

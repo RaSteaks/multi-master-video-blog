@@ -233,7 +233,8 @@ test("single-frame scans are cropped once instead of split by internal texture",
 
 test("neutral negative remains within Delta E 2000 of 3 after demasking", () => {
   const mask = [0.82, 0.61, 0.39];
-  const scannedGrey = mask.map((channel) => channel * 0.42);
+  const { srgbToLinear, linearToSrgb } = require("../src/film-negative.cjs");
+  const scannedGrey = mask.map((channel) => linearToSrgb(srgbToLinear(channel) * 0.42));
   const corrected = demaskRgb(scannedGrey, mask);
   const lab = rgbToLab(corrected);
   const neutral = rgbToLab([

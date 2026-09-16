@@ -192,7 +192,7 @@ Docker 的作用：
 * 路径示例：
 
 ```text
-D:\multi-master-video-blog\media\
+D:\path\to\media\
 ```
 
 ---
@@ -321,7 +321,7 @@ multi-master-video-blog/
 Windows 本地部署建议路径：
 
 ```text
-D:\multi-master-video-blog\
+D:\path\to\project\
 ```
 
 说明：
@@ -487,7 +487,7 @@ type VideoMaster = {
 部署路径：
 
 ```text
-D:\multi-master-video-blog\
+D:\path\to\project\
 ├── apps\
 │   ├── web\
 │   └── cms\
@@ -539,7 +539,7 @@ deployment/nginx/README.md
 example.com
 C:/path/to/fullchain.pem
 C:/path/to/privkey.pem
-D:/multi-master-video-blog/media/
+D:/path/to/media/
 ```
 
 禁止在仓库中提交：
