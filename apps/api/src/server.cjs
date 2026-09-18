@@ -31,6 +31,7 @@ const {
 } = require("./album-utils.cjs");
 const {
   FILM_SCAN_JOB_STATES,
+  aggregateFilmBaseEstimates,
   assessFilmFrameDynamicRange,
   createAnalysisImage,
   detectFilmFrames,
@@ -5520,6 +5521,7 @@ async function analyzeFilmScanJob(jobId, signal) {
   const warnings = [];
   let order = 0;
   let rollMask = null;
+  const rollBaseEstimates = [];
   const previewRenders = [];
 
   for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
@@ -5567,11 +5569,13 @@ async function analyzeFilmScanJob(jobId, signal) {
         throwIfFilmScanAborted(signal);
         const base = estimateFilmBase(analysis, detection.crop);
         if (
-          !rollMask &&
           job.film_type === "color-negative" &&
           base.confidence >= 0.85
         ) {
-          rollMask = base.rgb;
+          // The first good estimate only primes interim previews; the final
+          // roll mask is the per-channel median of every confident frame.
+          rollBaseEstimates.push(base.rgb);
+          if (!rollMask) rollMask = base.rgb;
         }
         const frameCreated = (
           await directusRequest("/items/film_scan_frames", token, {
@@ -5656,19 +5660,11 @@ async function analyzeFilmScanJob(jobId, signal) {
 
   if (!order) throw new Error("未能从原档中识别出任何帧。");
   throwIfFilmScanAborted(signal);
-  const adjustments = normalizeAdjustments(jsonObject(job.roll_adjustments));
-  if (job.film_type === "color-negative" && adjustments.maskMode === "auto") {
-    adjustments.maskRgb = rollMask;
-    if (!rollMask) {
-      adjustments.maskMode = "preset";
-      adjustments.maskRgb = await findFilmStockPresetMask(token, job);
-      warnings.push(
-        adjustments.maskRgb
-          ? "未找到可靠片基区域，已回退到扫描仪与胶卷型号预设，并标记为低置信度。"
-          : "未找到可靠片基区域或匹配预设，已使用通用彩负基准并标记为低置信度。"
-      );
-    }
-  }
+  const resolved = await resolveFilmScanRollAdjustments(token, job, undefined, {
+    automaticMask: aggregateFilmBaseEstimates(rollBaseEstimates)
+  });
+  const adjustments = resolved.roll;
+  warnings.push(...resolved.warnings);
   throwIfFilmScanAborted(signal);
   // A later frame may provide the first reliable film base. Refresh earlier
   // previews with the final roll mask so review and commit use the same basis.
@@ -5993,6 +5989,71 @@ async function renderReviewedFilmFrame(options) {
   }
 }
 
+async function resolveFilmScanRollAdjustments(token, job, rollAdjustments, options = {}) {
+  const roll = normalizeAdjustments(rollAdjustments ?? jsonObject(job.roll_adjustments));
+  const warnings = [];
+  if (job.film_type !== "color-negative") return { roll, warnings };
+
+  if (roll.maskMode === "auto") {
+    // Never treat an RGB value left over from another mode as an automatic sample.
+    let mask = options.automaticMask;
+    const saved = normalizeAdjustments(jsonObject(job.roll_adjustments));
+    if (mask === undefined && saved.maskMode === "auto" && roll.maskRgb &&
+        JSON.stringify(roll.maskRgb) === JSON.stringify(saved.maskRgb)) {
+      // Tone-only edits can reuse the saved automatic sample. Mode switches
+      // clear maskRgb in the client, so they still trigger fresh analysis.
+      mask = saved.maskRgb;
+    }
+    if (mask === undefined) {
+      // Aggregate every confident frame instead of stopping at the first:
+      // a per-channel median keeps one misread frame from fixing the mask.
+      const estimates = [];
+      const sources = await listFilmScanSources(token, job.id);
+      for (const source of sources) {
+        const analysis = await createAnalysisImage(filmScanSourcePath(source.relative_path));
+        const detections = detectFilmFrames(analysis, { frameFormat: job.frame_format });
+        for (const detection of detections) {
+          const base = estimateFilmBase(analysis, detection.crop);
+          if (base.confidence >= 0.85) estimates.push(base.rgb);
+        }
+      }
+      mask = aggregateFilmBaseEstimates(estimates);
+    }
+    roll.maskRgb = mask;
+    roll.filmBaseSample = null;
+    if (!mask) {
+      roll.maskMode = "preset";
+      roll.maskRgb = await findFilmStockPresetMask(token, job);
+      warnings.push(roll.maskRgb
+        ? "未找到可靠片基区域，已回退到扫描仪与胶卷型号预设，并标记为低置信度。"
+        : "未找到可靠片基区域或匹配预设，已使用通用彩负基准并标记为低置信度。");
+    }
+  } else if (roll.maskMode === "preset") {
+    roll.maskRgb = await findFilmStockPresetMask(token, job);
+    roll.filmBaseSample = null;
+    if (!roll.maskRgb) {
+      warnings.push("未找到匹配的扫描仪与胶卷预设，已使用通用彩负基准。");
+    }
+  } else if (roll.filmBaseSample) {
+    const sample = roll.filmBaseSample;
+    const sources = await listFilmScanSources(token, job.id);
+    const source = sources.find(candidate => String(candidate.id) === String(sample.sourceId || "")) ||
+      sources.find(candidate => String(candidate.id) === String(directusRelationId(options.frame?.source_id))) ||
+      sources[0];
+    if (!source) throw httpError(409, "任务中没有可供片基取样的原档。");
+    roll.maskRgb = await sampleFilmBaseAtPoint(filmScanSourcePath(source.relative_path), sample);
+    roll.filmBaseSample = { x: sample.x, y: sample.y, sourceId: Number(source.id) };
+  }
+  return { roll, warnings };
+}
+
+function replaceFilmScanMaskWarnings(job, warnings) {
+  return [...new Set([...jsonArray(job.warnings).filter(warning =>
+    !String(warning).startsWith("未找到可靠片基区域") &&
+    !String(warning).startsWith("未找到匹配的扫描仪与胶卷预设")
+  ), ...warnings])];
+}
+
 async function resolveFilmScanPreviewAdjustments(
   token,
   job,
@@ -6000,37 +6061,14 @@ async function resolveFilmScanPreviewAdjustments(
   rollAdjustments,
   frameOverrides
 ) {
-  const roll = normalizeAdjustments(
-    rollAdjustments ?? jsonObject(job.roll_adjustments)
-  );
-  const sample = roll.filmBaseSample;
-  if (sample && roll.maskMode === "manual") {
-    const sources = await listFilmScanSources(token, job.id);
-    const source =
-      sources.find(
-        (candidate) => String(candidate.id) === String(sample.sourceId || "")
-      ) ||
-      sources.find(
-        (candidate) =>
-          String(candidate.id) ===
-          String(directusRelationId(frame.source_id))
-      ) ||
-      sources[0];
-    if (!source) throw httpError(409, "任务中没有可供片基取样的原档。");
-    roll.maskRgb = await sampleFilmBaseAtPoint(
-      filmScanSourcePath(source.relative_path),
-      sample
-    );
-    roll.filmBaseSample = {
-      x: sample.x,
-      y: sample.y,
-      sourceId: Number(source.id)
-    };
-  }
+  // Saved previews and export must use the same snapshot, even if presets change.
+  const resolved = rollAdjustments == null
+    ? { roll: normalizeAdjustments(jsonObject(job.roll_adjustments)), warnings: jsonArray(job.warnings) }
+    : await resolveFilmScanRollAdjustments(token, job, rollAdjustments, { frame });
   return {
-    roll,
+    ...resolved,
     adjustments: mergeFrameAdjustments(
-      roll,
+      resolved.roll,
       frameOverrides ?? jsonObject(frame.adjustment_overrides)
     )
   };
@@ -6104,23 +6142,14 @@ async function handleFilmScanJobPatch(req, res, albumId, jobId) {
       });
     }
   }
-  const sample = patch.roll_adjustments?.filmBaseSample;
-  if (sample && patch.roll_adjustments.maskMode === "manual") {
-    const sources = await listFilmScanSources(token, jobId);
-    const source =
-      sources.find(
-        (candidate) => String(candidate.id) === String(sample.sourceId || "")
-      ) || sources[0];
-    if (!source) throw httpError(409, "任务中没有可供片基取样的原档。");
-    patch.roll_adjustments.maskRgb = await sampleFilmBaseAtPoint(
-      filmScanSourcePath(source.relative_path),
-      sample
+  if (patch.roll_adjustments || (patch.film_stock && normalizeAdjustments(jsonObject(job.roll_adjustments)).maskMode === "preset")) {
+    const resolved = await resolveFilmScanRollAdjustments(
+      token,
+      { ...job, ...patch, roll_adjustments: job.roll_adjustments },
+      patch.roll_adjustments ?? jsonObject(job.roll_adjustments)
     );
-    patch.roll_adjustments.filmBaseSample = {
-      x: sample.x,
-      y: sample.y,
-      sourceId: Number(source.id)
-    };
+    patch.roll_adjustments = resolved.roll;
+    patch.warnings = replaceFilmScanMaskWarnings(job, resolved.warnings);
   }
   if (Object.keys(patch).length) await updateFilmScanJob(token, jobId, patch);
   const currentJob = await getFilmScanJobRecord(token, albumId, jobId);
@@ -6367,6 +6396,7 @@ async function handleFilmScanPreview(req, res, albumId, jobId) {
     status: "ok",
     frameId: Number(frameId),
     rollAdjustments: preview.roll,
+    warnings: replaceFilmScanMaskWarnings(job, preview.warnings),
     previewEndpoint: `/api/albums/${albumId}/film-scans/${jobId}/frames/${frameId}/preview`
   });
 }

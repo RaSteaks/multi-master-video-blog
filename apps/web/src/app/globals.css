@@ -3634,9 +3634,9 @@ h3 {
 }
 
 /* ---- Gray (videos) — brighter neutral surround with visible liquid motion ---- */
-.liquid-bg { background: var(--liquid-base, #121518); }
+.liquid-bg { background: var(--liquid-base, #000000); }
 .liquid-bg .blob-1 {
-  width: 70vw; height: 70vw; max-width: 1100px; max-height: 1100px;
+  width: 55vw; height: 55vw; max-width: 850px; max-height: 850px;
   background: radial-gradient(circle at 40% 40%,
     rgb(var(--liquid-blob-1, 130 134 138) / 0.18), transparent 64%);
   top: -20%; left: -15%;
@@ -3644,7 +3644,7 @@ h3 {
   animation-play-state: var(--liquid-play-state, running);
 }
 .liquid-bg .blob-2 {
-  width: 60vw; height: 60vw; max-width: 900px; max-height: 900px;
+  width: 50vw; height: 50vw; max-width: 750px; max-height: 750px;
   background: radial-gradient(circle at 55% 40%,
     rgb(var(--liquid-blob-2, 108 112 116) / 0.16), transparent 64%);
   top: 30%; right: -16%;
@@ -3652,11 +3652,35 @@ h3 {
   animation-play-state: var(--liquid-play-state, running);
 }
 .liquid-bg .blob-3 {
-  width: 55vw; height: 55vw; max-width: 800px; max-height: 800px;
+  width: 46vw; height: 46vw; max-width: 700px; max-height: 700px;
   background: radial-gradient(circle at 50% 50%,
     rgb(var(--liquid-blob-3, 118 122 126) / 0.15), transparent 64%);
   bottom: -22%; left: 20%;
   animation: float-blob-3 var(--liquid-duration-3, 22s) ease-in-out infinite;
+  animation-play-state: var(--liquid-play-state, running);
+}
+.liquid-bg .blob-4 {
+  width: 44vw; height: 44vw; max-width: 660px; max-height: 660px;
+  background: radial-gradient(circle at 50% 50%,
+    rgb(var(--liquid-blob-2, 108 112 116) / 0.14), transparent 64%);
+  top: -15%; right: 8%;
+  animation: float-blob-2 var(--liquid-duration-2, 23s) ease-in-out infinite reverse;
+  animation-play-state: var(--liquid-play-state, running);
+}
+.liquid-bg .blob-5 {
+  width: 42vw; height: 42vw; max-width: 630px; max-height: 630px;
+  background: radial-gradient(circle at 50% 50%,
+    rgb(var(--liquid-blob-3, 118 122 126) / 0.13), transparent 64%);
+  top: 43%; left: -10%;
+  animation: float-blob-3 var(--liquid-duration-3, 22s) ease-in-out infinite reverse;
+  animation-play-state: var(--liquid-play-state, running);
+}
+.liquid-bg .blob-6 {
+  width: 40vw; height: 40vw; max-width: 600px; max-height: 600px;
+  background: radial-gradient(circle at 50% 50%,
+    rgb(var(--liquid-blob-1, 130 134 138) / 0.14), transparent 64%);
+  bottom: -10%; right: -7%;
+  animation: float-blob-1 var(--liquid-duration-1, 20s) ease-in-out infinite reverse;
   animation-play-state: var(--liquid-play-state, running);
 }
 /* ---- Blob keyframes (slower = less distraction) ---- */
@@ -3685,6 +3709,8 @@ h3 {
   position: absolute;
   inset: 0;
   opacity: 0.065;
+  /* Preserve texture on the dye without lifting a pure-black surround. */
+  mix-blend-mode: soft-light;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23grain)'/%3E%3C/svg%3E");
   background-repeat: repeat;
   background-size: 256px 256px;

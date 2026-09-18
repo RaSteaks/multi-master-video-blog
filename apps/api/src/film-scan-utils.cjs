@@ -1,4 +1,8 @@
-const { normalizeFilmBase, negativeChannel } = require("./film-negative.cjs");
+const {
+  DEFAULT_FILM_BASE,
+  normalizeFilmBase,
+  negativeChannel
+} = require("./film-negative.cjs");
 
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -378,6 +382,124 @@ function detectFilmFrames(raw, options = {}) {
   });
 }
 
+// D-min is the brightest plateau of a negative scan. These limits steer the
+// two-pass plateau search and the confidence model; they are engineering
+// choices, not vendor calibration values.
+const FILM_BASE_LIMITS = Object.freeze({
+  channelFloor: 0.02,
+  channelCeiling: 0.98,
+  plateauQuantile: 0.86,
+  plateauTolerance: 0.05,
+  minimumSamples: 48,
+  desaturationFloor: 0.08,
+  scannerLightFloor: 0.8,
+  rollAgreementTolerance: 0.04
+});
+
+function pushFilmBaseSample(samples, data, offset, channels) {
+  for (let channel = 0; channel < 3; channel += 1) {
+    samples[channel].push(
+      Number(data[offset + Math.min(channel, channels - 1)]) / 255
+    );
+  }
+}
+
+function collectFilmBaseSamples(raw, rectangles, stride, borderOnly = false) {
+  const samples = [[], [], []];
+  const { data, width, channels = 3 } = raw;
+  for (const { left, top, right, bottom, border } of rectangles) {
+    for (let y = top; y < bottom; y += stride) {
+      for (let x = left; x < right; x += stride) {
+        if (
+          borderOnly &&
+          x >= left + border &&
+          x < right - border &&
+          y >= top + border &&
+          y < bottom - border
+        ) {
+          continue;
+        }
+        pushFilmBaseSample(samples, data, (y * width + x) * channels, channels);
+      }
+    }
+  }
+  return samples;
+}
+
+function refineFilmBaseSamples(samples) {
+  if (!samples[0].length) return null;
+  // Exclude clipped pixels and bright neutral scanner light BEFORE choosing
+  // a plateau. Otherwise even 15% holes can move the high quantile to white
+  // and the later plateau filter discards the true orange base entirely.
+  const eligible = [[], [], []];
+  for (let index = 0; index < samples[0].length; index += 1) {
+    const rgb = samples.map(channel => channel[index]);
+    if (!rgb.every(value => Number.isFinite(value) &&
+        value > FILM_BASE_LIMITS.channelFloor && value < FILM_BASE_LIMITS.channelCeiling)) continue;
+    const brightest = Math.max(...rgb);
+    const spread = brightest - Math.min(...rgb);
+    if (brightest >= FILM_BASE_LIMITS.scannerLightFloor &&
+        spread < FILM_BASE_LIMITS.desaturationFloor) continue;
+    rgb.forEach((value, channel) => eligible[channel].push(value));
+  }
+  if (!eligible[0].length) return null;
+  // A high quantile survives moderate dark edge markings. Keep support
+  // relative to ALL original samples so tiny clean remnants stay uncertain.
+  const initial = eligible.map((values) =>
+    quantile(values, FILM_BASE_LIMITS.plateauQuantile)
+  );
+  const retained = [[], [], []];
+  for (let index = 0; index < eligible[0].length; index += 1) {
+    // Match every channel at once so white scanner light cannot bleed into
+    // the mask estimate through a single-channel match.
+    const insidePlateau = initial.every((estimate, channel) =>
+      Math.abs(eligible[channel][index] - estimate) <=
+      FILM_BASE_LIMITS.plateauTolerance
+    );
+    if (!insidePlateau) continue;
+    for (let channel = 0; channel < 3; channel += 1) {
+      retained[channel].push(eligible[channel][index]);
+    }
+  }
+  if (!retained[0].length) return null;
+  return {
+    rgb: retained.map((values) => quantile(values, 0.5)),
+    support: retained[0].length / samples[0].length,
+    variation: Math.max(
+      ...retained.map((values) => quantile(values, 0.9) - quantile(values, 0.1))
+    ),
+    sampleCount: retained[0].length
+  };
+}
+
+function scoreFilmBaseEstimate(estimate, source) {
+  if (estimate.sampleCount < 12) return 0.4;
+  let confidence = 0.95;
+  // Contaminated regions (frame texture, holders, markings) shrink support.
+  confidence -= (1 - estimate.support) * 0.35;
+  // Grain and uneven illumination spread the retained plateau.
+  confidence -= Math.min(0.12, Math.max(0, estimate.variation - 0.015) * 2.2);
+  // A near-neutral bright plateau is scanner light through perforations or
+  // holder gaps, not an orange masking coupler.
+  const spread = Math.max(...estimate.rgb) - Math.min(...estimate.rgb);
+  confidence -= Math.min(
+    0.25,
+    Math.max(0, FILM_BASE_LIMITS.desaturationFloor - spread) * 2.2
+  );
+  if (estimate.sampleCount < FILM_BASE_LIMITS.minimumSamples) {
+    confidence -=
+      (1 - estimate.sampleCount / FILM_BASE_LIMITS.minimumSamples) * 0.3;
+  }
+  if (source === "gap") confidence += 0.04;
+  const usable = estimate.rgb.every(
+    (value) =>
+      value > FILM_BASE_LIMITS.channelFloor &&
+      value < FILM_BASE_LIMITS.channelCeiling
+  );
+  if (!usable) confidence = Math.min(confidence, 0.45);
+  return clamp(confidence, 0.3, 0.97);
+}
+
 function estimateFilmBase(raw, crop = null) {
   const { data, width, height, channels = 3 } = raw || {};
   if (!data || !width || !height) throw new Error("片基采样图像数据不完整。");
@@ -386,35 +508,105 @@ function estimateFilmBase(raw, crop = null) {
   const top = Math.floor(normalized.y * height);
   const right = Math.max(left + 1, Math.ceil((normalized.x + normalized.width) * width));
   const bottom = Math.max(top + 1, Math.ceil((normalized.y + normalized.height) * height));
-  const border = Math.max(1, Math.round(Math.min(right - left, bottom - top) * 0.045));
-  const samples = [[], [], []];
   const stride = Math.max(1, Math.round(Math.min(width, height) / 500));
-  for (let y = top; y < bottom; y += stride) {
-    for (let x = left; x < right; x += stride) {
-      const isBorder =
-        x < left + border ||
-        x >= right - border ||
-        y < top + border ||
-        y >= bottom - border;
-      if (!isBorder) continue;
-      const offset = (y * width + x) * channels;
-      for (let channel = 0; channel < 3; channel += 1) {
-        samples[channel].push(
-          Number(data[offset + Math.min(channel, channels - 1)]) / 255
-        );
-      }
+  const horizontal = width >= height;
+
+  // Inter-frame gaps along the strip axis hold the true unexposed base; the
+  // border ring only ever sees scene shadows, which approach D-min but never
+  // reach it. Sample both and let scoring pick the trustworthy one.
+  const frameLength = horizontal ? right - left : bottom - top;
+  const bandLength = Math.max(2, Math.round(frameLength * 0.09));
+  const gapRectangles = [];
+  if (horizontal) {
+    if (left >= 2) {
+      gapRectangles.push({
+        left: Math.max(0, left - bandLength), top, right: left, bottom
+      });
+    }
+    if (width - right >= 2) {
+      gapRectangles.push({
+        left: right, top, right: Math.min(width, right + bandLength), bottom
+      });
+    }
+  } else {
+    if (top >= 2) {
+      gapRectangles.push({
+        left, top: Math.max(0, top - bandLength), right, bottom: top
+      });
+    }
+    if (height - bottom >= 2) {
+      gapRectangles.push({
+        left, top: bottom, right, bottom: Math.min(height, bottom + bandLength)
+      });
     }
   }
-  const rgb = samples.map((values) => quantile(values, 0.72));
-  const spread = Math.max(...rgb) - Math.min(...rgb);
-  // Texture, blocked holders and clipped borders are not reliable D-min samples.
-  // This remains a heuristic: a uniform subject can still resemble unexposed film.
-  const variation = Math.max(...samples.map(values => quantile(values, 0.9) - quantile(values, 0.1)));
-  const usable = rgb.every(value => value > 0.02 && value < 0.98);
-  const confidence = usable && variation < 0.08 && samples[0].length >= 48
-    ? clamp(0.9 - Math.max(0, 0.08 - spread), 0.4, 0.96)
-    : 0.55;
-  return { rgb, confidence, sampleCount: samples[0].length };
+  const border = Math.max(1, Math.round(Math.min(right - left, bottom - top) * 0.045));
+  const candidates = [];
+  if (gapRectangles.length) {
+    const gap = refineFilmBaseSamples(
+      collectFilmBaseSamples(raw, gapRectangles, stride)
+    );
+    if (gap) candidates.push({ ...gap, source: "gap" });
+  }
+  const ring = refineFilmBaseSamples(
+    collectFilmBaseSamples(
+      raw,
+      [{ left, top, right, bottom, border }],
+      stride,
+      true
+    )
+  );
+  if (ring) candidates.push({ ...ring, source: "border" });
+  if (!candidates.length) {
+    // This remains a heuristic: a uniform subject can still resemble
+    // unexposed film, and degenerate crops cannot be sampled at all.
+    return {
+      rgb: [...DEFAULT_FILM_BASE],
+      confidence: 0.4,
+      sampleCount: 0,
+      source: "none",
+      support: 0
+    };
+  }
+  const scored = candidates.map((candidate) => ({
+    ...candidate,
+    confidence: scoreFilmBaseEstimate(candidate, candidate.source)
+  }));
+  // A uniform scene edge can score better simply because it has no markings.
+  // Once an exterior gap is reliable, do not replace it with scene shadows.
+  const best = scored.find(candidate => candidate.source === "gap" && candidate.confidence >= 0.85) ||
+    scored.sort((left, right) => right.confidence - left.confidence)[0];
+  return {
+    rgb: best.rgb,
+    confidence: best.confidence,
+    sampleCount: best.sampleCount,
+    source: best.source,
+    support: best.support
+  };
+}
+
+function filmBaseMedian(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function aggregateFilmBaseEstimates(estimates) {
+  const usable = (Array.isArray(estimates) ? estimates : []).filter(
+    (estimate) => Array.isArray(estimate) && estimate.length === 3 &&
+      estimate.every(channel => Number.isFinite(channel) && channel >= 0 && channel <= 1)
+  );
+  if (!usable.length) return null;
+  const medianRgb = values => [0, 1, 2].map(channel =>
+    filmBaseMedian(values.map(estimate => estimate[channel])));
+  const center = medianRgb(usable);
+  // These are normalized scanner RGB tolerances, not a calibrated color-error
+  // threshold. Require a strict majority to agree in ALL channels; equal-sized
+  // conflicting groups (including two disagreeing scans) must fall back.
+  const agreeing = usable.filter(estimate => estimate.every((channel, index) =>
+    Math.abs(channel - center[index]) <= FILM_BASE_LIMITS.rollAgreementTolerance));
+  if (agreeing.length <= usable.length / 2) return null;
+  return medianRgb(agreeing);
 }
 
 function assessFilmFrameDynamicRange(raw, crop = null) {
@@ -734,6 +926,7 @@ module.exports = {
   PROCESSES,
   SCANNERS,
   FILM_TYPES,
+  aggregateFilmBaseEstimates,
   applyFilmPipeline,
   assessFilmFrameDynamicRange,
   createAnalysisImage,

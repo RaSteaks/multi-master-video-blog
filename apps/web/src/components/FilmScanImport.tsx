@@ -19,6 +19,7 @@ import {
 } from "@/lib/album-management";
 
 import { createFilmPreviewScheduler } from "@/lib/film-preview";
+import { changeFilmMaskMode, changeFilmMaskRgb } from "@/lib/film-adjustments";
 
 type AlbumOption = {
   id: number;
@@ -816,6 +817,8 @@ function FilmReview({
   const [activeFrameId, setActiveFrameId] = useState(
     job.frames.find((frame) => frame.accepted)?.id ?? job.frames[0]?.id ?? 0,
   );
+  const [previewWarnings, setPreviewWarnings] = useState<string[] | null>(null);
+  const warnings = previewWarnings ?? job.warnings;
   const [frameRevisions, setFrameRevisions] = useState<Record<number, number>>({});
   const [previewState, setPreviewState] = useState<
     "idle" | "waiting" | "rendering" | "synced" | "error"
@@ -827,6 +830,7 @@ function FilmReview({
 
   useEffect(() => {
     setAdjustments(job.rollAdjustments);
+    setPreviewWarnings(null);
   }, [persistedAdjustmentSignature]);
 
   useEffect(() => {
@@ -849,6 +853,7 @@ function FilmReview({
         status: string;
         frameId: number;
         rollAdjustments: FilmAdjustments;
+        warnings: string[];
       }>(
         `/api/albums/${job.albumId}/film-scans/${job.id}/preview`,
         token,
@@ -856,7 +861,7 @@ function FilmReview({
           method: "POST",
           body: JSON.stringify({
             frameId: activeFrameId,
-            rollAdjustments: adjustments,
+            rollAdjustments: hasUnsavedAdjustments ? adjustments : undefined,
           }),
         },
       ),
@@ -866,17 +871,18 @@ function FilmReview({
           [activeFrameId]: (current[activeFrameId] ?? 0) + 1,
         }));
         if (
-          adjustments.maskMode === "manual" &&
-          adjustments.filmBaseSample &&
-          response.rollAdjustments.maskRgb &&
-          JSON.stringify(adjustments.maskRgb) !==
-            JSON.stringify(response.rollAdjustments.maskRgb)
+          adjustments.maskMode !== response.rollAdjustments.maskMode ||
+          JSON.stringify(adjustments.maskRgb) !== JSON.stringify(response.rollAdjustments.maskRgb) ||
+          JSON.stringify(adjustments.filmBaseSample) !== JSON.stringify(response.rollAdjustments.filmBaseSample)
         ) {
           setAdjustments((current) => ({
             ...current,
+            maskMode: response.rollAdjustments.maskMode,
             maskRgb: response.rollAdjustments.maskRgb,
+            filmBaseSample: response.rollAdjustments.filmBaseSample,
           }));
         }
+        setPreviewWarnings(response.warnings ?? job.warnings);
         setPreviewState("synced");
       },
       onError: () => setPreviewState("error"),
@@ -937,10 +943,10 @@ function FilmReview({
 
       {job.status === "review_required" ? (
         <>
-          {job.warnings.length ? (
-            <div className="film-warning-list">
+          {warnings.length ? (
+            <div className="film-warning-list" role="status">
               <strong>审核提示</strong>
-              <ul>{job.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul>
+              <ul>{warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul>
             </div>
           ) : null}
           <div className="film-darkroom-workbench">
@@ -1111,7 +1117,7 @@ function FilmRollControls({
   function set<K extends keyof FilmAdjustments>(key: K, next: FilmAdjustments[K]) {
     onChange({ ...value, [key]: next });
   }
-  const mask = value.maskRgb ?? [0.82, 0.62, 0.4];
+  const mask = value.maskRgb ?? [0.82, 0.61, 0.39];
   return (
     <section className="film-roll-controls">
       <header>
@@ -1123,7 +1129,7 @@ function FilmRollControls({
       </header>
       <div className="film-tool-section">
         <h5><span>01</span> 片基与色罩</h5>
-        <SelectField label="去色罩" value={value.maskMode} onChange={(next) => set("maskMode", next as FilmAdjustments["maskMode"])}>
+        <SelectField label="去色罩" value={value.maskMode} onChange={(next) => onChange(changeFilmMaskMode(value, next as FilmAdjustments["maskMode"]))}>
           <option value="auto">自动片基采样</option>
           <option value="manual">手动 RGB</option>
           <option value="preset">扫描仪 + 胶卷预设</option>
@@ -1137,7 +1143,7 @@ function FilmRollControls({
                   <input type="number" min={0} max={1} step={0.01} value={channel} onChange={(event) => {
                     const next = [...mask] as [number, number, number];
                     next[index] = Number(event.target.value);
-                    set("maskRgb", next);
+                    onChange(changeFilmMaskRgb(value, next));
                   }} />
                 </label>
               ))}

@@ -7,7 +7,8 @@ colors:
   overlay: "#252C34"
   text: "#E2E8EE"
   secondary: "#9AAABB"
-  liquidDefault: "#121518"
+  liquidBase: "#000000"
+  liquidDefault: "#82868A"
 typography:
   sans:
     fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
@@ -32,9 +33,11 @@ The runtime CSS variables in `apps/web/src/app/globals.css` are canonical.
 Surfaces use `--background` (#0C0E10), `--surface` (#161A1E), and
 `--surface-overlay` (#252C34). Primary text uses `--text` (#E2E8EE), with
 `--text-secondary` (#9AAABB). Global accent overrides remain separate from liquid
-background preferences. The liquid surround always stays dark gray (#121518);
-HSV and saved colors affect only the flowing blobs. Controls retain their dark
-surfaces and readable labels. This replaces the earlier whole-background tint.
+background preferences. The liquid surround always stays pure black (#000000);
+HSV and saved colors affect only the flowing blobs, without white mixing.
+Black dye blends into the black surround; the default dye is neutral gray.
+WebGL composites dye onto opaque black before browser blur/compositing.
+Controls retain their dark surfaces and readable labels.
 
 ## Typography
 
@@ -53,6 +56,9 @@ slots. Disclosure expands HSV controls inside the existing scroll area.
 
 Reuse the existing near-opaque dark panel, fine borders and focus outlines.
 Default liquid rendering preserves the original video gray layers and grain.
+Six softly separated dye sources cover the surround; smaller source radii and
+balanced injection preserve black gaps. The CSS fallback also uses six blobs,
+while reduced motion retains one static blob.
 
 ## Shapes
 

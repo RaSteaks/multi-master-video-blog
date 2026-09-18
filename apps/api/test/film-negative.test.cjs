@@ -63,6 +63,84 @@ test("film base confidence rejects textured, blocked and clipped borders", () =>
   assert.ok(estimateFilmBase(textured).confidence < 0.85);
 });
 
+test("automatic film base prefers inter-frame gaps and tolerates edge markings", () => {
+  const { estimateFilmBase } = require("../src/film-scan-utils.cjs");
+  const base = [212, 158, 96];
+  for (const vertical of [false, true]) {
+    const frameLength = 180;
+    const shortSide = 120;
+    const gap = 24;
+    const major = frameLength + 2 * gap;
+    const width = vertical ? shortSide : major;
+    const height = vertical ? major : shortSide;
+    const channels = 3;
+    const data = Buffer.alloc(width * height * channels);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const majorPosition = vertical ? y : x;
+        const offset = (y * width + x) * channels;
+        if (majorPosition >= gap && majorPosition < gap + frameLength) {
+          // Darker scene content inside the frame must not win over the gaps.
+          data[offset] = 60 + ((x * 7 + y * 13) % 70);
+          data[offset + 1] = 40 + ((x * 5 + y * 11) % 60);
+          data[offset + 2] = 25 + ((x * 3 + y * 9) % 40);
+        } else {
+          data[offset] = base[0];
+          data[offset + 1] = base[1];
+          data[offset + 2] = base[2];
+        }
+      }
+    }
+    // Frame-number ink in the trailing gap band: dark contamination.
+    const trailingStart = gap + frameLength + 2;
+    for (let majorPosition = trailingStart; majorPosition < trailingStart + 10; majorPosition += 2) {
+      for (let cross = 40; cross < 80; cross += 1) {
+        const x = vertical ? cross : majorPosition;
+        const y = vertical ? majorPosition : cross;
+        const offset = (y * width + x) * channels;
+        data[offset] = 48;
+        data[offset + 1] = 30;
+        data[offset + 2] = 18;
+      }
+    }
+    const crop = vertical
+      ? { x: 0, y: gap / major, width: 1, height: frameLength / major }
+      : { x: gap / major, y: 0, width: frameLength / major, height: 1 };
+    const result = estimateFilmBase({ data, width, height, channels }, crop);
+    assert.equal(result.source, "gap", vertical ? "vertical" : "horizontal");
+    assert.ok(result.confidence >= 0.85, `confidence ${result.confidence}`);
+    result.rgb.forEach((channel, index) => {
+      assert.ok(
+        Math.abs(channel - base[index] / 255) < 0.02,
+        `channel ${index}: ${channel}`
+      );
+    });
+  }
+});
+
+test("desaturated scanner light through holders is not accepted as film base", () => {
+  const { estimateFilmBase } = require("../src/film-scan-utils.cjs");
+  const image = rgb => ({ width: 64, height: 64, channels: 3, data: Buffer.from(Array.from({length:4096}, () => rgb).flat()) });
+  assert.ok(estimateFilmBase(image([236, 233, 230])).confidence < 0.85);
+  // A thin but genuinely chromatic mask is still usable.
+  assert.ok(estimateFilmBase(image([188, 172, 152])).confidence >= 0.85);
+});
+
+test("roll mask aggregates the agreeing majority by per-channel median", () => {
+  const { aggregateFilmBaseEstimates } = require("../src/film-scan-utils.cjs");
+  const aggregated = aggregateFilmBaseEstimates([[0.8, 0.6, 0.4], [0.82, 0.61, 0.39], [0.5, 0.2, 0.1]]);
+  [0.81, 0.605, 0.395].forEach((expected, channel) => {
+    assert.ok(Math.abs(aggregated[channel] - expected) < 1e-9);
+  });
+  assert.deepEqual(
+    aggregateFilmBaseEstimates([[0.7, 0.5, 0.3]]),
+    [0.7, 0.5, 0.3]
+  );
+  assert.equal(aggregateFilmBaseEstimates([]), null);
+  assert.equal(aggregateFilmBaseEstimates(null), null);
+  assert.equal(aggregateFilmBaseEstimates([[0.8, 0.6]]), null);
+});
+
 test("PNG film output really retains 16-bit depth", async () => {
   const { renderFilmFrame } = require("../src/film-scan-utils.cjs");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "film-png-test-"));

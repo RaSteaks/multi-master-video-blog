@@ -116,7 +116,8 @@ void main() {
   velocity = texture(u_velocity, backtrace).xy;
 
   vec2 noisePosition = v_uv * vec2(u_aspect, 1.0) * u_noiseScale;
-  velocity += curlNoise(noisePosition) * u_noiseStrength * u_dt;
+  // Convert the aspect-correct curl back to UV velocity units.
+  velocity += curlNoise(noisePosition) / vec2(u_aspect, 1.0) * u_noiseStrength * u_dt;
   velocity *= exp(-u_damping * u_dt);
 
   outColor = vec4(velocity, 0.0, 1.0);
@@ -163,7 +164,12 @@ void main() {
   float bottom = texture(u_pressure, v_uv - offsetY).x;
   float top = texture(u_pressure, v_uv + offsetY).x;
   float divergence = texture(u_divergence, v_uv).x;
-  float pressure = (left + right + bottom + top - divergence) * 0.25;
+  // Divergence and projection use UV derivatives; include grid spacing here.
+  vec2 inverseSpacingSquared = 1.0 / (u_texelSize * u_texelSize);
+  float pressure = (
+    (left + right) * inverseSpacingSquared.x +
+    (bottom + top) * inverseSpacingSquared.y - divergence
+  ) / (2.0 * (inverseSpacingSquared.x + inverseSpacingSquared.y));
   outColor = vec4(pressure, 0.0, 0.0, 1.0);
 }
 `;
@@ -235,13 +241,32 @@ void main() {
     0.42 + sin(u_time * 0.08 + u_seed * 0.6) * 0.060,
     0.13 + cos(u_time * 0.10 + u_seed * 1.8) * 0.035
   );
+  vec2 center4 = vec2(
+    0.72 + sin(u_time * 0.11 + u_seed * 1.9) * 0.045,
+    0.87 + cos(u_time * 0.07 + u_seed * 0.7) * 0.040
+  );
+  vec2 center5 = vec2(
+    0.13 + cos(u_time * 0.08 + u_seed * 2.3) * 0.035,
+    0.34 + sin(u_time * 0.13 + u_seed * 1.2) * 0.055
+  );
+  vec2 center6 = vec2(
+    0.87 + sin(u_time * 0.07 + u_seed * 0.9) * 0.040,
+    0.12 + cos(u_time * 0.12 + u_seed * 2.1) * 0.035
+  );
 
-  float injection = u_initialize > 0.5 ? 0.24 : u_dt * 0.078;
-  float amount1 = source(v_uv, center1, 0.24) * injection;
-  float amount2 = source(v_uv, center2, 0.22) * injection * 0.85;
-  float amount3 = source(v_uv, center3, 0.20) * injection * 0.77;
-  dye.rgb += u_color1 * amount1 + u_color2 * amount2 + u_color3 * amount3;
-  dye.a += amount1 + amount2 + amount3;
+  // Six smaller sources share roughly the former dye budget. Portrait screens
+  // use smaller radii so the extra sources do not fill the black gaps.
+  float radiusScale = sqrt(min(u_aspect, 1.0));
+  float injection = (u_initialize > 0.5 ? 0.24 : u_dt * 0.078) * 0.85;
+  float amount1 = source(v_uv, center1, 0.25 * radiusScale) * injection;
+  float amount2 = source(v_uv, center2, 0.24 * radiusScale) * injection * 0.85;
+  float amount3 = source(v_uv, center3, 0.23 * radiusScale) * injection * 0.77;
+  float amount4 = source(v_uv, center4, 0.23 * radiusScale) * injection * 0.85;
+  float amount5 = source(v_uv, center5, 0.22 * radiusScale) * injection * 0.77;
+  float amount6 = source(v_uv, center6, 0.20 * radiusScale) * injection * 0.90;
+  dye.rgb += u_color1 * (amount1 + amount6) +
+    u_color2 * (amount2 + amount4) + u_color3 * (amount3 + amount5);
+  dye.a += amount1 + amount2 + amount3 + amount4 + amount5 + amount6;
 
   dye.rgb = min(dye.rgb, vec3(1.0));
   dye.a = min(dye.a, 1.0);
@@ -270,13 +295,15 @@ void main() {
 
   float density = clamp(dye.a, 0.0, 1.0);
   if (density < 0.001) {
-    outColor = vec4(0.0);
+    outColor = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
 
   vec3 color = dye.rgb / max(density, 0.0001);
-  float alpha = smoothstep(0.008, 0.34, density) * 0.55;
-  outColor = vec4(color, alpha);
+  // Keep diffuse trails visible without hardening their edges.
+  float alpha = (1.0 - exp(-3.0 * density)) * 0.48;
+  // Composite over pure black here, avoiding a second browser alpha/blur pass.
+  outColor = vec4(color * alpha, 1.0);
 }
 `;
 
@@ -460,7 +487,7 @@ class LowResolutionLiquidRenderer implements LiquidFluidController {
         : FLUID_DESKTOP_SIZE;
 
     const context = canvas.getContext("webgl2", {
-      alpha: true,
+      alpha: false,
       antialias: false,
       depth: false,
       premultipliedAlpha: false,
@@ -471,9 +498,8 @@ class LowResolutionLiquidRenderer implements LiquidFluidController {
     if (!context.getExtension("EXT_color_buffer_float")) {
       throw new Error("Floating point framebuffers are unavailable.");
     }
-    if (!context.getExtension("OES_texture_float_linear")) {
-      throw new Error("Linear floating point sampling is unavailable.");
-    }
+    // RGBA16F linear filtering is core WebGL2. The optional extension is
+    // needed for 32-bit float textures, which this renderer does not use.
     this.gl = context;
 
     const vao = context.createVertexArray();
@@ -585,10 +611,13 @@ class LowResolutionLiquidRenderer implements LiquidFluidController {
     );
     this.palette = input.palette;
     this.speed = Math.min(3, Math.max(0, Number.isFinite(input.speed) ? input.speed : 1));
+    // Replace old dye immediately, including while running or switching to black.
+    if (paletteChanged) {
+      this.updateDye(0, true);
+      this.render();
+    }
     if (this.speed === 0) {
       this.stop();
-      // Refresh the static palette without advancing simulation time.
-      if (paletteChanged) this.updateDye(0, true);
       this.render();
     }
     else this.start();
@@ -636,7 +665,7 @@ class LowResolutionLiquidRenderer implements LiquidFluidController {
       return;
     }
     this.lastNow = performance.now();
-    this.lastFrameAt = 0;
+    this.lastFrameAt = this.lastNow;
     this.animationFrame = requestAnimationFrame(this.tick);
   }
 
@@ -670,8 +699,10 @@ class LowResolutionLiquidRenderer implements LiquidFluidController {
       ? Math.min(0.05, Math.max(0, (now - this.lastNow) / 1000))
       : 1 / FLUID_TARGET_FPS;
     this.lastNow = now;
-    this.lastFrameAt = now;
-    const dt = Math.min(0.08, elapsed * this.speed);
+    // Preserve fractional time so rounding at 60 Hz does not reduce us to 20 FPS.
+    this.lastFrameAt = now - ((now - this.lastFrameAt) % frameInterval);
+    // elapsed already caps a delayed frame; scale the full step so 3x remains 3x.
+    const dt = elapsed * this.speed;
     this.simTime += dt;
     this.step(dt);
     this.render();
@@ -790,8 +821,8 @@ class LowResolutionLiquidRenderer implements LiquidFluidController {
       setFloat(gl, uniforms, "u_seed", this.seed);
       setFloat(gl, uniforms, "u_aspect", aspect);
       setFloat(gl, uniforms, "u_noiseScale", 1.35);
-      setFloat(gl, uniforms, "u_noiseStrength", 0.42);
-      setFloat(gl, uniforms, "u_damping", 0.20);
+      setFloat(gl, uniforms, "u_noiseStrength", 0.055);
+      setFloat(gl, uniforms, "u_damping", 0.65);
     });
     [this.velocityRead, this.velocityWrite] = [
       this.velocityWrite,
@@ -859,8 +890,8 @@ class LowResolutionLiquidRenderer implements LiquidFluidController {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.disable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // The shader already composites dye over black. Do not blend a second time.
+    gl.disable(gl.BLEND);
     gl.useProgram(program.program);
     gl.bindVertexArray(this.vao);
     bindTexture(gl, program.uniforms, "u_dye", this.dyeRead.texture, 0);

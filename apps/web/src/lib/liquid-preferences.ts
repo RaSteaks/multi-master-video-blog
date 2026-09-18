@@ -52,21 +52,22 @@ export function resolveLiquidPreferences(
       color(Array.isArray(input.slots) ? input.slots[i] : null),
     ),
   };
-  let swatchHex = "#121518";
+  let swatchHex = "#82868A";
   let blobs = ["130 134 138", "108 112 116", "118 122 126"];
   if (settings.color.kind === "custom") {
     const rgb = convert(settings.color.hsv);
     const channels = [rgb.r, rgb.g, rgb.b];
     swatchHex =
       `#${channels.map((c) => c.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
-    blobs = [0.35, 0.3, 0.32].map((mix) =>
-      channels.map((c) => Math.round(c + (255 - c) * mix)).join(" "),
+    // Shade the selected dye without adding white: black must remain black.
+    blobs = [1, 0.85, 0.92].map((shade) =>
+      channels.map((c) => Math.round(c * shade)).join(" "),
     );
   }
   const divisor = settings.speed || 1;
   const css: Record<string, string> = {
-    // The surround stays dark; only the flowing blobs use the selected color.
-    "--liquid-base": "#121518",
+    // The surround is always pure black; preferences only color the dye.
+    "--liquid-base": "#000000",
     "--liquid-blob-1": blobs[0],
     "--liquid-blob-2": blobs[1],
     "--liquid-blob-3": blobs[2],

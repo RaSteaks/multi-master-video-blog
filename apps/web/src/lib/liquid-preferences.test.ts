@@ -29,9 +29,9 @@ describe("liquid preferences", () => {
       defaultLiquidPreferences(),
     );
   });
-  it("preserves the exact original gray palette and durations", () => {
+  it("keeps the gray dye and durations over a fixed black base", () => {
     expect(resolveLiquidPreferences(null).css).toEqual({
-      "--liquid-base": "#121518",
+      "--liquid-base": "#000000",
       "--liquid-blob-1": "130 134 138",
       "--liquid-blob-2": "108 112 116",
       "--liquid-blob-3": "118 122 126",
@@ -79,7 +79,7 @@ describe("liquid preferences", () => {
           const hsv = { h, s, v };
           expect(
             resolve({ color: { kind: "custom", hsv } }).css["--liquid-base"],
-          ).toBe("#121518");
+          ).toBe("#000000");
           expect(resolve({ color: { kind: "custom", hsv } }).swatchHex).toBe(
             hsvToHex(hsv),
           );
@@ -87,10 +87,10 @@ describe("liquid preferences", () => {
     expect(
       resolve({ color: { kind: "custom", hsv: { h: 0, s: 100, v: 100 } } }).css,
     ).toMatchObject({
-      "--liquid-base": "#121518",
-      "--liquid-blob-1": "255 89 89",
-      "--liquid-blob-2": "255 77 77",
-      "--liquid-blob-3": "255 82 82",
+      "--liquid-base": "#000000",
+      "--liquid-blob-1": "255 0 0",
+      "--liquid-blob-2": "217 0 0",
+      "--liquid-blob-3": "235 0 0",
     });
   });
   it("normalizes HSV and repairs individual slots without discarding good preferences", () => {
@@ -159,7 +159,19 @@ describe("liquid preferences", () => {
       },
     });
     expect(applied).toEqual(resolveLiquidPreferences(raw).css);
-    expect(applied["--liquid-base"]).toBe("#121518");
+    expect(applied["--liquid-base"]).toBe("#000000");
+  });
+  it("never turns black dye gray and displays the actual default dye swatch", () => {
+    const black = resolve({ color: { kind: "custom", hsv: { h: 210, s: 100, v: 0 } } });
+    expect(black.swatchHex).toBe("#000000");
+    expect(black.css).toMatchObject({
+      "--liquid-base": "#000000",
+      "--liquid-blob-1": "0 0 0",
+      "--liquid-blob-2": "0 0 0",
+      "--liquid-blob-3": "0 0 0",
+    });
+    expect(liquidPaletteFromSettings(black.settings)).toEqual([[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+    expect(resolveLiquidPreferences(null).swatchHex).toBe("#82868A");
   });
   it("allows startup when storage is blocked", () => {
     expect(() =>

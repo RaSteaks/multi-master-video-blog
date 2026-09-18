@@ -151,7 +151,7 @@ export function LiquidSettings({
             aria-pressed={settings.color.kind === "gray"}
             onClick={() => selectColor({ kind: "gray" })}
           >
-            <span style={{ background: "#121518" }} aria-hidden="true" />
+            <span style={{ background: swatch({ kind: "gray" }) }} aria-hidden="true" />
             <span>默认灰色</span>
           </button>
         </div>
@@ -232,7 +232,7 @@ export function LiquidSettings({
         <HsvPicker value={hsv} onChange={editColor} displayHex={selectedHex} />
       </div>
       <p className="bg-control-note">
-        仅调整流动液体的颜色，底色保持深灰。全站共用此设置，并保存在当前浏览器。
+        底色固定为纯黑，所选颜色仅用于流动液体。选择黑色液体时将与底色融为一体。设置保存在当前浏览器。
       </p>
     </div>
   );
