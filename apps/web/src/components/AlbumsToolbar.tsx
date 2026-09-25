@@ -48,6 +48,8 @@ type UploadMetadata = {
 
 type AlbumDialogName = "create" | "upload" | "film" | "manage" | null;
 
+const FILM_SCAN_ENABLED = process.env.NODE_ENV !== "production";
+
 const MAX_PHOTOS = 24;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_BATCH_BYTES = 512 * 1024 * 1024;
@@ -133,14 +135,16 @@ export function AlbumsToolbar({
           <UploadIcon />
           上传照片
         </button>
-        <button
-          className="album-action-button album-action-button--film"
-          type="button"
-          onClick={() => setDialog("film")}
-        >
-          <FilmIcon />
-          导入胶片扫描
-        </button>
+        {FILM_SCAN_ENABLED ? (
+          <button
+            className="album-action-button album-action-button--film"
+            type="button"
+            onClick={() => setDialog("film")}
+          >
+            <FilmIcon />
+            导入胶片扫描
+          </button>
+        ) : null}
       </div>
 
       <p className="album-toolbar-status" aria-live="polite">
@@ -187,7 +191,7 @@ export function AlbumsToolbar({
         </AlbumModal>
       ) : null}
 
-      {dialog === "film" ? (
+      {FILM_SCAN_ENABLED && dialog === "film" ? (
         <AlbumModal title="导入胶片扫描" onClose={closeDialog} wide>
           <FilmScanImport
             albums={(managedAlbums ?? albums).map((album) => ({
