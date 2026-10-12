@@ -78,3 +78,8 @@ start-web.bat
 start-postgresql.bat
 start-manager.bat
 start-cms.bat
+docs/kodak-film-data/source-pages/
+docs/kodak-film-data/text/
+scripts/__pycache__/collect-kodak-film-data.cpython-311.pyc
+scripts/__pycache__/collect-kodak-film-data.cpython-312.pyc
+output/
