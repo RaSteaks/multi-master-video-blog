@@ -78,8 +78,13 @@ start-web.bat
 start-postgresql.bat
 start-manager.bat
 start-cms.bat
-docs/kodak-film-data/source-pages/
-docs/kodak-film-data/text/
-scripts/__pycache__/collect-kodak-film-data.cpython-311.pyc
-scripts/__pycache__/collect-kodak-film-data.cpython-312.pyc
+
+# Local Kodak reference downloads and generated extracts
 output/
+/docs/kodak-film-data/source-pages/
+/docs/kodak-film-data/text/
+
+# Python bytecode caches
+__pycache__/
+*.pyc
+*.pyo

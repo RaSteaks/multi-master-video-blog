@@ -5,7 +5,7 @@
 Recommended production layout:
 
 ```text
-D:\multi-master-video-blog\
+D:\path\to\project\
 ├── apps\
 │   ├── web\
 │   └── cms\
@@ -38,9 +38,15 @@ Use `deployment/nginx/windows-nginx.example.conf` as a reference only. Put real 
 
 ## Production Commands
 
-Build the frontend:
+Apply the CMS model and run the release checks:
 
 ```powershell
+npm run setup:cms-schema
+npm run test:cms-schema
+npm run test:cms-crud
+npm run test:api
+npm run test:album-api
+npm run test:web
 npm run build:web
 ```
 
@@ -65,5 +71,39 @@ npm run health
 ## Upload API Security
 
 Set a strong `UPLOAD_API_TOKEN` in `apps/api/.env`. Keep `8060` bound to `127.0.0.1` and expose uploads through Nginx `/api/` only.
+
+The same token protects album creation, album editing, photo uploads, cover
+selection, reordering, publication changes, and deletion. It is entered in
+the page component and must never be placed in a `NEXT_PUBLIC_*` variable,
+URL, cookie, or browser storage.
+
+For album uploads, configure:
+
+```env
+MAX_ALBUM_UPLOAD_BYTES=536870912
+MAX_ALBUM_IMAGE_BYTES=67108864
+MAX_ALBUM_PHOTOS=24
+```
+
+Set Nginx `client_max_body_size` to at least the complete-request limit and
+allow enough proxy time for 512 MiB uploads. After changing API environment
+variables, restart both runtime services:
+
+```powershell
+npm run api:restart
+npm run web:restart
+npm run health
+```
+
+`setup:cms-schema` installs named WebP presets for album thumbnails, content
+cards, article/video hero images, and full-size/thumbnail site backgrounds. It
+changes asset transforms to preset-only unless the instance was already
+intentionally configured as `all`. The Node asset proxy independently rejects
+arbitrary transform parameters and only accepts these managed preset keys.
+
+The example Nginx config enables gzip for text/JSON responses, streams large
+multipart requests directly to Node, keeps file metadata hot, and caches HLS
+segments for seven days. HLS manifests continue to revalidate so overwritten
+playlists are observed promptly.
 
 For production, replace the Directus admin credentials in API and frontend `.env` files with limited service accounts.

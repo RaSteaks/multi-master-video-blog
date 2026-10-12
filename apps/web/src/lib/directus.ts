@@ -1,4 +1,20 @@
 export type DirectusFileId = string | null;
+export type AssetPreset =
+  | "album-cover"
+  | "album-thumb"
+  | "content-card"
+  | "content-hero"
+  | "site-background"
+  | "site-background-thumb";
+
+const ASSET_PRESETS = new Set<AssetPreset>([
+  "album-cover",
+  "album-thumb",
+  "content-card",
+  "content-hero",
+  "site-background",
+  "site-background-thumb",
+]);
 
 export type Post = {
   id: number;
@@ -6,6 +22,7 @@ export type Post = {
   slug: string;
   content: string | null;
   cover_image: DirectusFileId;
+  backgroundimage: DirectusFileId;
   tags: string[] | null;
   category: string | null;
   published: boolean | number;
@@ -36,6 +53,27 @@ export type VideoMaster = {
   is_default: boolean | number;
   sort_order: number | null;
   status: string | null;
+  processing_mode: "copy" | "transcode" | string | null;
+  is_derivative: boolean | number | null;
+  derived_from_master_id: number | null;
+  source_sha256: string | null;
+  display_gamut: "bt709" | "bt2020" | "p3_d65" | "dci_p3" | "custom" | string | null;
+  color_primaries: string | null;
+  color_transfer: string | null;
+  matrix_coefficients: string | null;
+  color_range: string | null;
+  pixel_format: string | null;
+  chroma_location: string | null;
+  hls_video_range: "SDR" | "PQ" | "HLG" | string | null;
+  hdr_static_metadata: Record<string, unknown> | null;
+  dolby_metadata: Record<string, unknown> | null;
+  source_probe_json: Record<string, unknown> | null;
+  output_probe_json: Record<string, unknown> | null;
+  verification_status: "ready" | "rejected" | "quarantine" | string | null;
+  verification_errors: unknown[] | Record<string, unknown> | null;
+  verified_at: string | null;
+  conversion_intent: string | null;
+  conversion_lut_or_filter: string | null;
   uploaded_at: string | null;
   notes: string | null;
 };
@@ -55,6 +93,48 @@ export type VideoProject = {
   masters?: VideoMaster[];
 };
 
+export type AlbumPhoto = {
+  id: number;
+  album_id: number | { id: number };
+  sdr_image: DirectusFileId;
+  hdr_image: DirectusFileId;
+  caption: string | null;
+  alt_text: string | null;
+  hdr_transfer: "pq" | "hlg" | null;
+  hdr_primaries: string | null;
+  hdr_bit_depth: number | null;
+  film_scan_frame_id: number | { id: number } | null;
+  film_stock: string | null;
+  film_process: string | null;
+  film_scanner: string | null;
+  film_frame_format: string | null;
+  renditions?: Array<{
+    id: number;
+    kind: "sdr" | "pq" | "hlg";
+    file: DirectusFileId;
+    transfer: string | null;
+    primaries: string | null;
+    bit_depth: number | null;
+    is_default: boolean | number;
+  }>;
+  published: boolean | number;
+  sort_order: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type Album = {
+  id: number;
+  title: string;
+  slug: string;
+  description: string | null;
+  cover_image: DirectusFileId;
+  published: boolean | number;
+  created_at: string | null;
+  updated_at: string | null;
+  photos?: AlbumPhoto[];
+};
+
 type DirectusListResponse<T> = {
   data: T[];
 };
@@ -69,16 +149,29 @@ type DirectusAggregateResponse = {
 const POST_LIST_FIELDS =
   "id,title,slug,cover_image,category,published,created_at";
 const POST_DETAIL_FIELDS =
-  "id,title,slug,content,cover_image,tags,category,published,created_at,updated_at";
+  "id,title,slug,content,cover_image,backgroundimage,tags,category,published,created_at,updated_at";
 
 const VIDEO_LIST_FIELDS =
   "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at," +
   "masters.id,masters.label,masters.type,masters.hls_url,masters.is_default,masters.sort_order";
 const VIDEO_DETAIL_FIELDS =
   "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at,masters.*";
+const ALBUM_LIST_FIELDS =
+  "id,title,slug,description,cover_image,published,created_at,updated_at," +
+  "photos.id,photos.sdr_image,photos.hdr_image,photos.published,photos.sort_order";
+const ALBUM_DETAIL_FIELDS =
+  "id,title,slug,description,cover_image,published,created_at,updated_at," +
+  "photos.id,photos.album_id,photos.sdr_image,photos.hdr_image,photos.caption," +
+  "photos.alt_text,photos.hdr_transfer,photos.hdr_primaries,photos.hdr_bit_depth," +
+  "photos.film_scan_frame_id,photos.film_stock,photos.film_process,photos.film_scanner," +
+  "photos.film_frame_format,photos.renditions.id,photos.renditions.kind," +
+  "photos.renditions.file,photos.renditions.transfer,photos.renditions.primaries," +
+  "photos.renditions.bit_depth,photos.renditions.is_default," +
+  "photos.published,photos.sort_order,photos.created_at,photos.updated_at";
 
 /* ---- Config ---- */
 let cachedToken: string | null = null;
+let pendingToken: Promise<string | null> | null = null;
 
 const directusUrl = stripTrailingSlash(
   process.env.DIRECTUS_URL ||
@@ -88,9 +181,12 @@ const directusUrl = stripTrailingSlash(
 
 const showDrafts = process.env.DIRECTUS_SHOW_DRAFTS === "true";
 
-const REVALIDATE_SECONDS = process.env.DIRECTUS_REVALIDATE
-  ? Number(process.env.DIRECTUS_REVALIDATE)
-  : 0;
+const configuredRevalidate = Number(process.env.DIRECTUS_REVALIDATE);
+const REVALIDATE_SECONDS = Number.isFinite(configuredRevalidate)
+  ? Math.max(0, configuredRevalidate)
+  : process.env.NODE_ENV === "production"
+    ? 30
+    : 0;
 
 function stripTrailingSlash(value: string) {
   return value.replace(/\/$/, "");
@@ -106,9 +202,7 @@ function addPublishedFilter(params: URLSearchParams) {
   }
 }
 
-async function getToken() {
-  if (cachedToken) return cachedToken;
-
+async function login() {
   const email = process.env.DIRECTUS_EMAIL;
   const password = process.env.DIRECTUS_PASSWORD;
   if (!email || !password) return null;
@@ -129,11 +223,27 @@ async function getToken() {
   return cachedToken;
 }
 
-async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
+async function getToken() {
+  if (cachedToken) return cachedToken;
+
+  if (!pendingToken) {
+    pendingToken = login().finally(() => {
+      pendingToken = null;
+    });
+  }
+
+  return pendingToken;
+}
+
+async function directusFetch<T>(
+  pathname: string,
+  retried = false,
+  tags: string[] = [],
+): Promise<T> {
   const token = await getToken();
   const cacheOptions =
     REVALIDATE_SECONDS > 0
-      ? { next: { revalidate: REVALIDATE_SECONDS } }
+      ? { next: { revalidate: REVALIDATE_SECONDS, tags } }
       : { cache: "no-store" as const };
   const response = await fetch(`${directusUrl}${pathname}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
@@ -141,8 +251,10 @@ async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
   });
 
   if (response.status === 401 && token && !retried) {
-    cachedToken = null;
-    return directusFetch<T>(pathname, true);
+    if (cachedToken === token) {
+      cachedToken = null;
+    }
+    return directusFetch<T>(pathname, true, tags);
   }
 
   if (!response.ok) {
@@ -152,9 +264,28 @@ async function directusFetch<T>(pathname: string, retried = false): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function assetUrl(fileId: DirectusFileId) {
+export function assetUrl(
+  fileId: DirectusFileId,
+  preset?: AssetPreset,
+) {
   if (!fileId) return null;
-  return `/api/assets/${fileId}`;
+  if (preset && !ASSET_PRESETS.has(preset)) {
+    throw new Error(`Unsupported asset preset: ${preset}`);
+  }
+  const suffix = preset ? `?key=${encodeURIComponent(preset)}` : "";
+  return `/api/assets/${fileId}${suffix}`;
+}
+
+export function albumPictureSources(
+  photo: Pick<AlbumPhoto, "sdr_image" | "hdr_image" | "renditions">,
+) {
+  const hlg = photo.renditions?.find((rendition) => rendition.kind === "hlg");
+  return {
+    thumbnail: assetUrl(photo.sdr_image, "album-thumb"),
+    sdr: assetUrl(photo.sdr_image),
+    hdr: assetUrl(photo.hdr_image),
+    hlg: assetUrl(hlg?.file ?? null),
+  };
 }
 
 export function mediaUrl(pathname: string | null | undefined) {
@@ -179,7 +310,9 @@ export async function getPosts(limit = 24) {
   });
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<Post>>(
-    `/items/posts?${params.toString()}`
+    `/items/posts?${params.toString()}`,
+    false,
+    ["posts:list"],
   );
   return response.data;
 }
@@ -192,7 +325,9 @@ export async function getPost(slug: string) {
   });
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<Post>>(
-    `/items/posts?${params.toString()}`
+    `/items/posts?${params.toString()}`,
+    false,
+    ["posts:list", `posts:slug:${slug}`],
   );
   return response.data[0] ?? null;
 }
@@ -205,7 +340,9 @@ export async function getVideoProjects(limit = 24) {
   });
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<VideoProject>>(
-    `/items/video_projects?${params.toString()}`
+    `/items/video_projects?${params.toString()}`,
+    false,
+    ["videos:list"],
   );
   return response.data.map(sortMasters);
 }
@@ -218,10 +355,115 @@ export async function getVideoProject(slug: string) {
   });
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<VideoProject>>(
-    `/items/video_projects?${params.toString()}`
+    `/items/video_projects?${params.toString()}`,
+    false,
+    ["videos:list", `videos:slug:${slug}`],
   );
   const project = response.data[0] ?? null;
   return project ? sortMasters(project) : null;
+}
+
+export function filterPublishedAlbums(albums: Album[]) {
+  return albums
+    .filter(isPublished)
+    .map((album) => ({
+      ...album,
+      photos: [...(album.photos ?? [])]
+        .filter(isPublished)
+        .sort((left, right) => {
+          const orderDifference =
+            (left.sort_order ?? 0) - (right.sort_order ?? 0);
+          return orderDifference || left.id - right.id;
+        }),
+    }));
+}
+
+function addPublicAlbumFilters(params: URLSearchParams) {
+  params.set("filter[published][_eq]", "true");
+  params.set("deep[photos][_filter][published][_eq]", "true");
+  params.set("deep[photos][_sort]", "sort_order,id");
+}
+
+export async function getAlbums(limit = 100) {
+  const params = new URLSearchParams({
+    fields: ALBUM_LIST_FIELDS,
+    sort: "-created_at,-id",
+    limit: String(limit),
+  });
+  addPublicAlbumFilters(params);
+  const response = await directusFetch<DirectusListResponse<Album>>(
+    `/items/albums?${params.toString()}`,
+    false,
+    ["albums:list"],
+  );
+  return filterPublishedAlbums(response.data);
+}
+
+export async function getAlbum(slug: string) {
+  const params = new URLSearchParams({
+    fields: ALBUM_DETAIL_FIELDS,
+    "filter[slug][_eq]": slug,
+    limit: "1",
+  });
+  addPublicAlbumFilters(params);
+  const response = await directusFetch<DirectusListResponse<Album>>(
+    `/items/albums?${params.toString()}`,
+    false,
+    ["albums:list", `albums:slug:${slug}`],
+  );
+  return filterPublishedAlbums(response.data)[0] ?? null;
+}
+
+export type SiteSettings = {
+  background_image: DirectusFileId;
+  background_blur: number | null;
+  background_images?: Array<{ directus_files_id: DirectusFileId }> | null;
+  accent_color?: string | null;
+};
+
+export async function getSiteSettings(): Promise<SiteSettings | null> {
+  try {
+    const response = await directusFetch<{ data: SiteSettings }>(
+      "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id,accent_color",
+      false,
+      ["site-settings"],
+    );
+    return response.data ?? null;
+  } catch {
+    // Preserve background settings while accent_color is rolling out.
+    try {
+      const response = await directusFetch<{ data: SiteSettings }>(
+        "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id",
+        false,
+        ["site-settings"],
+      );
+      return response.data ?? null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+export type SiteBackgroundImage = {
+  url: string;
+  thumbnailUrl: string;
+};
+
+/** Sized background assets: default first, then the deduplicated gallery. */
+export function siteBackgroundImages(
+  settings: SiteSettings | null,
+): SiteBackgroundImage[] {
+  if (!settings) return [];
+
+  const fileIds = [
+    settings.background_image,
+    ...(settings.background_images ?? []).map((row) => row.directus_files_id),
+  ].filter((fileId): fileId is string => Boolean(fileId));
+
+  return [...new Set(fileIds)].map((fileId) => ({
+    url: assetUrl(fileId, "site-background")!,
+    thumbnailUrl: assetUrl(fileId, "site-background-thumb")!,
+  }));
 }
 
 export async function getCounts() {
@@ -229,14 +471,24 @@ export async function getCounts() {
   addPublishedFilter(params);
   const qs = params.toString();
 
-  const [postsRes, videosRes] = await Promise.all([
-    directusFetch<DirectusAggregateResponse>(`/items/posts?${qs}`),
-    directusFetch<DirectusAggregateResponse>(`/items/video_projects?${qs}`),
+  const [postsRes, videosRes, albumsRes] = await Promise.all([
+    directusFetch<DirectusAggregateResponse>(`/items/posts?${qs}`, false, [
+      "posts:list",
+    ]),
+    directusFetch<DirectusAggregateResponse>(
+      `/items/video_projects?${qs}`,
+      false,
+      ["videos:list"],
+    ),
+    directusFetch<DirectusAggregateResponse>(`/items/albums?${qs}`, false, [
+      "albums:list",
+    ]),
   ]);
 
   return {
     posts: aggregateCount(postsRes),
     videos: aggregateCount(videosRes),
+    albums: aggregateCount(albumsRes),
   };
 }
 
@@ -258,4 +510,56 @@ function sortMasters(project: VideoProject) {
       return orderA !== orderB ? orderA - orderB : a.id - b.id;
     }),
   };
+}
+
+export type AssetDimensions = { width: number; height: number };
+
+/**
+ * Intrinsic size lookup for markdown inline images (`/api/assets/<id>` URLs),
+ * so `<img>` elements can declare width/height and avoid layout shift.
+ * File dimensions are immutable after upload, so the revalidate TTL is enough
+ * and no invalidation tags are needed.
+ */
+export async function getAssetDimensions(
+  fileIds: string[],
+): Promise<Map<string, AssetDimensions>> {
+  const results = new Map<string, AssetDimensions>();
+  const ids = [...new Set(fileIds)].filter(Boolean);
+  if (ids.length === 0) return results;
+
+  try {
+    const params = new URLSearchParams({
+      fields: "id,width,height",
+      "filter[id][_in]": ids.join(","),
+      limit: String(ids.length),
+    });
+    const response = await directusFetch<{
+      data: Array<{
+        id: string;
+        width: number | null;
+        height: number | null;
+      }>;
+    }>(`/files?${params.toString()}`);
+
+    for (const file of response.data) {
+      if (file.width && file.height) {
+        results.set(file.id, { width: file.width, height: file.height });
+      }
+    }
+  } catch {
+    // Dimension lookup is best-effort: on failure images render without
+    // intrinsic size (same behavior as before this lookup existed).
+  }
+
+  return results;
+}
+
+/** Extract Directus file ids from `/api/assets/<id>` markdown image URLs. */
+export function assetIdsFromMarkdown(markdown: string): string[] {
+  const ids: string[] = [];
+  const pattern = /\/api\/assets\/([a-zA-Z0-9-]+)/g;
+  for (const match of markdown.matchAll(pattern)) {
+    ids.push(match[1]);
+  }
+  return ids;
 }

@@ -1,8 +1,16 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { BackgroundControl } from "@/components/BackgroundControl";
 import { NavBar } from "@/components/NavBar";
 import { PageTransition } from "@/components/PageTransition";
+import { getSiteSettings, siteBackgroundImages } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
+import {
+  THEME_BOOTSTRAP_SCRIPT,
+  resolveThemeColor,
+  rgbChannels,
+} from "@/lib/theme-color";
+import { LIQUID_BOOTSTRAP_SCRIPT } from "@/lib/liquid-preferences";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -21,23 +29,63 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const settings = await getSiteSettings();
+  const bgImages = siteBackgroundImages(settings);
+  const bgUrl = bgImages[0]?.url ?? null;
+  const blur = settings?.background_blur ?? 8;
+  const siteTheme = resolveThemeColor(settings?.accent_color);
+
   return (
-    <html lang="zh-CN" data-scroll-behavior="smooth" suppressHydrationWarning>
+    <html
+      lang="zh-CN"
+      data-scroll-behavior="smooth"
+      suppressHydrationWarning
+      style={
+        {
+          "--site-accent-base": siteTheme.base,
+          "--site-accent-readable": siteTheme.readable,
+          "--site-on-accent": siteTheme.onAccent,
+          "--site-accent-rgb": rgbChannels(siteTheme.rgb),
+        } as React.CSSProperties
+      }
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: LIQUID_BOOTSTRAP_SCRIPT }} />
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
+      </head>
       <body>
+        {bgUrl ? (
+          <div
+            className="site-bg"
+            style={{
+              backgroundImage: `url(${bgUrl})`,
+              "--site-bg-blur": `${blur}px`,
+            } as React.CSSProperties}
+            aria-hidden="true"
+          />
+        ) : null}
+
         <a href="#main-content" className="skip-link">
-          Skip to content
+          跳到主要内容
         </a>
 
         <header className="site-header" role="banner">
-          <Link className="brand" href="/" aria-label={`${siteConfig.title} - Home`}>
+          <Link className="brand" href="/" aria-label={`${siteConfig.title} - 首页`}>
             {siteConfig.title}
           </Link>
-          <NavBar />
+          <div className="site-header-actions">
+            <NavBar />
+            <BackgroundControl
+              images={bgImages}
+              defaultBlur={blur}
+              siteAccentColor={siteTheme.base}
+            />
+          </div>
         </header>
 
         <div id="main-content" tabIndex={-1}>

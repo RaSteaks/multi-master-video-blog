@@ -1,0 +1,906 @@
+"use client";
+
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
+import { createPortal } from "react-dom";
+import { usePathname } from "next/navigation";
+import type { SiteBackgroundImage } from "@/lib/directus";
+import {
+  COLOR_CHECKER_PRESETS,
+  DEFAULT_ACCENT_HEX,
+  THEME_STORAGE_KEY,
+  chooseOnAccent,
+  createStoredTheme,
+  hexToHsv,
+  hsvToHex,
+  normalizeHsv,
+  parseStoredTheme,
+  resolveThemeColor,
+  rgbChannels,
+  srgbHexToRec709Hex,
+  storedThemeToResolved,
+  type ColorCheckerPresetId,
+  type HsvColor,
+  type ResolvedThemeColor,
+  type StoredThemeColor,
+} from "@/lib/theme-color";
+import { HsvPicker } from "./HsvPicker";
+import { LiquidSettings, useLiquidPreferences } from "./LiquidSettings";
+import { LiquidBackground } from "./LiquidBackground";
+
+type BgMode = "image" | "liquid";
+type ColorEditor = "presets" | "custom";
+type AppearanceView = "color" | "background";
+
+const MODE_KEY = "mm-bg-mode";
+const BLUR_KEY = "mm-bg-blur";
+const IMAGE_KEY = "mm-bg-image";
+const MIN_BLUR = 0;
+const MAX_BLUR = 40;
+const COLLAPSED_COLOR_CHECKER_COUNT = 12;
+
+/** Sections that ship their own liquid background layer. */
+const liquidSections = new Set(["home", "videos", "posts", "upload"]);
+
+function readLocal(key: string) {
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+function writeLocal(key: string, value: string) {
+  try { window.localStorage.setItem(key, value); } catch { /* Keep the in-memory preference. */ }
+}
+function removeLocal(key: string) {
+  try { window.localStorage.removeItem(key); } catch { /* Keep the in-memory preference. */ }
+}
+
+function handleTabKeyDown(
+  event: ReactKeyboardEvent<HTMLButtonElement>
+) {
+  if (
+    event.key !== "ArrowLeft" &&
+    event.key !== "ArrowRight" &&
+    event.key !== "Home" &&
+    event.key !== "End"
+  ) {
+    return;
+  }
+
+  const tabList = event.currentTarget.parentElement;
+  if (!tabList?.matches('[role="tablist"]')) return;
+
+  const tabs = Array.from(tabList.children).filter(
+    (element): element is HTMLButtonElement =>
+      element instanceof HTMLButtonElement &&
+      element.getAttribute("role") === "tab"
+  );
+  const currentIndex = tabs.indexOf(event.currentTarget);
+  if (currentIndex < 0) return;
+
+  let nextIndex = currentIndex;
+  if (event.key === "ArrowLeft") {
+    nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+  } else if (event.key === "ArrowRight") {
+    nextIndex = (currentIndex + 1) % tabs.length;
+  } else if (event.key === "Home") {
+    nextIndex = 0;
+  } else if (event.key === "End") {
+    nextIndex = tabs.length - 1;
+  }
+
+  event.preventDefault();
+  const nextTab = tabs[nextIndex];
+  nextTab?.focus();
+  nextTab?.click();
+}
+
+function clampBlur(value: number) {
+  return Math.min(MAX_BLUR, Math.max(MIN_BLUR, Math.round(value)));
+}
+
+function roundedHsv(color: string) {
+  return normalizeHsv(hexToHsv(color));
+}
+
+function isColorCheckerPresetFolded(presetId: ColorCheckerPresetId) {
+  return (
+    COLOR_CHECKER_PRESETS.findIndex((preset) => preset.id === presetId) >=
+    COLLAPSED_COLOR_CHECKER_COUNT
+  );
+}
+
+function applyThemeVariables(theme: ResolvedThemeColor | null) {
+  const root = document.documentElement;
+  if (!theme) {
+    root.style.removeProperty("--user-accent-base");
+    root.style.removeProperty("--user-accent-readable");
+    root.style.removeProperty("--user-on-accent");
+    root.style.removeProperty("--user-accent-rgb");
+    delete root.dataset.themeColor;
+    return;
+  }
+
+  root.style.setProperty("--user-accent-base", theme.base);
+  root.style.setProperty("--user-accent-readable", theme.readable);
+  root.style.setProperty("--user-on-accent", theme.onAccent);
+  root.style.setProperty("--user-accent-rgb", rgbChannels(theme.rgb));
+  root.dataset.themeColor = "local";
+}
+
+export function AppearanceControl({
+  images,
+  defaultBlur = 8,
+  siteAccentColor = DEFAULT_ACCENT_HEX,
+}: {
+  images: SiteBackgroundImage[];
+  defaultBlur?: number;
+  siteAccentColor?: string;
+}) {
+  const liquid = useLiquidPreferences();
+  const pathname = usePathname() || "/";
+  const section = pathname.split("/").filter(Boolean)[0] || "home";
+  const isHome = section === "home";
+  const hasImage = images.length > 0;
+  const siteTheme = useMemo(
+    () => resolveThemeColor(siteAccentColor),
+    [siteAccentColor]
+  );
+
+  const [mounted, setMounted] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [mode, setModeState] = useState<BgMode | null>(null);
+  const [blur, setBlurState] = useState(clampBlur(defaultBlur));
+  const [hasUserBlur, setHasUserBlur] = useState(false);
+  const [image, setImageState] = useState<string | null>(null);
+  const [themeReady, setThemeReady] = useState(false);
+  const [storedTheme, setStoredTheme] = useState<StoredThemeColor | null>(null);
+  const [appearanceView, setAppearanceView] =
+    useState<AppearanceView>("background");
+  const [colorEditor, setColorEditor] = useState<ColorEditor>("presets");
+  const [customHsv, setCustomHsv] = useState<HsvColor>(() =>
+    roundedHsv(siteTheme.base)
+  );
+  const [colorCheckerExpanded, setColorCheckerExpanded] = useState(false);
+  const [inspectedPresetId, setInspectedPresetId] =
+    useState<ColorCheckerPresetId | null>(null);
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef(true);
+  const panelId = useId();
+  const panelTitleId = useId();
+  const colorSectionId = useId();
+  const colorCheckerId = useId();
+  const backgroundSectionId = useId();
+  const colorTabId = useId();
+  const backgroundTabId = useId();
+  const colorPanelId = useId();
+  const backgroundPanelId = useId();
+  const presetsTabId = useId();
+  const customTabId = useId();
+  const presetsPanelId = useId();
+  const customPanelId = useId();
+
+  const currentImage = image ?? images[0]?.url ?? null;
+  const effectiveMode: BgMode =
+    mode ?? (liquidSections.has(section) || !hasImage ? "liquid" : "image");
+  const effectiveTheme = storedTheme
+    ? storedThemeToResolved(storedTheme)
+    : siteTheme;
+
+  useEffect(() => {
+    setMounted(true);
+
+    const savedMode = readLocal(MODE_KEY);
+    if (savedMode === "image" || savedMode === "liquid") {
+      setModeState(savedMode);
+    }
+
+    const savedBlur = readLocal(BLUR_KEY);
+    if (savedBlur != null && Number.isFinite(Number(savedBlur))) {
+      setBlurState(clampBlur(Number(savedBlur)));
+      setHasUserBlur(true);
+    }
+
+    const savedImage = readLocal(IMAGE_KEY);
+    if (savedImage && images.some((candidate) => candidate.url === savedImage)) {
+      setImageState(savedImage);
+    }
+
+    const rawTheme = readLocal(THEME_STORAGE_KEY);
+    const parsedTheme = parseStoredTheme(rawTheme);
+    if (parsedTheme) {
+      setStoredTheme(parsedTheme);
+      setColorEditor(parsedTheme.kind === "custom" ? "custom" : "presets");
+      if (parsedTheme.kind === "custom" && parsedTheme.hsv) {
+        setCustomHsv(parsedTheme.hsv);
+      } else if (
+        parsedTheme.kind === "preset" &&
+        parsedTheme.presetId &&
+        isColorCheckerPresetFolded(parsedTheme.presetId)
+      ) {
+        setColorCheckerExpanded(true);
+      }
+      applyThemeVariables(storedThemeToResolved(parsedTheme));
+    } else if (rawTheme) {
+      removeLocal(THEME_STORAGE_KEY);
+      applyThemeVariables(null);
+    }
+    setThemeReady(true);
+    // Server-derived values are stable for this mounted layout.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.bgMode = mode ?? "auto";
+  }, [mode]);
+
+  useEffect(() => {
+    if (!hasUserBlur) return;
+    document.documentElement.style.setProperty("--user-bg-blur", `${blur}px`);
+  }, [blur, hasUserBlur]);
+
+  useEffect(() => {
+    if (!themeReady) return;
+
+    if (!storedTheme) {
+      removeLocal(THEME_STORAGE_KEY);
+      applyThemeVariables(null);
+      return;
+    }
+
+    applyThemeVariables(storedThemeToResolved(storedTheme));
+    const timeout = window.setTimeout(() => {
+      writeLocal(
+        THEME_STORAGE_KEY,
+        JSON.stringify(storedTheme)
+      );
+    }, 80);
+
+    return () => window.clearTimeout(timeout);
+  }, [storedTheme, themeReady]);
+
+  useEffect(() => {
+    function onStorage(event: StorageEvent) {
+      if (event.key !== THEME_STORAGE_KEY) return;
+      const nextTheme = parseStoredTheme(event.newValue);
+      setStoredTheme(nextTheme);
+      if (nextTheme?.kind === "custom" && nextTheme.hsv) {
+        setColorEditor("custom");
+        setCustomHsv(nextTheme.hsv);
+      } else if (nextTheme?.kind === "preset") {
+        setColorEditor("presets");
+        if (
+          nextTheme.presetId &&
+          isColorCheckerPresetFolded(nextTheme.presetId)
+        ) {
+          setColorCheckerExpanded(true);
+        }
+      }
+      applyThemeVariables(
+        nextTheme ? storedThemeToResolved(nextTheme) : null
+      );
+    }
+
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        restoreFocusRef.current = false;
+        setOpen(false);
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        restoreFocusRef.current = true;
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const firstControl = panelRef.current?.querySelector<HTMLElement>(
+      "button:not(:disabled), input:not(:disabled)"
+    );
+    firstControl?.focus();
+
+    return () => {
+      if (restoreFocusRef.current) {
+        toggleRef.current?.focus();
+      }
+    };
+  }, [open]);
+
+  function selectMode(next: BgMode) {
+    setModeState(next);
+    writeLocal(MODE_KEY, next);
+  }
+
+  function selectImage(url: string) {
+    setImageState(url);
+    writeLocal(IMAGE_KEY, url);
+    if (mode !== "image") selectMode("image");
+  }
+
+  function updateBlur(value: number) {
+    const next = clampBlur(value);
+    setBlurState(next);
+    setHasUserBlur(true);
+    writeLocal(BLUR_KEY, String(next));
+  }
+
+  function resetBackground() {
+    liquid.reset();
+    removeLocal(MODE_KEY);
+    removeLocal(BLUR_KEY);
+    removeLocal(IMAGE_KEY);
+    document.documentElement.style.removeProperty("--user-bg-blur");
+    setHasUserBlur(false);
+    setBlurState(clampBlur(defaultBlur));
+    setModeState(null);
+    setImageState(null);
+  }
+
+  function selectPreset(presetId: ColorCheckerPresetId) {
+    const next = createStoredTheme({ kind: "preset", presetId });
+    setStoredTheme(next);
+    setColorEditor("presets");
+    setInspectedPresetId(presetId);
+    applyThemeVariables(storedThemeToResolved(next));
+  }
+
+  function openCustomEditor() {
+    setCustomHsv(roundedHsv(effectiveTheme.base));
+    setColorEditor("custom");
+  }
+
+  function updateCustomColor(nextValue: HsvColor) {
+    const nextHsv = normalizeHsv(nextValue);
+    const next = createStoredTheme({ kind: "custom", hsv: nextHsv });
+    setCustomHsv(nextHsv);
+    setStoredTheme(next);
+    applyThemeVariables(storedThemeToResolved(next));
+  }
+
+  function resetTheme() {
+    setStoredTheme(null);
+    setColorEditor("presets");
+    setCustomHsv(roundedHsv(siteTheme.base));
+    setColorCheckerExpanded(false);
+    setInspectedPresetId(null);
+    removeLocal(THEME_STORAGE_KEY);
+    applyThemeVariables(null);
+  }
+
+  const customHex = hsvToHex(customHsv);
+  const rec709Hex = srgbHexToRec709Hex(customHex);
+  const activePresetId =
+    storedTheme?.kind === "preset" ? storedTheme.presetId : undefined;
+  const inspectedPreset =
+    COLOR_CHECKER_PRESETS.find(
+      (preset) => preset.id === (inspectedPresetId ?? activePresetId)
+    ) ?? COLOR_CHECKER_PRESETS[0];
+  const visibleColorCheckerPresets = COLOR_CHECKER_PRESETS.slice(
+    0,
+    colorCheckerExpanded
+      ? COLOR_CHECKER_PRESETS.length
+      : COLLAPSED_COLOR_CHECKER_COUNT
+  );
+  const sourceLabel = storedTheme
+    ? storedTheme.kind === "preset"
+      ? "本地预设"
+      : "本地 HSV"
+    : "站点默认";
+
+  const customImage =
+    effectiveMode === "image" && currentImage && currentImage !== images[0]?.url
+      ? currentImage
+      : null;
+
+  const control = (
+    <div
+      className={`bg-control${isHome ? " bg-control-floating" : ""}`}
+      ref={rootRef}
+    >
+      <button
+        ref={toggleRef}
+        type="button"
+        className={`bg-control-toggle${open ? " active" : ""}`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls={panelId}
+        aria-label="外观设置"
+        title="外观设置"
+        onClick={() => {
+          restoreFocusRef.current = true;
+          setOpen((value) => !value);
+        }}
+      >
+        <SlidersIcon />
+      </button>
+
+      {open ? (
+        <div
+          ref={panelRef}
+          id={panelId}
+          className="bg-control-panel open"
+          role="dialog"
+          aria-labelledby={panelTitleId}
+        >
+        <header className="appearance-panel-header">
+          <div>
+            <span>DISPLAY</span>
+            <h2 id={panelTitleId}>外观设置</h2>
+          </div>
+          <button
+            type="button"
+            className="appearance-panel-close"
+            aria-label="关闭外观设置"
+            onClick={() => {
+              restoreFocusRef.current = true;
+              setOpen(false);
+            }}
+          >
+            <CloseIcon />
+          </button>
+        </header>
+
+        <div
+          className="appearance-panel-tabs"
+          role="tablist"
+          aria-label="设置类别"
+        >
+          <button
+            id={backgroundTabId}
+            type="button"
+            role="tab"
+            aria-selected={appearanceView === "background"}
+            aria-controls={backgroundPanelId}
+            tabIndex={appearanceView === "background" ? 0 : -1}
+            className={appearanceView === "background" ? "active" : ""}
+            onClick={() => setAppearanceView("background")}
+            onKeyDown={handleTabKeyDown}
+          >
+            背景
+          </button>
+          <button
+            id={colorTabId}
+            type="button"
+            role="tab"
+            aria-selected={appearanceView === "color"}
+            aria-controls={colorPanelId}
+            tabIndex={appearanceView === "color" ? 0 : -1}
+            className={appearanceView === "color" ? "active" : ""}
+            onClick={() => setAppearanceView("color")}
+            onKeyDown={handleTabKeyDown}
+          >
+            颜色
+          </button>
+        </div>
+
+        {appearanceView === "color" ? (
+          <section
+            id={colorPanelId}
+            className="appearance-section theme-color-section"
+            role="tabpanel"
+            aria-labelledby={`${colorTabId} ${colorSectionId}`}
+          >
+          <div className="appearance-section-heading">
+            <div>
+              <p className="bg-control-title" id={colorSectionId}>
+                全局颜色
+              </p>
+              <p className="appearance-source">{sourceLabel}</p>
+            </div>
+            <button
+              type="button"
+              className="bg-control-reset"
+              disabled={!storedTheme}
+              aria-label="恢复站点默认颜色"
+              onClick={resetTheme}
+            >
+              恢复默认
+            </button>
+          </div>
+
+          <div className="theme-preview" aria-live="polite">
+            <div className="theme-preview-colors" aria-hidden="true">
+              <span
+                className="theme-preview-swatch"
+                style={{ background: effectiveTheme.base }}
+              />
+              <span
+                className="theme-preview-swatch readable"
+                style={{ background: effectiveTheme.readable }}
+              />
+            </div>
+            <div className="theme-preview-data">
+              <span>
+                原始色 <code>{effectiveTheme.base}</code>
+              </span>
+              <span>
+                可读色 <code>{effectiveTheme.readable}</code>
+              </span>
+              <strong>{effectiveTheme.contrast.toFixed(2)} : 1</strong>
+            </div>
+          </div>
+
+          <div
+            className="theme-editor-tabs"
+            role="tablist"
+            aria-label="颜色选择方式"
+          >
+            <button
+              id={presetsTabId}
+              type="button"
+              role="tab"
+              aria-selected={colorEditor === "presets"}
+              aria-controls={presetsPanelId}
+              tabIndex={colorEditor === "presets" ? 0 : -1}
+              className={colorEditor === "presets" ? "active" : ""}
+              onClick={() => setColorEditor("presets")}
+              onKeyDown={handleTabKeyDown}
+            >
+              ColorChecker
+            </button>
+            <button
+              id={customTabId}
+              type="button"
+              role="tab"
+              aria-selected={colorEditor === "custom"}
+              aria-controls={customPanelId}
+              tabIndex={colorEditor === "custom" ? 0 : -1}
+              className={colorEditor === "custom" ? "active" : ""}
+              onClick={openCustomEditor}
+              onKeyDown={handleTabKeyDown}
+            >
+              HSV 自定义
+            </button>
+          </div>
+
+          {colorEditor === "presets" ? (
+            <div
+              id={presetsPanelId}
+              className="color-checker-picker"
+              role="tabpanel"
+              aria-labelledby={presetsTabId}
+            >
+              <div
+                className="color-checker-grid"
+                id={colorCheckerId}
+                role="group"
+                aria-label={`ColorChecker 24 色预设，当前显示 ${visibleColorCheckerPresets.length} 色`}
+                onPointerLeave={() => setInspectedPresetId(null)}
+                onBlur={(event) => {
+                  if (
+                    !event.currentTarget.contains(event.relatedTarget as Node)
+                  ) {
+                    setInspectedPresetId(null);
+                  }
+                }}
+              >
+                {visibleColorCheckerPresets.map((preset) => {
+                  const isActive = activePresetId === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className={isActive ? "active" : ""}
+                      aria-pressed={isActive}
+                      aria-label={`${preset.name} ${preset.hex}`}
+                      aria-describedby={`${colorCheckerId}-readout`}
+                      title={`${preset.name} · ${preset.hex}`}
+                      style={
+                        {
+                          "--swatch-color": preset.hex,
+                          "--swatch-ink": chooseOnAccent(preset.hex),
+                        } as CSSProperties
+                      }
+                      onPointerEnter={() => setInspectedPresetId(preset.id)}
+                      onFocus={() => setInspectedPresetId(preset.id)}
+                      onClick={() => selectPreset(preset.id)}
+                    >
+                      <span aria-hidden="true">{preset.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="color-checker-footer">
+                <div
+                  className="color-checker-readout"
+                  id={`${colorCheckerId}-readout`}
+                  aria-live="polite"
+                >
+                  <span
+                    className="color-checker-readout-swatch"
+                    style={{ background: inspectedPreset.hex }}
+                    aria-hidden="true"
+                  />
+                  <strong>{inspectedPreset.name}</strong>
+                  <code>{inspectedPreset.hex}</code>
+                </div>
+
+                <button
+                  type="button"
+                  className="color-checker-fold"
+                  aria-expanded={colorCheckerExpanded}
+                  aria-controls={colorCheckerId}
+                  onClick={() =>
+                    setColorCheckerExpanded((expanded) => !expanded)
+                  }
+                >
+                  <span>
+                    {colorCheckerExpanded ? "收起" : "展开"}
+                  </span>
+                  <span aria-hidden="true">
+                    {visibleColorCheckerPresets.length}/24
+                  </span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              id={customPanelId}
+              className="hsv-picker"
+              role="tabpanel"
+              aria-labelledby={customTabId}
+            >
+              <div
+                className="color-encoding-preview"
+                role="group"
+                aria-label="当前自定义颜色的 sRGB 与 Rec.709 编码预览"
+              >
+                <div className="color-encoding-card">
+                  <div
+                    className="color-encoding-window"
+                    style={
+                      {
+                        "--encoding-color": customHex,
+                        "--encoding-ink": chooseOnAccent(customHex),
+                      } as CSSProperties
+                    }
+                    aria-hidden="true"
+                  >
+                    <span>sRGB</span>
+                  </div>
+                  <div className="color-encoding-data">
+                    <strong>sRGB</strong>
+                    <code>{customHex}</code>
+                  </div>
+                </div>
+
+                <div className="color-encoding-card">
+                  <div
+                    className="color-encoding-window"
+                    style={
+                      {
+                        // CSS HEX is always sRGB. Keep the swatch visually
+                        // equivalent while exposing the Rec.709 code below.
+                        "--encoding-color": customHex,
+                        "--encoding-ink": chooseOnAccent(customHex),
+                      } as CSSProperties
+                    }
+                    aria-hidden="true"
+                  >
+                    <span>REC.709</span>
+                  </div>
+                  <div className="color-encoding-data">
+                    <strong>REC.709</strong>
+                    <code>{rec709Hex}</code>
+                  </div>
+                </div>
+              </div>
+              <p className="color-encoding-note">
+                色块显示同一目标颜色；下方分别给出 sRGB 与全范围 Rec.709
+                编码值。
+              </p>
+
+              <HsvPicker value={customHsv} onChange={updateCustomColor} />
+            </div>
+          )}
+
+          {colorEditor === "custom" && effectiveTheme.adjusted ? (
+            <p className="theme-adjustment-note">
+              原始色保持不变；文字与焦点使用自动派生的可读色。
+            </p>
+          ) : null}
+          </section>
+        ) : (
+          <section
+            id={backgroundPanelId}
+            className="appearance-section background-section"
+            role="tabpanel"
+            aria-labelledby={`${backgroundTabId} ${backgroundSectionId}`}
+          >
+          <div className="appearance-section-heading">
+            <p className="bg-control-title" id={backgroundSectionId}>
+              背景样式
+            </p>
+            <button
+              type="button"
+              className="bg-control-reset"
+              aria-label="恢复背景默认"
+              onClick={resetBackground}
+            >
+              恢复默认
+            </button>
+          </div>
+
+          <div
+            className="bg-control-modes"
+            role="radiogroup"
+            aria-label="背景样式"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={effectiveMode === "image"}
+              className={effectiveMode === "image" ? "active" : ""}
+              onClick={() => selectMode("image")}
+            >
+              背景图片
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={effectiveMode === "liquid"}
+              className={effectiveMode === "liquid" ? "active" : ""}
+              onClick={() => selectMode("liquid")}
+            >
+              液体流动
+            </button>
+          </div>
+
+          {effectiveMode === "image" ? (
+            <>
+              {!hasImage ? (
+                <p className="bg-control-note">
+                  尚未配置背景图：请在 Directus 的 site_settings 中上传
+                  background_image / background_images。
+                </p>
+              ) : null}
+
+              {images.length > 1 ? (
+                <div
+                  className="bg-control-thumbs"
+                  role="radiogroup"
+                  aria-label="选择背景图片"
+                >
+                  {images.map((candidate, index) => (
+                    <button
+                      key={candidate.url}
+                      type="button"
+                      role="radio"
+                      aria-checked={currentImage === candidate.url}
+                      aria-label={`背景图片 ${index + 1}`}
+                      className={currentImage === candidate.url ? "active" : ""}
+                      style={{ backgroundImage: `url(${candidate.thumbnailUrl})` }}
+                      onClick={() => selectImage(candidate.url)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+
+              {hasImage ? (
+                <div className="bg-control-slider">
+                  <div className="bg-control-header">
+                    <label htmlFor={`${panelId}-blur`}>背景模糊</label>
+                    <output>{blur}px</output>
+                  </div>
+                  <input
+                    id={`${panelId}-blur`}
+                    type="range"
+                    min={MIN_BLUR}
+                    max={MAX_BLUR}
+                    step={1}
+                    value={blur}
+                    onChange={(event) =>
+                      updateBlur(Number(event.target.value))
+                    }
+                  />
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <LiquidSettings controller={liquid} />
+          )}
+          </section>
+        )}
+        </div>
+      ) : null}
+
+      {mounted &&
+      effectiveMode === "liquid" &&
+      !liquidSections.has(section)
+        ? createPortal(<LiquidBackground />, document.body)
+        : null}
+
+      {mounted && customImage
+        ? createPortal(
+            <div
+              className="site-bg"
+              style={
+                {
+                  backgroundImage: `url(${customImage})`,
+                  "--site-bg-blur": `${defaultBlur}px`,
+                } as CSSProperties
+              }
+              aria-hidden="true"
+            />,
+            document.body
+          )
+        : null}
+    </div>
+  );
+
+  if (isHome) {
+    return mounted ? createPortal(control, document.body) : null;
+  }
+
+  return control;
+}
+
+function SlidersIcon() {
+  return (
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="4" y1="21" x2="4" y2="14" />
+      <line x1="4" y1="10" x2="4" y2="3" />
+      <line x1="12" y1="21" x2="12" y2="12" />
+      <line x1="12" y1="8" x2="12" y2="3" />
+      <line x1="20" y1="21" x2="20" y2="16" />
+      <line x1="20" y1="12" x2="20" y2="3" />
+      <line x1="1" y1="14" x2="7" y2="14" />
+      <line x1="9" y1="8" x2="15" y2="8" />
+      <line x1="17" y1="16" x2="23" y2="16" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  );
+}

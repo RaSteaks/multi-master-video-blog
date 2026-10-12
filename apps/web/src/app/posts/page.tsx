@@ -5,16 +5,35 @@ export default async function PostsPage() {
   const posts = await getPosts();
 
   return (
-    <main className="shell page-stack">
-      <header className="page-header">
-        <p className="eyebrow">Articles</p>
-        <h1>Posts</h1>
+    <main className="shell page-stack glass-cards">
+      <header className="page-header list-page-header">
+        <div>
+          <p className="eyebrow">记录探索技术的路程</p>
+          <h1>文章</h1>
+        </div>
+        <Link className="page-action-link" href="/write">
+          <svg
+            width="17"
+            height="17"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
+          </svg>
+          写文章
+        </Link>
       </header>
 
       {posts.length > 0 ? (
         <div className="content-grid">
-          {posts.map((post) => {
-            const cover = assetUrl(post.cover_image);
+          {posts.map((post, index) => {
+            const cover = assetUrl(post.cover_image, "content-card");
 
             return (
               <Link
@@ -27,11 +46,15 @@ export default async function PostsPage() {
                   <img
                     alt={`Cover image for ${post.title}`}
                     src={cover}
-                    loading="lazy"
+                    width={960}
+                    height={540}
+                    loading={index < 3 ? "eager" : "lazy"}
+                    fetchPriority={index === 0 ? "high" : "auto"}
+                    decoding="async"
                   />
                 ) : (
                   <div className="media-placeholder" aria-hidden="true">
-                    Article
+                    文章
                   </div>
                 )}
                 <div>
@@ -44,7 +67,7 @@ export default async function PostsPage() {
         </div>
       ) : (
         <div className="empty-state" role="status">
-          No posts have been created yet.
+          暂无文章内容。
         </div>
       )}
     </main>

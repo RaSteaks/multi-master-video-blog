@@ -11,18 +11,21 @@ import { siteConfig } from "@/lib/site-config";
 type UploadWidgetProps = {
   className: string;
   href: string;
-  layout?: HomeWidgetLayout;
   title: string;
 };
 
 type HomeWidgetStyle = CSSProperties & Record<`--${string}`, string | number>;
 
 export default async function Home() {
-  const { posts: postCount, videos: videoCount } = await getCounts();
+  const {
+    posts: postCount,
+    videos: videoCount,
+    albums: albumCount,
+  } = await getCounts();
 
   return (
     <>
-      <LiquidBackground variant="teal" />
+      <LiquidBackground />
 
       <main className="orbital-home" aria-label={siteConfig.home.profileName}>
         <div
@@ -34,24 +37,30 @@ export default async function Home() {
             layout={homeLayout.widgets.collection}
             postCount={postCount}
             videoCount={videoCount}
+            albumCount={albumCount}
           />
 
           <div className="home-action-row">
             <UploadWidget
               className="floating-widget home-free-widget orbit-card orbit-upload orbit-blog-upload"
               href="/upload"
-              layout={homeLayout.widgets.uploadBlog}
-              title="Upload Blog"
+              title="上传视频"
+            />
+
+            <UploadWidget
+              className="floating-widget home-free-widget orbit-card orbit-upload orbit-album-upload"
+              href={siteConfig.home.albumUploadHref}
+              title="上传照片"
             />
 
             <UploadWidget
               className="floating-widget home-free-widget orbit-card orbit-upload orbit-post-upload"
               href={siteConfig.home.postUploadHref}
-              layout={homeLayout.widgets.writePost}
               title="写文章"
             />
 
-            <GitHubWidget layout={homeLayout.widgets.github} />
+            <GitHubWidget />
+            <BilibiliWidget />
           </div>
         </div>
       </main>
@@ -76,7 +85,14 @@ function ProfileHub({
     >
       <div className="profile-avatar">
         {siteConfig.home.avatarUrl ? (
-          <img src={siteConfig.home.avatarUrl} alt={`${siteConfig.home.profileName} avatar`} />
+          <img
+            src={siteConfig.home.avatarUrl}
+            alt={`${siteConfig.home.profileName} avatar`}
+            width={256}
+            height={256}
+            loading="eager"
+            fetchPriority="high"
+          />
         ) : (
           <span>{siteConfig.home.profileInitials}</span>
         )}
@@ -94,11 +110,13 @@ function CollectionCard({
   layout,
   postCount,
   videoCount,
+  albumCount,
 }: {
   className?: string;
   layout?: HomeWidgetLayout;
   postCount: number;
   videoCount: number;
+  albumCount: number;
 }) {
   return (
     <section
@@ -118,6 +136,10 @@ function CollectionCard({
           <span>{siteConfig.home.collectionPostLabel}</span>
           <strong>{postCount}</strong>
         </Link>
+        <Link href="/albums">
+          <span>{siteConfig.home.collectionAlbumLabel}</span>
+          <strong>{albumCount}</strong>
+        </Link>
         <Link href="/about">
           <span>{siteConfig.home.collectionAboutLabel}</span>
           <strong>{siteConfig.home.collectionAboutValue}</strong>
@@ -127,21 +149,20 @@ function CollectionCard({
   );
 }
 
-function UploadWidget({ className, href, layout, title }: UploadWidgetProps) {
+function UploadWidget({ className, href, title }: UploadWidgetProps) {
   const isExternal = href.startsWith("http");
   const content = <strong>{title}</strong>;
-  const style = layout ? homeWidgetStyle(layout) : undefined;
 
   if (isExternal) {
     return (
-      <a className={className} href={href} style={style} target="_blank" rel="noreferrer">
+      <a className={className} href={href} target="_blank" rel="noreferrer">
         {content}
       </a>
     );
   }
 
   return (
-    <Link className={className} href={href} style={style}>
+    <Link className={className} href={href}>
       {content}
     </Link>
   );
@@ -149,22 +170,38 @@ function UploadWidget({ className, href, layout, title }: UploadWidgetProps) {
 
 function GitHubWidget({
   className = "floating-widget home-free-widget github-widget",
-  layout,
 }: {
   className?: string;
-  layout?: HomeWidgetLayout;
 }) {
   return (
     <a
       className={className}
       href={siteConfig.home.githubUrl}
-      style={layout ? homeWidgetStyle(layout) : undefined}
       target="_blank"
       rel="noreferrer"
       aria-label="Open GitHub profile"
     >
       <GithubIcon />
       <span>GitHub</span>
+    </a>
+  );
+}
+
+function BilibiliWidget({
+  className = "floating-widget home-free-widget bilibili-widget",
+}: {
+  className?: string;
+}) {
+  return (
+    <a
+      className={className}
+      href={siteConfig.home.bilibiliUrl}
+      target="_blank"
+      rel="noreferrer"
+      aria-label="Open Bilibili space"
+    >
+      <BilibiliIcon />
+      <span>Bilibili</span>
     </a>
   );
 }
@@ -206,6 +243,14 @@ function GithubIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.54 2.87 8.39 6.84 9.75.5.1.68-.22.68-.49 0-.24-.01-1.04-.01-1.89-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.37-2.22-.26-4.55-1.14-4.55-5.07 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.31.1-2.72 0 0 .84-.28 2.75 1.05A9.4 9.4 0 0 1 12 6.99c.85 0 1.7.12 2.5.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.46.1 2.72.64.72 1.03 1.64 1.03 2.76 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49A10.15 10.15 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z" />
+    </svg>
+  );
+}
+
+function BilibiliIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M18.223 3.086a1.25 1.25 0 0 1 0 1.768L17.08 5.996h1.17A3.75 3.75 0 0 1 22 9.747v7.5a3.75 3.75 0 0 1-3.75 3.75H5.75A3.75 3.75 0 0 1 2 17.247v-7.5a3.75 3.75 0 0 1 3.75-3.75h1.166L5.775 4.854a1.25 1.25 0 1 1 1.769-1.768l2.21 2.21h4.49l2.211-2.21a1.25 1.25 0 0 1 1.768 0zM18.25 8.496H5.75A1.25 1.25 0 0 0 4.5 9.747v7.5A1.25 1.25 0 0 0 5.75 18.5h12.5a1.25 1.25 0 0 0 1.25-1.253v-7.5a1.25 1.25 0 0 0-1.25-1.251zM9.5 10.5a1.5 1.5 0 0 1 1.5 1.5v1a1.5 1.5 0 0 1-3 0v-1a1.5 1.5 0 0 1 1.5-1.5zm5 0a1.5 1.5 0 0 1 1.5 1.5v1a1.5 1.5 0 0 1-3 0v-1a1.5 1.5 0 0 1 1.5-1.5z" />
     </svg>
   );
 }

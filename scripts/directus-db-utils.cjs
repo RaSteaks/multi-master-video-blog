@@ -115,7 +115,7 @@ function qualifiedTable(schema, table) {
   return `${quoteIdent(schema)}.${quoteIdent(table)}`;
 }
 
-async function openDirectusDatabase(env = loadDirectusEnv()) {
+async function openDirectusDatabase(env = loadDirectusEnv(), connectionOptions = {}) {
   const type = normalizeDbClient(env.DB_CLIENT);
 
   if (type === "sqlite") {
@@ -171,8 +171,13 @@ async function openDirectusDatabase(env = loadDirectusEnv()) {
   if (type === "pg") {
     const { Client } = require("pg");
     const schema = postgresSchema(env);
-    const client = new Client(postgresConfig(env));
-    await client.connect();
+    const client = new Client({ ...postgresConfig(env), ...connectionOptions });
+    try {
+      await client.connect();
+    } catch (error) {
+      await client.end().catch(() => {});
+      throw error;
+    }
 
     return {
       type,
