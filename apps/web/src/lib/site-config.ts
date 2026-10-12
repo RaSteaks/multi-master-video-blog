@@ -34,16 +34,25 @@ export const siteConfig = {
     profileInitials: envText("SITE_HOME_PROFILE_INITIALS", "MM"),
     avatarUrl: envText("SITE_HOME_AVATAR_URL", ""),
     githubUrl: envText("SITE_GITHUB_URL", "https://github.com/"),
-    postUploadHref: envText("SITE_POST_UPLOAD_HREF", "/admin/content/posts/+"),
+    bilibiliUrl: envText("SITE_BILIBILI_URL", "https://space.bilibili.com/"),
+    postUploadHref: envText("SITE_POST_UPLOAD_HREF", "/write"),
+    albumUploadHref: envText(
+      "SITE_ALBUM_UPLOAD_HREF",
+      "/albums?dialog=upload",
+    ),
     collectionEyebrow: envText("SITE_HOME_COLLECTION_EYEBROW", "Collection"),
     collectionTitle: envText("SITE_HOME_COLLECTION_TITLE", "Personal Index"),
     collectionSummary: envText(
       "SITE_HOME_COLLECTION_SUMMARY",
-      "Blog, posts, and web about are grouped here for quick navigation.",
+      "Blog, posts, albums, and web about are grouped here for quick navigation.",
     ),
     collectionBlogLabel: envText("SITE_HOME_COLLECTION_BLOG_LABEL", "Blog"),
     collectionPostLabel: envText("SITE_HOME_COLLECTION_POST_LABEL", "Post"),
-    collectionAboutLabel: envText("SITE_HOME_COLLECTION_ABOUT_LABEL", "Web About"),
+    collectionAlbumLabel: envText(
+      "SITE_HOME_COLLECTION_ALBUM_LABEL",
+      "Album",
+    ),
+    collectionAboutLabel: envText("SITE_HOME_COLLECTION_ABOUT_LABEL", "个人简介"),
     collectionAboutValue: envText("SITE_HOME_COLLECTION_ABOUT_VALUE", "Info"),
   },
   about: {

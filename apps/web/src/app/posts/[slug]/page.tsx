@@ -1,9 +1,24 @@
 import { notFound } from "next/navigation";
-import type { ComponentPropsWithoutRef, ReactNode } from "react";
+import {
+  Children,
+  isValidElement,
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { assetUrl, getPost } from "@/lib/directus";
+import { markdownImageComponent } from "@/components/MarkdownImage";
+import { AnalyticsTracker } from "@/components/AnalyticsTracker";
+import { GaussianSplatEmbed } from "@/components/GaussianSplatEmbed";
+import {
+  assetIdsFromMarkdown,
+  assetUrl,
+  getAssetDimensions,
+  getPost,
+  type AssetDimensions,
+} from "@/lib/directus";
+import { parseGaussianSplatConfig } from "@/lib/gaussian-splat";
 import { siteConfig } from "@/lib/site-config";
 
 type PostPageProps = {
@@ -28,7 +43,7 @@ export async function generateMetadata({ params }: PostPageProps) {
     openGraph: {
       title: post.title,
       type: "article" as const,
-      images: post.cover_image ? [assetUrl(post.cover_image)!] : [],
+      images: post.cover_image ? [assetUrl(post.cover_image, "content-hero")!] : [],
     },
   };
 }
@@ -44,40 +59,38 @@ export default async function PostPage({ params }: PostPageProps) {
   const content = post.content || "";
   const tocItems = extractTocItems(content);
   const hasToc = tocItems.length > 0;
-  const coverImageUrl = assetUrl(post.cover_image);
-  const markdownComponents = createMarkdownComponents();
+  const coverImageUrl = assetUrl(post.cover_image, "content-hero");
+  const bgImageUrl = assetUrl(post.backgroundimage, "site-background");
+  // Inline markdown images get intrinsic width/height to prevent layout shift.
+  const assetDimensions = await getAssetDimensions(
+    assetIdsFromMarkdown(content),
+  );
+  const markdownComponents = createMarkdownComponents(assetDimensions);
 
   return (
-    <main className={hasToc ? "shell article-shell article-shell-with-toc" : "shell article-shell"}>
-      <header className="page-header">
-        <p className="eyebrow">{post.category || "Article"}</p>
-        <h1>{post.title}</h1>
-      </header>
-
-      {coverImageUrl && !hasToc ? (
-        <img
-          className="hero-media"
-          src={coverImageUrl}
-          alt={`Cover image for ${post.title}`}
-          loading="lazy"
+    <>
+      <AnalyticsTracker itemType="post" itemId={post.id} />
+      {bgImageUrl ? (
+        <div
+          className="site-bg"
+          style={{ backgroundImage: `url(${bgImageUrl})`, "--site-bg-blur": "14px" } as React.CSSProperties}
+          aria-hidden="true"
         />
       ) : null}
-
-      <div className={hasToc ? "article-content-grid" : undefined}>
-        <article className="markdown-body">
-          <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-            {content}
-          </ReactMarkdown>
-        </article>
-
-        {hasToc ? (
+    <main className={hasToc ? "shell article-shell article-shell-with-toc" : "shell article-shell"}>
+      {hasToc ? (
+        <div className="article-content-grid">
+          {/* TOC: standalone frosted glass card, sticky beside the article */}
           <aside className="article-toc" aria-label="Article table of contents">
             {coverImageUrl ? (
               <img
                 className="article-toc-cover"
                 src={coverImageUrl}
                 alt={`Cover image for ${post.title}`}
-                loading="lazy"
+                width={640}
+                height={360}
+                loading="eager"
+                fetchPriority="high"
               />
             ) : null}
             <p>{siteConfig.articleTocLabel}</p>
@@ -93,13 +106,54 @@ export default async function PostPage({ params }: PostPageProps) {
               ))}
             </nav>
           </aside>
-        ) : null}
-      </div>
+
+          <div className="content-glass">
+            <header className="page-header">
+              <p className="eyebrow">{post.category || "Article"}</p>
+              <h1>{post.title}</h1>
+            </header>
+
+            <article className="markdown-body">
+              <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+                {content}
+              </ReactMarkdown>
+            </article>
+          </div>
+        </div>
+      ) : (
+        <div className="content-glass">
+          <header className="page-header">
+            <p className="eyebrow">{post.category || "Article"}</p>
+            <h1>{post.title}</h1>
+          </header>
+
+          {coverImageUrl ? (
+            <img
+              className="hero-media"
+              src={coverImageUrl}
+              alt={`Cover image for ${post.title}`}
+              width={1600}
+              height={900}
+              loading="eager"
+              fetchPriority="high"
+            />
+          ) : null}
+
+          <article className="markdown-body">
+            <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+              {content}
+            </ReactMarkdown>
+          </article>
+        </div>
+      )}
     </main>
+    </>
   );
 }
 
-function createMarkdownComponents(): Components {
+function createMarkdownComponents(
+  assetDimensions: Map<string, AssetDimensions>,
+): Components {
   const slugHeading = createSlugger();
 
   return {
@@ -109,7 +163,41 @@ function createMarkdownComponents(): Components {
     h4: headingComponent("h4", 4, slugHeading),
     h5: headingComponent("h5", 5, slugHeading),
     h6: headingComponent("h6", 6, slugHeading),
+    pre: markdownPreComponent,
+    img: markdownImageComponent(assetDimensions),
   };
+}
+
+function markdownPreComponent({
+  children,
+  node: _node,
+  ...props
+}: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
+  const childNodes = Children.toArray(children);
+  const codeNode = childNodes.length === 1 ? childNodes[0] : null;
+
+  if (
+    isValidElement<{ className?: string; children?: ReactNode }>(codeNode) &&
+    codeNode.props.className?.split(/\s+/).includes("language-3dgs")
+  ) {
+    const result = parseGaussianSplatConfig(
+      textFromChildren(codeNode.props.children).trim(),
+    );
+
+    if (!result.ok) {
+      return (
+        <div className="gaussian-splat-config-error" role="note">
+          <p className="eyebrow">3DGS configuration</p>
+          <strong>This interactive scene could not be rendered.</strong>
+          <small>{result.error}</small>
+        </div>
+      );
+    }
+
+    return <GaussianSplatEmbed config={result.config} />;
+  }
+
+  return <pre {...props}>{children}</pre>;
 }
 
 function headingComponent(

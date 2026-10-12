@@ -2,10 +2,106 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { AnalyticsTracker } from "@/components/AnalyticsTracker";
+import { assetIdsFromMarkdown, assetUrl, getAssetDimensions, getPost } from "@/lib/directus";
+import { markdownImageComponent } from "@/components/MarkdownImage";
 import { siteConfig } from "@/lib/site-config";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+
+// ── CMS-first rendering ───────────────────────────────────────────────────────
+// Looks for a post with slug "about" in Directus.
+// Falls back to content/about.md if not found or CMS is unreachable.
+
+export default async function AboutPage() {
+  // 1. Try CMS
+  let cmsPost = null;
+  try {
+    cmsPost = await getPost("about");
+  } catch {
+    // CMS unreachable — fall through to local file
+  }
+
+  if (cmsPost) {
+    const coverUrl = assetUrl(cmsPost.cover_image);
+    const bgImageUrl = assetUrl(cmsPost.backgroundimage, "site-background");
+    const content = cmsPost.content || "";
+    // Fidelity mode (plan §5.2): the about cover keeps its original ratio —
+    // no cropping preset. Real file dimensions only reserve layout space so
+    // the image cannot shift the page when it loads. Missing metadata falls
+    // back to attribute-free rendering (pre-existing behavior).
+    const dimensions = await getAssetDimensions([
+      ...assetIdsFromMarkdown(content),
+      ...(cmsPost.cover_image ? [cmsPost.cover_image] : []),
+    ]);
+    const coverSize = cmsPost.cover_image ? dimensions.get(cmsPost.cover_image) : undefined;
+    const components = { img: markdownImageComponent(dimensions) };
+
+    return (
+      <>
+        <AnalyticsTracker itemType="post" itemId={cmsPost.id} />
+        {bgImageUrl ? (
+          <div
+            className="site-bg"
+            style={{ backgroundImage: `url(${bgImageUrl})`, "--site-bg-blur": "14px" } as React.CSSProperties}
+            aria-hidden="true"
+          />
+        ) : null}
+        <main className="shell article-shell">
+          <div className="content-glass">
+            <header className="page-header">
+              <p className="eyebrow">
+                {cmsPost.category || siteConfig.about.eyebrow}
+              </p>
+              <h1>{cmsPost.title}</h1>
+            </header>
+
+            {coverUrl ? (
+              <img
+                className="hero-media about-cover"
+                src={coverUrl}
+                alt={`Cover image for ${cmsPost.title}`}
+                width={coverSize?.width}
+                height={coverSize?.height}
+                loading="eager"
+                decoding="async"
+                fetchPriority="high"
+              />
+            ) : null}
+
+            <article className="markdown-body">
+              <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+            </article>
+          </div>
+        </main>
+      </>
+    );
+  }
+
+  // 2. Fall back to local file
+  const about = await readAboutMarkdown();
+  const dimensions = await getAssetDimensions(assetIdsFromMarkdown(about.content));
+  const components = { img: markdownImageComponent(dimensions) };
+
+  return (
+    <main className="shell article-shell">
+      <div className="content-glass">
+        <header className="page-header">
+          <p className="eyebrow">{about.eyebrow}</p>
+          <h1>{about.title}</h1>
+          {about.summary ? <p className="summary">{about.summary}</p> : null}
+        </header>
+
+        <article className="markdown-body">
+          <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>{about.content}</ReactMarkdown>
+        </article>
+      </div>
+    </main>
+  );
+}
+
+// ── Local file fallback ───────────────────────────────────────────────────────
 
 type AboutMarkdown = {
   eyebrow: string;
@@ -21,43 +117,36 @@ const ABOUT_EXAMPLE_MARKDOWN_PATH = path.join(
   "about.example.md",
 );
 
-export default async function AboutPage() {
-  const about = await readAboutMarkdown();
-
-  return (
-    <main className="shell article-shell">
-      <header className="page-header">
-        <p className="eyebrow">{about.eyebrow}</p>
-        <h1>{about.title}</h1>
-        {about.summary ? <p className="summary">{about.summary}</p> : null}
-      </header>
-
-      <article className="markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{about.content}</ReactMarkdown>
-      </article>
-    </main>
-  );
-}
-
 async function readAboutMarkdown(): Promise<AboutMarkdown> {
   try {
     return parseAboutMarkdown(await readFile(ABOUT_MARKDOWN_PATH, "utf8"));
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      throw error;
-    }
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 
   try {
-    return parseAboutMarkdown(await readFile(ABOUT_EXAMPLE_MARKDOWN_PATH, "utf8"));
+    return parseAboutMarkdown(
+      await readFile(ABOUT_EXAMPLE_MARKDOWN_PATH, "utf8")
+    );
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      throw error;
-    }
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 
+  return fallbackAbout();
+}
+
+function parseAboutMarkdown(markdown: string): AboutMarkdown {
+  const { frontmatter, content } = splitFrontmatter(markdown);
+
+  return {
+    eyebrow: frontmatter.eyebrow || siteConfig.about.eyebrow,
+    title: frontmatter.title || siteConfig.about.title,
+    summary: frontmatter.summary || siteConfig.about.summary,
+    content: content.trim() || fallbackAbout().content,
+  };
+}
+
+function fallbackAbout(): AboutMarkdown {
   return {
     eyebrow: siteConfig.about.eyebrow,
     title: siteConfig.about.title,
@@ -70,17 +159,6 @@ async function readAboutMarkdown(): Promise<AboutMarkdown> {
       `## ${siteConfig.about.contactTitle}`,
       siteConfig.about.contactBody,
     ].join("\n\n"),
-  };
-}
-
-function parseAboutMarkdown(markdown: string): AboutMarkdown {
-  const { frontmatter, content } = splitFrontmatter(markdown);
-
-  return {
-    eyebrow: frontmatter.eyebrow || siteConfig.about.eyebrow,
-    title: frontmatter.title || siteConfig.about.title,
-    summary: frontmatter.summary || siteConfig.about.summary,
-    content: content.trim() || fallbackContent(),
   };
 }
 
@@ -102,26 +180,12 @@ function splitFrontmatter(markdown: string) {
 
 function parseFrontmatter(value: string) {
   const entries: Record<string, string> = {};
-
   for (const line of value.split(/\r?\n/)) {
-    const separator = line.indexOf(":");
-    if (separator === -1) continue;
-
-    const key = line.slice(0, separator).trim();
-    const rawValue = line.slice(separator + 1).trim();
-    entries[key] = rawValue.replace(/^["']|["']$/g, "");
+    const sep = line.indexOf(":");
+    if (sep === -1) continue;
+    const key = line.slice(0, sep).trim();
+    const raw = line.slice(sep + 1).trim();
+    entries[key] = raw.replace(/^["']|["']$/g, "");
   }
-
   return entries;
-}
-
-function fallbackContent() {
-  return [
-    `## ${siteConfig.about.whatTitle}`,
-    siteConfig.about.whatBody,
-    `## ${siteConfig.about.techTitle}`,
-    ...siteConfig.about.techStack.map((item) => `- ${item}`),
-    `## ${siteConfig.about.contactTitle}`,
-    siteConfig.about.contactBody,
-  ].join("\n\n");
 }

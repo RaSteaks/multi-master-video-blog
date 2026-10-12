@@ -7,7 +7,7 @@ import { LiquidBackground } from "@/components/LiquidBackground";
 export default function VideosLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <LiquidBackground variant="gray" />
+      <LiquidBackground />
       {children}
     </>
   );
