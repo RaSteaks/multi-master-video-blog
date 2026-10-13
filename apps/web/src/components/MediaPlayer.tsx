@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { trackAnalyticsEvent } from "@/components/AnalyticsTracker";
 import type { VideoMaster } from "@/lib/directus";
 import { masterResolution, mediaUrl } from "@/lib/directus";
+import { getDefaultMaster, getSdrFallback, isPlayableMaster, playbackErrorMessage } from "@/lib/video-playback";
 
 type MediaPlayerProps = {
   masters: VideoMaster[];
@@ -18,7 +19,6 @@ type PlaybackSnapshot = {
   requestId: number;
   time: number;
   wasPlaying: boolean;
-  allowSdrFallback: boolean;
 };
 
 type DeviceCapabilities = {
@@ -57,11 +57,14 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
   const loadRequestIdRef = useRef(0);
   const pendingPlaybackRef = useRef<PlaybackSnapshot | null>(null);
   const lastLoadSnapshotRef = useRef<PlaybackSnapshot | null>(null);
+  const loadingMasterRef = useRef(false);
   const trackedPlaysRef = useRef(new Set<number>());
+  const playbackErrorHandlerRef = useRef<(error: unknown) => Promise<void>>(async () => {});
 
   const [activeMasterId, setActiveMasterId] = useState(() => getDefaultMaster(playableMasters)?.id);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [playbackNotice, setPlaybackNotice] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<DeviceCapabilities | null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -72,10 +75,6 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
   );
 
   const defaultMaster = useMemo(() => getDefaultMaster(playableMasters), [playableMasters]);
-  const sdrFallback = useMemo(
-    () => playableMasters.find((m) => m.type === "sdr") ?? defaultMaster,
-    [defaultMaster, playableMasters],
-  );
 
   useEffect(() => {
     if (!activeMaster && defaultMaster) {
@@ -95,6 +94,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
 
     const onPlaying = () => {
       setPlaybackState("playing");
+      if (lastLoadSnapshotRef.current) lastLoadSnapshotRef.current.wasPlaying = true;
       const master = currentMasterRef.current;
       if (!videoProjectId || !master || trackedPlaysRef.current.has(master.id)) {
         return;
@@ -110,7 +110,12 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
         dedupeMs: 2000,
       });
     };
-    const onPause  = () => setPlaybackState("paused");
+    const onPause = () => {
+      setPlaybackState("paused");
+      if (!video.error && !loadingMasterRef.current && lastLoadSnapshotRef.current) {
+        lastLoadSnapshotRef.current.wasPlaying = false;
+      }
+    };
     const onWaiting = () =>
       setPlaybackState((s) => (s === "playing" ? "loading" : s));
 
@@ -129,7 +134,6 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
     (
       targetMasterId: number,
       sourceSnapshot?: PlaybackSnapshot | null,
-      options: { allowSdrFallback?: boolean } = {},
     ): PlaybackSnapshot => {
       const video = videoRef.current;
       const requestId = loadRequestIdRef.current + 1;
@@ -140,17 +144,16 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
         requestId,
         time: sourceSnapshot?.time ?? playbackTime(video),
         wasPlaying: sourceSnapshot?.wasPlaying ?? Boolean(video && !video.paused && !video.ended),
-        allowSdrFallback:
-          sourceSnapshot?.allowSdrFallback ?? options.allowSdrFallback ?? true,
       };
     },
     [],
   );
 
   const handleFatalPlaybackError = useCallback(
-    async (loadError: Error | null) => {
+    async (loadError: unknown) => {
       const failedMaster = currentMasterRef.current;
       const failedSnapshot = lastLoadSnapshotRef.current;
+      const sdrFallback = getSdrFallback(playableMasters, failedMaster);
       if (!mountedRef.current) return;
 
       setPlaybackState("error");
@@ -159,20 +162,28 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
         sdrFallback &&
         failedMaster &&
         sdrFallback.id !== failedMaster.id &&
-        failedSnapshot?.allowSdrFallback !== false &&
         !fallbackAttemptedRef.current
       ) {
         fallbackAttemptedRef.current = true;
-        pendingPlaybackRef.current = capturePlaybackSnapshot(sdrFallback.id, failedSnapshot);
-        setError(`${failedMaster.label} playback failed. Falling back to ${sdrFallback.label}.`);
+        const video = videoRef.current;
+        const snapshot = failedSnapshot && video && video.readyState >= 1
+          ? { ...failedSnapshot, time: playbackTime(video) }
+          : failedSnapshot;
+        pendingPlaybackRef.current = capturePlaybackSnapshot(sdrFallback.id, snapshot);
+        setError(null);
+        setPlaybackNotice(`${failedMaster.label} playback failed. Using ${sdrFallback.label}.`);
         setActiveMasterId(sdrFallback.id);
         return;
       }
 
-      setError(loadError?.message || "Playback failed for this master.");
+      setError(playbackErrorMessage(loadError));
     },
-    [capturePlaybackSnapshot, sdrFallback],
+    [capturePlaybackSnapshot, playableMasters],
   );
+
+  useEffect(() => {
+    playbackErrorHandlerRef.current = handleFatalPlaybackError;
+  }, [handleFatalPlaybackError]);
 
   useEffect(() => {
     let cancelled = false;
@@ -195,6 +206,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
 
       lastLoadSnapshotRef.current = snapshot;
       currentMasterRef.current = activeMaster;
+      loadingMasterRef.current = true;
       if (mountedRef.current) {
         setPlaybackState("loading");
         setError(null);
@@ -232,7 +244,8 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
           });
           player.addEventListener("error", (event) => {
             const detail = "detail" in event ? event.detail : null;
-            void handleFatalPlaybackError(detail instanceof Error ? detail : null);
+            if (detail && typeof detail === "object" && "severity" in detail && detail.severity === 1) return;
+            void playbackErrorHandlerRef.current(detail);
           });
           playerRef.current = player;
         }
@@ -245,6 +258,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
         ) {
           return;
         }
+        loadingMasterRef.current = false;
 
         if (snapshot.time > 0 && Number.isFinite(snapshot.time)) {
           const nextTime = clampPlaybackTime(snapshot.time, video.duration);
@@ -270,7 +284,8 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
           return;
         }
 
-        await handleFatalPlaybackError(loadError instanceof Error ? loadError : null);
+        loadingMasterRef.current = false;
+        await handleFatalPlaybackError(loadError);
       }
     }
 
@@ -289,18 +304,16 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
     if (master.id === activeMasterId) return;
 
     fallbackAttemptedRef.current = false;
-    pendingPlaybackRef.current = capturePlaybackSnapshot(master.id, null, {
-      allowSdrFallback: false,
-    });
+    setPlaybackNotice(null);
+    pendingPlaybackRef.current = capturePlaybackSnapshot(master.id);
     setActiveMasterId(master.id);
   }, [activeMasterId, capturePlaybackSnapshot]);
 
   const retry = useCallback(() => {
     if (activeMaster) {
       fallbackAttemptedRef.current = false;
-      pendingPlaybackRef.current = capturePlaybackSnapshot(activeMaster.id, null, {
-        allowSdrFallback: false,
-      });
+      setPlaybackNotice(null);
+      pendingPlaybackRef.current = capturePlaybackSnapshot(activeMaster.id);
       setReloadNonce((value) => value + 1);
     }
   }, [activeMaster, capturePlaybackSnapshot]);
@@ -319,7 +332,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
 
   const hdrWarning =
     capabilities && isHdrMaster(activeMaster) && !capabilities.hdr
-      ? "This display may not support HDR playback. The selected master will remain active if playback fails."
+      ? "This display may not support HDR playback. If playback fails, an available SDR master will be used."
       : null;
 
   const resolutionLabel = masterResolution(activeMaster);
@@ -341,6 +354,9 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
               poster={poster || undefined}
               aria-label={`Video player - ${activeMaster.label}`}
               preload="metadata"
+              onError={() => void handleFatalPlaybackError(
+                new Error(videoRef.current?.error?.message || "Video decoding failed.")
+              )}
             />
           </div>
 
@@ -501,21 +517,14 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
               ) : null}
             </div>
           ) : null}
+          {playbackNotice ? (
+            <p className="player-warning" role="status">{playbackNotice}</p>
+          ) : null}
         </div>
 
       </div>
     </section>
   );
-}
-
-function getDefaultMaster(masters: VideoMaster[]) {
-  return (
-    masters.find((m) => m.is_default === true || m.is_default === 1) ?? masters[0]
-  );
-}
-
-function isPlayableMaster(master: VideoMaster) {
-  return master.verification_status === "ready";
 }
 
 function formatDisplayGamut(master: VideoMaster) {

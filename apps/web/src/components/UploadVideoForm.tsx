@@ -29,6 +29,11 @@ type UploadResponse = {
     slug?: string;
   };
   error?: string;
+  sdrDerivative?: {
+    status: "ready" | "failed";
+    hlsUrl?: string;
+    error?: string;
+  } | null;
 };
 
 type DirectoryInputProps = {
@@ -60,6 +65,7 @@ const translations = {
     metadata: "Metadata",
     titleLabel: "Title",
     slug: "Slug",
+    invalidSlug: "Use lowercase letters, numbers, and hyphens for the slug.",
     tags: "Tags",
     tagsPlaceholder: "dolby, hdr, test",
     description: "Description",
@@ -72,6 +78,11 @@ const translations = {
     notes: "Notes",
     published: "Published",
     defaultMaster: "Default master",
+    defaultSdrMaster: "Use generated SDR as default",
+    automaticSdr: "Dolby Vision is preserved. An SDR playback version is generated automatically.",
+    processingDolby: "Upload received. Packaging Dolby Vision and generating the SDR version...",
+    dolbyComplete: "Dolby Vision and SDR are ready. You can switch versions on the video page.",
+    dolbyPartial: "Dolby Vision was saved, but SDR generation failed. Review the error below before retrying.",
     overwriteHls: "Overwrite existing HLS",
     uploading: "Uploading...",
     uploadVideo: "Upload Video",
@@ -122,6 +133,7 @@ const translations = {
     metadata: "元数据",
     titleLabel: "标题",
     slug: "Slug",
+    invalidSlug: "Slug 只能包含小写英文字母、数字和短横线。",
     tags: "标签",
     tagsPlaceholder: "dolby, hdr, 测试",
     description: "描述",
@@ -134,6 +146,11 @@ const translations = {
     notes: "备注",
     published: "发布",
     defaultMaster: "默认母版",
+    defaultSdrMaster: "将自动生成的 SDR 设为默认",
+    automaticSdr: "保留 Dolby Vision，并自动生成一份 SDR 播放版本。",
+    processingDolby: "文件已上传，正在封装 Dolby Vision 并生成 SDR 版本...",
+    dolbyComplete: "Dolby Vision 和 SDR 均已就绪，可在播放页切换。",
+    dolbyPartial: "Dolby Vision 已保存，但 SDR 生成失败。请查看下方错误后重试。",
     overwriteHls: "覆盖现有 HLS",
     uploading: "上传中...",
     uploadVideo: "上传视频",
@@ -304,16 +321,18 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
       : null;
   const sourceReady =
     sourceKind === "embedded" ? Boolean(video) : masterPackageFiles.length > 0;
+  const slugInvalid = Boolean(slug.trim() && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug.trim()));
   const canSubmit = useMemo(
     () =>
       Boolean(
         token.trim() &&
           title.trim() &&
           slug.trim() &&
+          !slugInvalid &&
           sourceReady &&
           state !== "uploading"
       ),
-    [slug, sourceReady, state, title, token]
+    [slug, slugInvalid, sourceReady, state, title, token]
   );
 
   const dropTexts = {
@@ -399,6 +418,9 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
       if (!uploadEvent.lengthComputable) return;
       setProgress(Math.round((uploadEvent.loaded / uploadEvent.total) * 100));
     };
+    request.upload.onload = () => {
+      if (masterType === "dolby_vision") setMessage(t.processingDolby);
+    };
 
     request.onload = () => {
       let payload: UploadResponse | null = null;
@@ -414,7 +436,8 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
         setState("success");
         setProgress(100);
         setResult(payload);
-        setMessage(t.uploadComplete);
+        setMessage(payload?.sdrDerivative?.status === "ready" ? t.dolbyComplete
+          : payload?.sdrDerivative?.status === "failed" ? t.dolbyPartial : t.uploadComplete);
         return;
       }
 
@@ -441,7 +464,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
         : t.dvSelectFolder;
 
   return (
-    <form className="upload-form" onSubmit={submit}>
+    <form className="upload-form" noValidate onSubmit={submit}>
       {/* ── Access ── */}
       <section className="upload-panel">
         <h2>{t.access}</h2>
@@ -569,9 +592,12 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
               value={slug}
               onChange={(event) => setSlug(event.target.value)}
               pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+              aria-invalid={slugInvalid}
+              aria-describedby={slugInvalid ? "video-slug-error" : undefined}
               placeholder="dolby-vision-test"
               required
             />
+            {slugInvalid ? <span id="video-slug-error" role="alert">{t.invalidSlug}</span> : null}
           </label>
           <label>
             {t.tags}
@@ -652,7 +678,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
               checked={isDefault}
               onChange={(event) => setIsDefault(event.target.checked)}
             />
-            {t.defaultMaster}
+            {masterType === "dolby_vision" ? t.defaultSdrMaster : t.defaultMaster}
           </label>
           <label>
             <input
@@ -666,6 +692,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
       </section>
 
       {/* ── Actions ── */}
+      {masterType === "dolby_vision" ? <p className="field-note">{t.automaticSdr}</p> : null}
       <div className="upload-actions">
         <button type="submit" disabled={!canSubmit}>
           {state === "uploading" ? t.uploading : t.uploadVideo}
@@ -679,11 +706,14 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
       {message ? (
         <div
           className={
-            state === "error" ? "upload-status error" : "upload-status"
+            state === "error" || result?.sdrDerivative?.status === "failed"
+              ? "upload-status error" : "upload-status"
           }
           role="status"
         >
           <p>{message}</p>
+          {result?.sdrDerivative?.error ? <p>{result.sdrDerivative.error}</p> : null}
+          {result?.sdrDerivative?.hlsUrl ? <code>{result.sdrDerivative.hlsUrl}</code> : null}
           {result?.masterPackage ? (
             <code>
               package={result.masterPackage.fileCount} files, sidecars=

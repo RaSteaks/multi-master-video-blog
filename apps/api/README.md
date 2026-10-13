@@ -52,6 +52,8 @@ Use `mode=copy` by default. HDR10, HLG, and Dolby Vision masters must use `mode=
 
 For Dolby Vision, use `mode=copy` so FFmpeg repackages the existing HEVC/Dolby Vision bitstream into fMP4 HLS instead of re-encoding it. The API rejects Dolby Vision uploads without embedded DOVI/RPU metadata or a trusted sidecar.
 
+After the original Dolby Vision master is verified and saved, the API automatically generates a separate SDR MP4/HLS master, with a source-master relation and verified BT.709/H.264 output. P8.4/HLG and PQ-compatible base layers use `zscale` + `tonemap`; Profile 5 requires embedded RPU, `libplacebo`, and Vulkan. `sdrDerivative` in the upload response reports ready/failed independently of the saved original. See `docs/upload-api.md` for default selection, retry behavior, and `VIDEO_SDR_PROCESS_TIMEOUT_MS`.
+
 For `sourceKind=hls_package`, include a multivariant `master.m3u8` with `VIDEO-RANGE=SDR|PQ|HLG`. Every variant must share the same color contract.
 
 ## Article publishing

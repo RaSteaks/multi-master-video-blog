@@ -50,6 +50,13 @@ const {
   validateFilmScanUpload
 } = require("./film-scan-utils.cjs");
 const { createDirectusTokenCache } = require("./directus-auth.cjs");
+const {
+  AUTO_SDR_CONVERSION,
+  buildDolbySdrConversion,
+  buildSdrEncodeArgs,
+  validateSdrDerivative
+} = require("./video-sdr.cjs");
+const { audioCodecFromProbe, hlsAttributesFromProbe, videoCodecFromProbe } = require("./hls-metadata.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(ROOT, "..", "..");
@@ -113,6 +120,10 @@ const FILM_SCAN_ROOT = path.join(MEDIA_ROOT, "film-scans");
 const FFMPEG_PATH = env.FFMPEG_PATH || resolveOptionalPackage("ffmpeg-static") || "ffmpeg";
 const FFPROBE_PATH =
   env.FFPROBE_PATH || resolveOptionalPackage("ffprobe-static", "path") || "ffprobe";
+const VIDEO_SDR_PROCESS_TIMEOUT_MS = positiveInteger(
+  env.VIDEO_SDR_PROCESS_TIMEOUT_MS, 60 * 60 * 1000
+);
+let videoSdrFiltersPromise = null;
 
 const MASTER_TYPES = new Set(["sdr", "hdr10", "hlg", "dolby_vision", "custom"]);
 const SOURCE_KINDS = new Set(["embedded", "master_package", "hls_package"]);
@@ -1871,20 +1882,64 @@ async function prepareOutputDir(metadata) {
   return outputDir;
 }
 
-async function probeVideo(sourcePath) {
-  const { stdout } = await runProcess(FFPROBE_PATH, [
-    "-v",
-    "error",
-    "-select_streams",
-    "v:0",
-    "-show_streams",
-    "-of",
-    "json",
-    sourcePath
-  ]);
+async function probeMediaStreams(sourcePath) {
+  return withLocalHlsInput(sourcePath, async inputPath => {
+    const localHls = path.extname(inputPath).toLowerCase() === ".m3u8";
+    const { stdout } = await runProcess(FFPROBE_PATH, [
+      "-v", "error", "-show_streams", "-show_data", "-of", "json",
+      localHls ? path.basename(inputPath) : inputPath
+    ], localHls ? { cwd: path.dirname(inputPath) } : {});
+    return JSON.parse(stdout).streams || [];
+  });
+}
 
-  const parsed = JSON.parse(stdout);
-  return parsed.streams?.[0] || {};
+async function withLocalHlsInput(sourcePath, processInput) {
+  if (path.extname(sourcePath).toLowerCase() !== ".m3u8") return processInput(sourcePath);
+  const copies = new Map();
+  const created = [];
+  async function copyPlaylist(playlistPath) {
+    assertInside(MEDIA_ROOT, playlistPath);
+    if (copies.has(playlistPath)) return copies.get(playlistPath);
+    const text = await fsp.readFile(playlistPath, "utf8");
+    const copyPath = path.join(path.dirname(playlistPath), `.hls-read-${crypto.randomUUID()}.m3u8`);
+    copies.set(playlistPath, copyPath);
+    async function localUri(uri) {
+      if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(uri)) return uri;
+      const filePath = localHlsPath(playlistPath, uri, MEDIA_ROOT);
+      const inputPath = path.extname(filePath).toLowerCase() === ".m3u8" ? await copyPlaylist(filePath) : filePath;
+      // Local file protocols treat ?v=... as part of the filename. HTTP URIs stay intact.
+      return path.relative(path.dirname(copyPath), inputPath).replace(/\\/g, "/");
+    }
+    const lines = [];
+    for (const rawLine of text.split(/\r?\n/)) {
+      let line = rawLine.trim();
+      if (line && !line.startsWith("#")) line = await localUri(line);
+      else {
+        for (const match of [...line.matchAll(/URI="([^"]+)"/g)]) {
+          line = line.replace(match[0], `URI="${await localUri(match[1])}"`);
+        }
+      }
+      lines.push(line);
+    }
+    await fsp.writeFile(copyPath, lines.join("\n"), { encoding: "utf8", flag: "wx" });
+    created.push(copyPath);
+    return copyPath;
+  }
+  try {
+    return await processInput(await copyPlaylist(path.resolve(sourcePath)));
+  } finally {
+    await Promise.all(created.map(filePath => fsp.unlink(filePath).catch(() => {})));
+  }
+}
+
+async function probeVideo(sourcePath) {
+  const streams = await probeMediaStreams(sourcePath);
+  const video = streams.find((stream) => stream.codec_type === "video");
+  if (!video) return {};
+  return {
+    ...video,
+    audio_streams: streams.filter((stream) => stream.codec_type === "audio")
+  };
 }
 
 async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
@@ -1899,13 +1954,14 @@ async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
       "-map",
       "0:v:0",
       "-map",
-      "0:a?",
+      "0:a:0?",
       "-c:v",
       "copy"
     ];
 
     if (isHevcCodec(probe.codec_name)) {
-      args.push("-tag:v", "hvc1");
+      const dovi = extractDolbyVisionMetadata(probe);
+      args.push("-tag:v", Number(dovi.profile) === 5 && dovi.rpuPresent ? "dvh1" : "hvc1");
     }
 
     args.push(
@@ -1948,6 +2004,10 @@ async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
     "-y",
     "-i",
     sourcePath,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0?",
     "-c:v",
     "libx264",
     "-preset",
@@ -1994,57 +2054,130 @@ async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
   throw httpError(400, `Unsupported transcode masterType: ${metadata.masterType}`);
 }
 
-function shouldCreatePreviewHls(metadata, probe) {
-  return (
-    metadata.sourceKind === "master_package" &&
-    metadata.masterType === "dolby_vision" &&
-    !isHevcCodec(probe.codec_name)
-  );
-}
-
 function isHevcCodec(codecName) {
   const value = String(codecName || "").toLowerCase();
   return value === "hevc" || value === "h265";
 }
 
-async function generatePreviewHls(sourcePath, outputDir, playlistPath) {
-  await runProcess(FFMPEG_PATH, [
-    "-y",
-    "-i",
-    sourcePath,
-    "-map",
-    "0:v:0",
-    "-map",
-    "0:a?",
-    "-vf",
-    "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "medium",
-    "-crf",
-    "20",
-    "-pix_fmt",
-    "yuv420p",
-    "-force_key_frames",
-    "expr:gte(t,n_forced*4)",
-    "-sc_threshold",
-    "0",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "128k",
-    "-hls_time",
-    "4",
-    "-hls_playlist_type",
-    "vod",
-    "-hls_flags",
-    "independent_segments",
-    "-hls_segment_filename",
-    path.join(outputDir, "segment_%03d.ts"),
-    playlistPath
-  ]);
-  await stampHlsPlaylist(playlistPath);
+async function availableVideoSdrFilters() {
+  if (!videoSdrFiltersPromise) {
+    videoSdrFiltersPromise = runProcess(FFMPEG_PATH, ["-hide_banner", "-filters"])
+      .then(({ stdout }) => new Set(
+        [...stdout.matchAll(/\b(zscale|tonemap|libplacebo)\s+V->V\b/g)]
+          .map((match) => match[1])
+      ))
+      .catch((error) => { videoSdrFiltersPromise = null; throw error; });
+  }
+  return videoSdrFiltersPromise;
+}
+
+async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract, records) {
+  // A replaced source must never fall back to an SDR derived from its previous contents.
+  const token = await directusLogin();
+  const previous = await findMastersByIdentity(token, records.project.id, {
+    masterType: "sdr", isDerivative: true,
+    derivedFromMasterId: records.master.id, conversionIntent: AUTO_SDR_CONVERSION
+  });
+  for (const master of previous) {
+    if (master.source_sha256 !== records.master.source_sha256) {
+      await directusRequest(`/items/video_masters/${master.id}`, token, {
+        method: "PATCH", body: {
+          verification_status: "quarantine", is_default: false,
+          verification_errors: ["The source Dolby Vision master changed; regenerate this SDR version."]
+        }
+      });
+    }
+  }
+  const conversion = buildDolbySdrConversion(sourceContract, await availableVideoSdrFilters());
+  const sdrMetadata = {
+    ...metadata,
+    masterType: "sdr",
+    label: `SDR (${metadata.label})`,
+    mode: "transcode",
+    processingMode: "transcode",
+    isDerivative: true,
+    derivedFromMasterId: records.master.id,
+    conversionIntent: AUTO_SDR_CONVERSION,
+    conversionLutOrFilter: conversion.filter,
+    overwrite: true,
+    resolutionWidth: null,
+    resolutionHeight: null,
+    bitrateMbps: null,
+    notes: conversion.usesDolbyMetadata
+      ? "Automatically mapped from Dolby Vision using embedded RPU metadata."
+      : "Automatically tone-mapped from the compatible HDR base layer; Dolby Vision RPU metadata is not applied."
+  };
+  const outputDir = await prepareOutputDir(sdrMetadata);
+  const sdrPath = path.join(outputDir, "sdr.mp4");
+  let registrationStarted = false;
+  try {
+    await withLocalHlsInput(sourcePath, inputPath => {
+      const localHls = path.extname(inputPath).toLowerCase() === ".m3u8";
+      return runProcess(FFMPEG_PATH, buildSdrEncodeArgs(localHls ? path.basename(inputPath) : inputPath, sdrPath, conversion), {
+        timeoutMs: VIDEO_SDR_PROCESS_TIMEOUT_MS,
+        ...(localHls ? { cwd: path.dirname(inputPath) } : {})
+      });
+    });
+    const sdrProbe = await probeVideo(sdrPath);
+    const sdrContract = buildColorContract(sdrProbe, sdrMetadata);
+    const errors = [
+      ...validateColorContract(sdrMetadata, sdrContract, "SDR conversion"),
+      ...validateSdrDerivative(sdrContract, sourceContract)
+    ];
+    if (errors.length) throwColorContractError(errors);
+
+    const hlsOutput = await generateHls(sdrPath, outputDir, { ...sdrMetadata, mode: "copy" }, sdrProbe);
+    const finalized = await finalizeHlsOutput(hlsOutput, sdrMetadata, sdrContract, {}, sdrProbe);
+    finalized.verification.conversion = {
+      intent: AUTO_SDR_CONVERSION,
+      engine: conversion.engine,
+      usesDolbyMetadata: conversion.usesDolbyMetadata,
+      derivedFromMasterId: records.master.id
+    };
+    await writeVerificationReport(outputDir, {
+      verification: finalized.verification,
+      sourceContract,
+      convertedContract: sdrContract,
+      outputContract: finalized.outputContract
+    });
+
+    // Register only verified SDR output. Reuse the project without uploading its cover again.
+    if (!sdrMetadata.isDefault) {
+      const defaults = await directusRequest(`/items/video_masters?${new URLSearchParams({
+        "filter[project_id][_eq]": String(records.project.id),
+        "filter[is_default][_eq]": "true",
+        limit: "1"
+      })}`, token);
+      sdrMetadata.isDefault = !defaults.data?.length;
+    }
+    registrationStarted = true;
+    const sdrRecords = await createOrUpdateDirectusRecords(
+      sdrMetadata, sdrPath, finalized.playlistPath, sdrProbe, {}, {}, {
+        project: records.project,
+        sourceHash: records.master.source_sha256,
+        sourceContract,
+        outputContract: finalized.outputContract,
+        sourceProbe: probe,
+        outputProbe: finalized.outputProbe,
+        verification: finalized.verification
+      }
+    );
+    return {
+      status: "ready",
+      master: sdrRecords.master,
+      hlsUrl: mediaUrlFromPath(finalized.playlistPath),
+      fileUrl: mediaUrlFromPath(sdrPath),
+      colorContract: finalized.outputContract,
+      verification: finalized.verification
+    };
+  } catch (error) {
+    // An uncertain CMS write may already reference these files; preserve them for recovery.
+    if (!registrationStarted) {
+      assertInside(MEDIA_ROOT, outputDir);
+      await fsp.rm(outputDir, { recursive: true, force: true }).catch(() => {});
+    }
+    throw error;
+  }
 }
 
 async function prepareHlsPackageOutput(packageInfo, outputDir) {
@@ -2059,6 +2192,7 @@ async function prepareHlsPackageOutput(packageInfo, outputDir) {
   const mediaPlaylistPath = await primaryMediaPlaylistPath(copiedSourcePlaylistPath, outputDir);
   const masterPlaylistPath = path.join(outputDir, "master.m3u8");
   const variants = await copiedHlsVariants(copiedSourcePlaylistPath, outputDir);
+  const masterTags = variants.length ? await copiedHlsMasterTags(copiedSourcePlaylistPath, outputDir) : undefined;
 
   if (path.resolve(mediaPlaylistPath) === path.resolve(masterPlaylistPath)) {
     const fallbackMediaPath = path.join(outputDir, "media.m3u8");
@@ -2066,14 +2200,16 @@ async function prepareHlsPackageOutput(packageInfo, outputDir) {
     return {
       masterPlaylistPath,
       mediaPlaylistPath: fallbackMediaPath,
-      variants
+      variants,
+      masterTags
     };
   }
 
   return {
     masterPlaylistPath,
     mediaPlaylistPath,
-    variants
+    variants,
+    masterTags
   };
 }
 
@@ -2084,13 +2220,38 @@ async function copiedHlsVariants(masterPlaylistPath, outputDir) {
       return null;
     }
 
-    const absoluteVariantPath = path.resolve(path.dirname(masterPlaylistPath), stripUriQuery(variant.uri));
-    assertInside(outputDir, absoluteVariantPath);
     return {
       attributes: variant.attributes,
-      uri: path.relative(outputDir, absoluteVariantPath).replace(/\\/g, "/")
+      uri: rebaseHlsUri(masterPlaylistPath, variant.uri, outputDir)
     };
   }).filter(Boolean);
+}
+
+function localHlsPath(playlistPath, uri, rootDir) {
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(uri) || path.isAbsolute(uri)) {
+    throw httpError(422, `HLS packages must contain local media references: ${uri}`);
+  }
+  let decoded;
+  try { decoded = decodeURIComponent(stripUriQuery(uri)); }
+  catch { throw httpError(422, `Invalid HLS media URI: ${uri}`); }
+  const filePath = path.resolve(path.dirname(playlistPath), decoded);
+  assertInside(rootDir, filePath);
+  return filePath;
+}
+
+function rebaseHlsUri(playlistPath, uri, outputDir) {
+  // Remote session keys may be retained; media references are checked separately.
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(uri)) return uri;
+  const filePath = localHlsPath(playlistPath, uri, outputDir);
+  const suffix = uri.slice(stripUriQuery(uri).length);
+  return path.relative(outputDir, filePath).split(path.sep).map(encodeURIComponent).join("/") + suffix;
+}
+
+async function copiedHlsMasterTags(masterPlaylistPath, outputDir) {
+  const text = await fsp.readFile(masterPlaylistPath, "utf8");
+  return text.split(/\r?\n/).map(line => line.trim())
+    .filter(line => line.startsWith("#") && !line.startsWith("#EXT-X-STREAM-INF:"))
+    .map(line => line.replace(/URI="([^"]+)"/g, (_, uri) => `URI="${rebaseHlsUri(masterPlaylistPath, uri, outputDir)}"`));
 }
 
 async function primaryMediaPlaylistPath(playlistPath, rootDir) {
@@ -2100,29 +2261,12 @@ async function primaryMediaPlaylistPath(playlistPath, rootDir) {
     return playlistPath;
   }
 
-  const variantPath = path.resolve(path.dirname(playlistPath), stripUriQuery(variantUris[0]));
-  assertInside(rootDir, variantPath);
+  const variantPath = localHlsPath(playlistPath, variantUris[0], rootDir);
   return variantPath;
 }
 
 function parseVariantUris(playlistText) {
-  const lines = playlistText.split(/\r?\n/);
-  const uris = [];
-
-  for (let index = 0; index < lines.length; index += 1) {
-    if (!lines[index].startsWith("#EXT-X-STREAM-INF:")) {
-      continue;
-    }
-
-    const uri = lines
-      .slice(index + 1)
-      .find((line) => line.trim() && !line.trim().startsWith("#"));
-    if (uri) {
-      uris.push(uri.trim());
-    }
-  }
-
-  return uris;
+  return parseStreamInfoVariants(playlistText).map(variant => variant.uri).filter(Boolean);
 }
 
 function parseStreamInfoVariants(playlistText) {
@@ -2135,12 +2279,18 @@ function parseStreamInfoVariants(playlistText) {
       continue;
     }
 
-    const uri = lines
-      .slice(index + 1)
-      .find((candidate) => candidate.trim() && !candidate.trim().startsWith("#"));
+    let uri = null;
+    for (const candidate of lines.slice(index + 1)) {
+      const next = candidate.trim();
+      if (next.startsWith("#EXT-X-STREAM-INF:")) break;
+      if (next && !next.startsWith("#")) {
+        uri = next;
+        break;
+      }
+    }
     variants.push({
       attributes: parseHlsAttributeList(line.slice("#EXT-X-STREAM-INF:".length)),
-      uri: uri ? uri.trim() : null
+      uri
     });
   }
 
@@ -2219,8 +2369,7 @@ async function inspectHlsPackage(packageInfo, metadata, sidecar = {}) {
       errors.push(`hls_package: ${variant.uri} is missing VIDEO-RANGE.`);
     }
 
-    const variantPath = path.resolve(path.dirname(playlistPath), stripUriQuery(variant.uri));
-    assertInside(packageInfo.packageDir, variantPath);
+    const variantPath = localHlsPath(playlistPath, variant.uri, packageInfo.packageDir);
     const probe = await probeVideo(variantPath);
     const contract = buildColorContract(probe, metadata, sidecar, {
       hlsVideoRange: videoRange
@@ -2328,7 +2477,10 @@ async function finalizeHlsOutput(output, metadata, sourceContract, sidecar = {},
     throwColorContractError(errors);
   }
 
-  await writeMultivariantPlaylist(output.masterPlaylistPath, output.mediaPlaylistPath, outputContract, outputProbe, output.variants);
+  const hlsVariants = await writeMultivariantPlaylist(
+    output.masterPlaylistPath, output.mediaPlaylistPath, outputContract, outputProbe,
+    output.variants, output.masterTags
+  );
   await stampHlsPlaylist(output.mediaPlaylistPath);
   await stampHlsPlaylist(output.masterPlaylistPath);
 
@@ -2337,7 +2489,8 @@ async function finalizeHlsOutput(output, metadata, sourceContract, sidecar = {},
     errors: [],
     verifiedAt: new Date().toISOString(),
     sourceProbeSummary: summarizeProbe(sourceProbe),
-    outputProbeSummary: summarizeProbe(outputProbe)
+    outputProbeSummary: summarizeProbe(outputProbe),
+    hlsVariants
   };
   await writeVerificationReport(path.dirname(output.masterPlaylistPath), {
     verification,
@@ -2353,42 +2506,120 @@ async function finalizeHlsOutput(output, metadata, sourceContract, sidecar = {},
   };
 }
 
-async function writeMultivariantPlaylist(masterPlaylistPath, mediaPlaylistPath, contract, probe, variants = []) {
-  if (variants.length) {
-    const lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"];
-    for (const variant of variants) {
-      const attributes = {
-        ...variant.attributes,
-        "VIDEO-RANGE": contract.hlsVideoRange || variant.attributes["VIDEO-RANGE"]
-      };
-      lines.push(`#EXT-X-STREAM-INF:${serializeHlsAttributeList(attributes)}`);
-      lines.push(variant.uri);
+async function inspectHlsMediaFiles(playlistPath, rootDir) {
+  const text = await fsp.readFile(playlistPath, "utf8");
+  let duration = 0;
+  let byteLength = null;
+  let totalDuration = 0;
+  let totalBytes = 0;
+  let peakBandwidth = 0;
+  let segmentCount = 0;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("#EXTINF:")) duration = Number(line.slice(8).split(",")[0]);
+    if (line.startsWith("#EXT-X-BYTERANGE:")) byteLength = Number(line.slice(17).split("@")[0]);
+    const uri = line.startsWith("#EXT-X-MAP:")
+      ? parseHlsAttributeList(line.slice(11)).URI
+      : !line.startsWith("#") ? line : null;
+    if (!uri) continue;
+    const filePath = localHlsPath(playlistPath, uri, rootDir);
+    const stat = await fsp.stat(filePath).catch(() => null);
+    if (!stat?.isFile() || stat.size === 0) throw httpError(422, `HLS media file is missing or empty: ${uri}`);
+    if (line.startsWith("#")) continue;
+    if (!(duration > 0) || (byteLength !== null && !(byteLength > 0 && byteLength <= stat.size))) {
+      throw httpError(422, `HLS segment has an invalid duration or byte range: ${uri}`);
     }
-    lines.push("");
-    await fsp.writeFile(masterPlaylistPath, lines.join("\n"), "utf8");
-    return;
+    const size = byteLength ?? stat.size;
+    totalDuration += duration;
+    totalBytes += size;
+    peakBandwidth = Math.max(peakBandwidth, size * 8 / duration);
+    segmentCount += 1;
+    duration = 0;
+    byteLength = null;
   }
+  if (!segmentCount) throw httpError(422, "HLS media playlist contains no segments.");
+  return {
+    segmentCount,
+    bandwidth: Math.ceil(peakBandwidth),
+    averageBandwidth: Math.ceil(totalBytes * 8 / totalDuration)
+  };
+}
 
-  const relativeMediaUri = path.relative(path.dirname(masterPlaylistPath), mediaPlaylistPath).replace(/\\/g, "/");
-  const bandwidth = Number(probe.bit_rate || contract.bitRate || 8000000);
-  const attributes = [
-    `BANDWIDTH=${Math.max(Math.round(bandwidth), 1)}`,
-    `AVERAGE-BANDWIDTH=${Math.max(Math.round(bandwidth), 1)}`,
-    contract.width && contract.height ? `RESOLUTION=${contract.width}x${contract.height}` : null,
-    contract.hlsVideoRange ? `VIDEO-RANGE=${contract.hlsVideoRange}` : null,
-    `CODECS="${codecStringFromProbe(probe, contract)}"`
-  ].filter(Boolean);
-
-  const text = [
-    "#EXTM3U",
-    "#EXT-X-VERSION:7",
-    "#EXT-X-INDEPENDENT-SEGMENTS",
-    `#EXT-X-STREAM-INF:${attributes.join(",")}`,
-    relativeMediaUri,
-    ""
-  ].join("\n");
-
-  await fsp.writeFile(masterPlaylistPath, text, "utf8");
+async function writeMultivariantPlaylist(masterPlaylistPath, mediaPlaylistPath, contract, probe, variants = [], masterTags) {
+  const rootDir = path.dirname(masterPlaylistPath);
+  const copied = variants.length > 0;
+  const lines = masterTags ? [...masterTags] : ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"];
+  if (lines[0] !== "#EXTM3U") throw httpError(422, "HLS master playlist is missing its EXTM3U header.");
+  const renditions = lines.filter(line => line.startsWith("#EXT-X-MEDIA:"))
+    .map(line => parseHlsAttributeList(line.slice(13)));
+  const renditionCache = new Map();
+  const inspections = [];
+  const entries = copied ? variants : [{
+    uri: path.relative(rootDir, mediaPlaylistPath).split(path.sep).map(encodeURIComponent).join("/"),
+    attributes: {}
+  }];
+  for (const variant of entries) {
+    const variantPath = localHlsPath(masterPlaylistPath, variant.uri, rootDir);
+    const variantProbe = path.resolve(variantPath) === path.resolve(mediaPlaylistPath) ? probe : await probeVideo(variantPath);
+    const media = await inspectHlsMediaFiles(variantPath, rootDir);
+    const additionalAudio = [];
+    const additionalVideoCodecs = [];
+    let audioPeak = 0;
+    let audioAverage = 0;
+    for (const type of ["AUDIO", "VIDEO", "SUBTITLES", "CLOSED-CAPTIONS"]) {
+      const group = variant.attributes[type];
+      if (!group || (type === "CLOSED-CAPTIONS" && group === "NONE")) continue;
+      const members = renditions.filter(item => item.TYPE === type && item["GROUP-ID"] === group);
+      if (!members.length) throw httpError(422, `HLS ${type} group is missing: ${group}`);
+      for (const member of members) {
+        if (!member.URI) {
+          if (type === "AUDIO" && !variantProbe.audio_streams?.length) {
+            throw httpError(422, `HLS in-band audio group has no audio stream: ${group}`);
+          }
+          continue;
+        }
+        const memberPath = localHlsPath(masterPlaylistPath, member.URI, rootDir);
+        const cacheKey = `${type}:${memberPath}`;
+        if (!renditionCache.has(cacheKey)) {
+          const files = await inspectHlsMediaFiles(memberPath, rootDir);
+          const streams = ["AUDIO", "VIDEO"].includes(type) ? await probeMediaStreams(memberPath) : [];
+          const audio = streams.filter(stream => stream.codec_type === "audio");
+          const video = streams.filter(stream => stream.codec_type === "video");
+          if (type === "AUDIO" && !audio.length) throw httpError(422, `HLS audio rendition has no audio stream: ${member.URI}`);
+          if (type === "VIDEO" && !video.length) throw httpError(422, `HLS video rendition has no video stream: ${member.URI}`);
+          audio.forEach(audioCodecFromProbe);
+          const videoCodecs = video.map(videoCodecFromProbe);
+          renditionCache.set(cacheKey, { files, audio, videoCodecs });
+        }
+        const rendition = renditionCache.get(cacheKey);
+        additionalAudio.push(...rendition.audio);
+        additionalVideoCodecs.push(...rendition.videoCodecs);
+        if (type === "AUDIO") {
+          audioPeak = Math.max(audioPeak, rendition.files.bandwidth);
+          audioAverage = Math.max(audioAverage, rendition.files.averageBandwidth);
+        }
+      }
+    }
+    // Discard obsolete supplemental declarations before deriving the actual configuration.
+    const attributes = { ...variant.attributes };
+    delete attributes["SUPPLEMENTAL-CODECS"];
+    delete attributes["FRAME-RATE"];
+    Object.assign(attributes, hlsAttributesFromProbe(variantProbe, contract, additionalAudio));
+    attributes.CODECS = [...new Set([...attributes.CODECS.split(","), ...additionalVideoCodecs])].join(",");
+    if (attributes.SUBTITLES) {
+      const textCodecs = String(variant.attributes.CODECS || "").split(",").filter(codec => /^(?:wvtt|stpp(?:\.|$))/.test(codec));
+      attributes.CODECS = [...new Set([...attributes.CODECS.split(","), ...textCodecs])].join(",");
+    }
+    const measuredPeak = media.bandwidth + audioPeak;
+    const measuredAverage = media.averageBandwidth + audioAverage;
+    attributes.BANDWIDTH = Math.max(Number(attributes.BANDWIDTH) || 0, measuredPeak, 1);
+    attributes["AVERAGE-BANDWIDTH"] = measuredAverage;
+    lines.push(`#EXT-X-STREAM-INF:${serializeHlsAttributeList(attributes)}`, variant.uri);
+    inspections.push({ uri: variant.uri, attributes, segmentCount: media.segmentCount });
+  }
+  await fsp.writeFile(masterPlaylistPath, [...lines, ""].join("\n"), "utf8");
+  return inspections;
 }
 
 function serializeHlsAttributeList(attributes) {
@@ -2398,30 +2629,14 @@ function serializeHlsAttributeList(attributes) {
         return null;
       }
 
-      const needsQuotes = /[,"]/.test(String(value)) || key === "CODECS";
+      const needsQuotes = /[,"]/.test(String(value)) ||
+        ["CODECS", "SUPPLEMENTAL-CODECS", "AUDIO", "VIDEO", "SUBTITLES"].includes(key) ||
+        (key === "CLOSED-CAPTIONS" && value !== "NONE");
       const escaped = String(value).replace(/"/g, '\\"');
       return `${key}=${needsQuotes ? `"${escaped}"` : escaped}`;
     })
     .filter(Boolean)
     .join(",");
-}
-
-function codecStringFromProbe(probe, contract) {
-  const codec = String(probe.codec_name || contract.codecName || "").toLowerCase();
-
-  if (codec === "hevc" || codec === "h265") {
-    return "hvc1.1.6.L93.B0,mp4a.40.2";
-  }
-
-  if (codec === "h264") {
-    return "avc1.640028,mp4a.40.2";
-  }
-
-  if (codec === "av1") {
-    return "av01.0.08M.10,mp4a.40.2";
-  }
-
-  return `${codec || "mp4v"}.unknown,mp4a.40.2`;
 }
 
 async function writeVerificationReport(outputDir, report) {
@@ -2435,6 +2650,10 @@ async function writeVerificationReport(outputDir, report) {
 function summarizeProbe(probe) {
   return {
     codec_name: probe.codec_name || null,
+    profile: probe.profile || null,
+    level: probe.level ?? null,
+    codec_tag_string: probe.codec_tag_string || null,
+    audio_streams: (probe.audio_streams || []).map(stream => ({ codec_name: stream.codec_name, profile: stream.profile || null })),
     pix_fmt: probe.pix_fmt || null,
     color_primaries: probe.color_primaries || null,
     color_transfer: probe.color_transfer || null,
@@ -7442,7 +7661,7 @@ async function createOrUpdateDirectusRecords(
   verificationResult = {}
 ) {
   const token = await directusLogin();
-  const existingProject = await findProjectBySlug(token, metadata.slug);
+  const existingProject = verificationResult.project || await findProjectBySlug(token, metadata.slug);
   const coverImageId = await directusUploadFile(token, files.cover, `${metadata.title} cover`);
   const dovi = extractDolbyVisionMetadata(probe);
   const dolbyCompatibilityId = sidecar.compatibilityId || stringOrNull(dovi.compatibilityId);
@@ -7464,7 +7683,7 @@ async function createOrUpdateDirectusRecords(
     projectPayload.cover_image = coverImageId;
   }
 
-  const project = existingProject
+  const project = verificationResult.project || (existingProject
     ? (
         await directusRequest(`/items/video_projects/${existingProject.id}`, token, {
           method: "PATCH",
@@ -7476,11 +7695,7 @@ async function createOrUpdateDirectusRecords(
           method: "POST",
           body: projectPayload
         })
-      ).data;
-
-  if (metadata.isDefault) {
-    await clearDefaultMasters(token, project.id);
-  }
+      ).data);
 
   const sourceContract = verificationResult.sourceContract || buildColorContract(probe, metadata, sidecar);
   const outputContract = verificationResult.outputContract || sourceContract;
@@ -7489,9 +7704,9 @@ async function createOrUpdateDirectusRecords(
     errors: [],
     verifiedAt: new Date().toISOString()
   };
-  const sourceHash = fs.existsSync(sourcePath) && fs.statSync(sourcePath).isFile()
+  const sourceHash = verificationResult.sourceHash || (fs.existsSync(sourcePath) && fs.statSync(sourcePath).isFile()
     ? await sha256File(sourcePath)
-    : null;
+    : null);
 
   const masterPayload = {
     project_id: project.id,
@@ -7557,6 +7772,10 @@ async function createOrUpdateDirectusRecords(
         })
       ).data;
 
+  if (metadata.isDefault) {
+    await clearDefaultMasters(token, project.id, master.id);
+  }
+
   for (const staleMaster of existingMasters.slice(1)) {
     await directusRequest(`/items/video_masters/${staleMaster.id}`, token, {
       method: "DELETE"
@@ -7574,11 +7793,17 @@ async function findMastersByIdentity(token, projectId, metadata) {
     sort: "id",
     limit: "-1"
   });
+  if (metadata.isDerivative && metadata.conversionIntent === AUTO_SDR_CONVERSION) {
+    params.delete("filter[label][_eq]");
+    params.set("filter[is_derivative][_eq]", "true");
+    params.set("filter[derived_from_master_id][_eq]", String(metadata.derivedFromMasterId));
+    params.set("filter[conversion_intent][_eq]", AUTO_SDR_CONVERSION);
+  }
   const data = await directusRequest(`/items/video_masters?${params.toString()}`, token);
   return data.data || [];
 }
 
-async function clearDefaultMasters(token, projectId) {
+async function clearDefaultMasters(token, projectId, keepMasterId) {
   const params = new URLSearchParams({
     "filter[project_id][_eq]": String(projectId),
     "filter[is_default][_eq]": "true",
@@ -7587,6 +7812,7 @@ async function clearDefaultMasters(token, projectId) {
   const data = await directusRequest(`/items/video_masters?${params.toString()}`, token);
 
   for (const master of data.data) {
+    if (String(master.id) === String(keepMasterId)) continue;
     await directusRequest(`/items/video_masters/${master.id}`, token, {
       method: "PATCH",
       body: {
@@ -7659,10 +7885,31 @@ async function handleUpload(req, res) {
       }
     );
 
+    let sdrDerivative = null;
+    if (metadata.masterType === "dolby_vision") {
+      try {
+        sdrDerivative = await createDolbySdrMaster(
+          metadata, hlsInspection?.playlistPath || sourcePath,
+          probe, sourceContract, records
+        );
+        if (sdrDerivative.master.is_default) records.master.is_default = false;
+      } catch (error) {
+        sdrDerivative = {
+          status: "failed",
+          error: error.message.slice(0, 2000),
+          verificationErrors: error.verificationErrors || null
+        };
+      }
+    }
+
     sendJson(res, 201, {
       status: "ok",
       project: records.project,
       master: records.master,
+      masters: sdrDerivative?.status === "ready"
+        ? [records.master, sdrDerivative.master]
+        : [records.master],
+      sdrDerivative,
       sourceKind: metadata.sourceKind,
       masterPackage: packageInfo
         ? {

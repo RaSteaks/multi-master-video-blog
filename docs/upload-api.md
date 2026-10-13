@@ -123,6 +123,34 @@ Directus `video_masters.hls_url` will be:
 /media/<slug>/dolby-vision/master.m3u8
 ```
 
+### Automatic SDR Derivative
+
+Dolby Vision uploads automatically generate a second, verified SDR master after saving the original. This applies to embedded files, master packages, and verified HLS packages (using the inspected primary media variant). Original Dolby Vision uploads still require `mode=copy`; the internal SDR conversion is a separate operation.
+
+P8.4/HLG and PQ-compatible sources are tone-mapped using `zscale` and `tonemap`, without applying RPU metadata. Profile 5 requires embedded RPU metadata, `libplacebo`, and working Vulkan support. The output is H.264 8-bit BT.709 limited-range video with AAC audio, plus an SDR MP4 download and fMP4 HLS playlist carrying `VIDEO-RANGE=SDR`.
+
+For Dolby Vision requests, `isDefault=true` makes the generated SDR the default after successful conversion. With `isDefault=false`, the existing default is preserved; an SDR default is assigned if none exists. Automatic derivatives are identified by source master ID and conversion intent, so a manually uploaded SDR with the same label is preserved.
+
+Responses retain the existing `master`, `hlsUrl`, `probe`, and `verification` fields for the original master, and add:
+
+```json
+{
+  "masters": ["<original master record>", "<SDR master record>"],
+  "sdrDerivative": {
+    "status": "ready",
+    "master": "<SDR master record>",
+    "hlsUrl": "/media/<slug>/sdr/<version>/master.m3u8",
+    "fileUrl": "/media/<slug>/sdr/<version>/sdr.mp4",
+    "colorContract": "<verified SDR color contract>",
+    "verification": "<SDR verification and conversion details>"
+  }
+}
+```
+
+These string placeholders represent objects. For non-Dolby uploads, `sdrDerivative` is `null` and `masters` contains only the uploaded master. If automatic SDR processing fails, HTTP `201` still confirms that the original was saved, `sdrDerivative` instead contains `status: "failed"`, `error`, and optional `verificationErrors`, and `masters` contains only the original. Clients must inspect that status before reporting that both versions are ready. Retry with `overwrite=true` after resolving the failure; existing uploads are not backfilled automatically.
+
+`VIDEO_SDR_PROCESS_TIMEOUT_MS` controls the encoding timeout (default `3600000`). Allow enough reverse-proxy time for both upload and processing. The API registers SDR only after conversion and HLS verification succeed.
+
 ## Stored Output
 
 Source video:
