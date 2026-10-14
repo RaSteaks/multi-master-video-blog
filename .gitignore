@@ -46,6 +46,8 @@ apps/web/content/about.md
 !apps/web/content/about.example.md
 
 # Directus local state
+# Keep the standalone SQLite preview CMS, credentials, dependencies, and data local.
+/cms/
 apps/cms/directus/database/
 apps/cms/directus/uploads/
 apps/cms/directus/extensions/.cache/
