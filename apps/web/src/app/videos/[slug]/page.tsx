@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
 import { MediaPlayer } from "@/components/MediaPlayer";
 import { assetUrl, getVideoProject } from "@/lib/directus";
@@ -41,19 +42,22 @@ export default async function VideoPage({ params }: VideoPageProps) {
     <main className="shell page-stack">
       <AnalyticsTracker itemType="video" itemId={video.id} />
       <header className="page-header video-title">
-        <div>
-          <p className="eyebrow">{video.category || "Video"}</p>
-          <h1>{video.title}</h1>
-        </div>
+        <p className="eyebrow">{video.category || "Video"}</p>
+        <h1>{video.title}</h1>
         {video.description ? (
           <p className="summary">{video.description}</p>
         ) : null}
+        <div className="video-title-meta">
+          <p className="meta-line">
+            {masterCount} video master{masterCount !== 1 ? "s" : ""}
+            {video.tags?.length ? <> · {video.tags.join(", ")}</> : null}
+          </p>
+          {/* Bind follow-up uploads to this project's stable ID instead of re-entering its metadata. */}
+          <Link className="page-action-link" href={`/upload?projectId=${video.id}`}>
+            {video.masters?.some(master => master.type === "sdr") ? "添加视频母版" : "补充 SDR 母版"}
+          </Link>
+        </div>
       </header>
-
-      <p className="meta-line">
-        {masterCount} video master{masterCount !== 1 ? "s" : ""}
-        {video.tags?.length ? <> · {video.tags.join(", ")}</> : null}
-      </p>
 
       <MediaPlayer masters={video.masters || []} poster={poster} videoProjectId={video.id} />
     </main>

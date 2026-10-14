@@ -20,7 +20,8 @@ const pageText = {
   },
 };
 
-export function UploadPageClient() {
+export function UploadPageClient({ initialProjectId }: { initialProjectId?: string }) {
+  // Preserve the target across locale changes; the form loads its current CMS details.
   const [lang, setLang] = useState<Lang>("zh");
   const text = pageText[lang];
 
@@ -31,7 +32,7 @@ export function UploadPageClient() {
       <div className="upload-page-intro">
         <header className="page-header upload-page-header">
           <p className="eyebrow">{text.eyebrow}</p>
-          <h1>{text.title}</h1>
+          <h1>{initialProjectId ? (lang === "zh" ? "添加视频母版" : "Add video master") : text.title}</h1>
           <p className="summary">{text.summary}</p>
         </header>
 
@@ -53,7 +54,7 @@ export function UploadPageClient() {
         </div>
       </div>
 
-      <UploadVideoForm lang={lang} />
+      <UploadVideoForm lang={lang} initialProjectId={initialProjectId} />
     </main>
     </>
   );

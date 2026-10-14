@@ -50,9 +50,9 @@ Common form fields:
 
 Use `mode=copy` by default. HDR10, HLG, and Dolby Vision masters must use `mode=copy`; transcode requests for HDR masters are rejected. HDR primaries are preserved and normalized as `BT.2020`, `P3-D65(smpte432)`, or `DCI-P3(smpte431)`.
 
-For Dolby Vision, use `mode=copy` so FFmpeg repackages the existing HEVC/Dolby Vision bitstream into fMP4 HLS instead of re-encoding it. The API rejects Dolby Vision uploads without embedded DOVI/RPU metadata or a trusted sidecar.
+For Dolby Vision, use `mode=copy` so FFmpeg repackages the existing HEVC/Dolby Vision bitstream into fMP4 HLS instead of re-encoding it. The API rejects Dolby Vision uploads without embedded configuration, decodable RPU and a verified RPU bitstream. Sidecars alone are not accepted.
 
-After the original Dolby Vision master is verified and saved, the API automatically generates a separate SDR MP4/HLS master, with a source-master relation and verified BT.709/H.264 output. P8.4/HLG and PQ-compatible base layers use `zscale` + `tonemap`; Profile 5 requires embedded RPU, `libplacebo`, and Vulkan. `sdrDerivative` in the upload response reports ready/failed independently of the saved original. See `docs/upload-api.md` for default selection, retry behavior, and `VIDEO_SDR_PROCESS_TIMEOUT_MS`.
+New-project HDR uploads without a supplied `sdrVideo` automatically generate a separate SDR MP4/HLS master. All HDR derivatives use adaptive `libplacebo`/Vulkan tone and gamut mapping; verified Dolby streams apply embedded RPU. Copy checks retain static metadata and full-stream RPU hashes. Paired uploads report `companionSdr` for the manual SDR; automatic conversion reports `sdrDerivative`. Later uploads use `projectId` to preserve existing project information and do not trigger automatic conversion. See `docs/upload-api.md` for pairing, authenticated project discovery, defaults and partial-failure recovery.
 
 For `sourceKind=hls_package`, include a multivariant `master.m3u8` with `VIDEO-RANGE=SDR|PQ|HLG`. Every variant must share the same color contract.
 

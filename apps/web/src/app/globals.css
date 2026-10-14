@@ -598,18 +598,33 @@ html.route-transition-pending
   outline-offset: 4px;
 }
 
-/* ---- Video title (two-column header) ---- */
+/* ---- Video title (single reading column: title → description → meta/action) ---- */
 .video-title {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.55fr);
-  gap: 36px;
-  max-width: none;
-  align-items: end;
+  max-width: 880px;
 }
 
-/* Tighten gap between video header and meta-line (offsets page-stack gap) */
-.video-title + .meta-line {
-  margin-top: -36px;
+.video-title h1 {
+  margin-bottom: 18px;
+  font-size: clamp(2.2rem, 5vw, 3.75rem);
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.video-title .summary {
+  max-width: 62ch;
+}
+
+.video-title-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px 24px;
+  margin-top: 28px;
+}
+
+.video-title-meta .meta-line {
+  margin: 0;
 }
 
 /* ---- Article shell ---- */
@@ -2848,6 +2863,67 @@ h3 {
   background: #000;
 }
 
+/* Paired and follow-up uploads reuse the existing form rhythm and native controls. */
+.upload-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.upload-project-picker {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.upload-source-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.upload-source-file span {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.upload-source-file button {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.upload-source-file button:hover:not(:disabled),
+.upload-source-file button:focus-visible {
+  color: var(--text);
+  border-color: var(--text-secondary);
+}
+
+.upload-source-file button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.upload-form .field-note {
+  margin: 8px 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.file-drop-zone:focus-within {
+  outline: 2px solid var(--text-secondary);
+  outline-offset: 2px;
+}
+
 /* ---- Controls row ---- */
 .player-controls-row {
   display: grid;
@@ -3188,6 +3264,7 @@ h3 {
 }
 
 .source-mode {
+  position: relative;
   display: grid;
   gap: 6px;
   min-height: 108px;
@@ -3207,10 +3284,14 @@ h3 {
     box-shadow var(--transition-fast);
 }
 
-.source-mode input {
+/* Keep the keyboard-accessible radio inside its card despite generic input sizing. */
+.upload-form .source-mode input {
   position: absolute;
   width: 1px;
   height: 1px;
+  padding: 0;
+  border: 0;
+  clip-path: inset(50%);
   opacity: 0;
 }
 
@@ -4668,11 +4749,6 @@ h3 {
 
   .upload-source-grid {
     grid-template-columns: 1fr;
-  }
-
-  .video-title {
-    grid-template-columns: 1fr;
-    gap: 16px;
   }
 
   .article-content-grid {

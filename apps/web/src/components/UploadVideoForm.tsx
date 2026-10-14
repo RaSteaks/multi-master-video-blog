@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { Lang } from "@/components/UploadPageClient";
+import { VideoProjectPicker, type UploadProject } from "./VideoProjectPicker";
 
 type UploadState = "idle" | "uploading" | "success" | "error";
 type SourceKind = "embedded" | "master_package" | "hls_package";
@@ -26,8 +27,10 @@ type UploadResponse = {
     sidecarCount: number;
   } | null;
   project?: {
+    id?: number;
     slug?: string;
   };
+  companionSdr?: { status: "ready" | "failed"; hlsUrl?: string; error?: string } | null;
   error?: string;
   sdrDerivative?: {
     status: "ready" | "failed";
@@ -51,6 +54,15 @@ const masterTypes = [
 
 const translations = {
   en: {
+    sourcePairNote: "Select or drop one master, or an HDR + SDR pair together. The server identifies the two formats from video metadata, regardless of file order.",
+    autoHdrType: "HDR type will be detected from the two source videos.", tooMany: "Select at most two source videos: one HDR and one SDR.",
+    removeSource: "Remove", selectedPair: "Two source masters selected",
+    target: "Project", newProject: "Create a project", existingProject: "Add to an existing project",
+    existingNote: "Project information is read from the server and will not be changed by this upload.",
+    pairedSdr: "Include an SDR master", pairedNote: "Upload your matching BT.709 MP4/MOV export. Both masters share this project's information; no automatic SDR is generated.",
+    pairedFile: "Matching SDR master", removeFile: "Remove SDR file", addMaster: "Add another master", addSdr: "Add SDR to this project",
+    pairedComplete: "HDR and your SDR master are ready in the same project.",
+    pairedPartial: "HDR was saved, but the supplied SDR could not be saved. Add SDR to this project to retry without uploading HDR again.",
     access: "Access",
     uploadToken: "Upload token",
     source: "Source",
@@ -79,10 +91,10 @@ const translations = {
     published: "Published",
     defaultMaster: "Default master",
     defaultSdrMaster: "Use generated SDR as default",
-    automaticSdr: "Dolby Vision is preserved. An SDR playback version is generated automatically.",
-    processingDolby: "Upload received. Packaging Dolby Vision and generating the SDR version...",
-    dolbyComplete: "Dolby Vision and SDR are ready. You can switch versions on the video page.",
-    dolbyPartial: "Dolby Vision was saved, but SDR generation failed. Review the error below before retrying.",
+    automaticSdr: "For a new project, HDR without a supplied SDR creates an automatic SDR playback version. Existing projects are not backfilled.",
+    processingDolby: "Upload received. Verifying and preparing the video masters…",
+    dolbyComplete: "HDR and the automatic SDR are ready. You can switch versions on the video page.",
+    dolbyPartial: "HDR was saved, but SDR generation failed. You can add an SDR master to this project.",
     overwriteHls: "Overwrite existing HLS",
     uploading: "Uploading...",
     uploadVideo: "Upload Video",
@@ -106,9 +118,9 @@ const translations = {
       },
       {
         value: "master_package" as SourceKind,
-        title: "DV Master / IMF / ProRes Package",
+        title: "HEVC master package",
         detail:
-          "Upload the full folder/package. XML sidecars, RPU files, MXF, IMF, and primary essence are scanned together.",
+          "Upload a folder containing a playable HEVC master. Dolby Vision must already contain embedded RPU; external XML/RPU files alone are not sufficient.",
       },
       {
         value: "hls_package" as SourceKind,
@@ -119,6 +131,15 @@ const translations = {
     ],
   },
   zh: {
+    sourcePairNote: "可选择或拖入一份母版，也可一次加入 HDR 和 SDR 两份母版。服务器根据视频元数据识别类型，无需按顺序选择。",
+    autoHdrType: "已选择两份源视频，HDR 类型将根据视频元数据自动识别。", tooMany: "最多选择两份源视频：一份 HDR 和一份 SDR。",
+    removeSource: "移除", selectedPair: "已选择两份源视频母版",
+    target: "所属项目", newProject: "新建项目", existingProject: "为已有项目添加母版",
+    existingNote: "使用服务器中保存的项目资料。本次上传不会修改标题、简介、标签、封面或发布状态。",
+    pairedSdr: "同时上传 SDR 母版", pairedNote: "选择同一作品的 BT.709 MP4/MOV 导出。两份母版共用项目资料，不再自动生成 SDR。",
+    pairedFile: "配对 SDR 母版", removeFile: "移除 SDR 文件", addMaster: "继续添加母版", addSdr: "为此项目补充 SDR",
+    pairedComplete: "HDR 和你上传的 SDR 母版已保存到同一项目。",
+    pairedPartial: "HDR 已保存，但配对 SDR 保存失败。可为此项目补充 SDR，无需重传 HDR。",
     access: "访问凭证",
     uploadToken: "上传令牌",
     source: "源文件",
@@ -147,10 +168,10 @@ const translations = {
     published: "发布",
     defaultMaster: "默认母版",
     defaultSdrMaster: "将自动生成的 SDR 设为默认",
-    automaticSdr: "保留 Dolby Vision，并自动生成一份 SDR 播放版本。",
-    processingDolby: "文件已上传，正在封装 Dolby Vision 并生成 SDR 版本...",
-    dolbyComplete: "Dolby Vision 和 SDR 均已就绪，可在播放页切换。",
-    dolbyPartial: "Dolby Vision 已保存，但 SDR 生成失败。请查看下方错误后重试。",
+    automaticSdr: "仅新项目上传 HDR 且未随附 SDR 时，自动生成 SDR 播放版本；已有项目不自动补生成。",
+    processingDolby: "文件已上传，正在校验并处理视频母版…",
+    dolbyComplete: "HDR 和自动生成的 SDR 均已就绪，可在播放页切换。",
+    dolbyPartial: "HDR 已保存，但 SDR 生成失败。可为此项目补充 SDR 母版。",
     overwriteHls: "覆盖现有 HLS",
     uploading: "上传中...",
     uploadVideo: "上传视频",
@@ -174,9 +195,9 @@ const translations = {
       },
       {
         value: "master_package" as SourceKind,
-        title: "DV 母版 / IMF / ProRes 包",
+        title: "HEVC 母版包",
         detail:
-          "上传完整文件夹/包，将同时扫描 XML 辅助文件、RPU 文件、MXF、IMF 及主要素材。",
+          "上传包含可播放 HEVC 母版的文件夹。Dolby Vision 须已内嵌 RPU；单独的 XML/RPU 辅助文件不能替代。",
       },
       {
         value: "hls_package" as SourceKind,
@@ -195,11 +216,15 @@ function FileDropZone({
   fileName,
   texts,
   onChange,
+  multiple = false,
+  onFilesChange,
 }: {
   accept?: string;
   fileName: string;
   texts: { drag: string; browse: string; release: string };
   onChange: (file: File | null) => void;
+  multiple?: boolean;
+  onFilesChange?: (files: File[]) => void;
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -219,11 +244,17 @@ function FileDropZone({
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setIsDragging(false);
-    onChange(e.dataTransfer.files[0] ?? null);
+    // Disabled fieldsets block native inputs but do not suppress custom drop handlers.
+    if (inputRef.current?.matches(":disabled")) return;
+    if (onFilesChange) onFilesChange(Array.from(e.dataTransfer.files));
+    else onChange(e.dataTransfer.files[0] ?? null);
   }
 
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    onChange(e.target.files?.[0] ?? null);
+    if (onFilesChange) onFilesChange(Array.from(e.target.files || []));
+    else onChange(e.target.files?.[0] ?? null);
+    // Selection lives in React state, so removing a file must allow choosing the same pair again.
+    e.target.value = "";
   }
 
   const hasFile = Boolean(fileName);
@@ -244,9 +275,9 @@ function FileDropZone({
       <input
         ref={inputRef}
         type="file"
+        multiple={multiple}
         accept={accept}
         onChange={handleInputChange}
-        tabIndex={-1}
       />
 
       <svg
@@ -289,10 +320,16 @@ function defaultMasterLabel(sourceKind: SourceKind, masterType: string) {
 
 // ── UploadVideoForm ───────────────────────────────────────────────────────────
 
-export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
+export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang; initialProjectId?: string }) {
   const t = translations[lang];
 
   const [token, setToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
+  const [appendProject, setAppendProject] = useState(Boolean(initialProjectId));
+  const [selectedProject, setSelectedProject] = useState<UploadProject | null>(null);
+  const [pairedSdr, setPairedSdr] = useState(false);
+  const [sdrVideo, setSdrVideo] = useState<File | null>(null);
+  const requestRef = useRef<XMLHttpRequest | null>(null);
   const [title, setTitle] = useState("");
   const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
@@ -303,7 +340,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
   const [mode, setMode] = useState("copy");
   const [notes, setNotes] = useState("");
   const [published, setPublished] = useState(true);
-  const [isDefault, setIsDefault] = useState(true);
+  const [isDefault, setIsDefault] = useState(!initialProjectId);
   const [overwrite, setOverwrite] = useState(false);
   const [video, setVideo] = useState<File | null>(null);
   const [masterPackageFiles, setMasterPackageFiles] = useState<File[]>([]);
@@ -313,6 +350,24 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("");
   const [result, setResult] = useState<UploadResponse | null>(null);
+  const [sourceError, setSourceError] = useState("");
+  const embeddedPair = sourceKind === "embedded" && Boolean(video && sdrVideo);
+  const isHdr = ["hdr10", "hlg", "dolby_vision"].includes(masterType);
+
+  useEffect(() => {
+    if (!selectedProject) return;
+    setTitle(selectedProject.title); setSlug(selectedProject.slug);
+    setDescription(selectedProject.description || ""); setTags((selectedProject.tags || []).join(", "));
+    setPublished(Boolean(selectedProject.published)); setIsDefault(false); setCover(null);
+  }, [selectedProject]);
+
+  useEffect(() => {
+    // File selections cannot be restored after navigation; warn before losing a queued upload.
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    if (state === "success" || !(video || sdrVideo || masterPackageFiles.length)) return;
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [video, sdrVideo, masterPackageFiles.length, state]);
 
   const selectedSourceMode =
     sourceKind !== "embedded"
@@ -330,9 +385,12 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
           slug.trim() &&
           !slugInvalid &&
           sourceReady &&
-          state !== "uploading"
+          !sourceError &&
+          (!appendProject || selectedProject) &&
+          (!pairedSdr || !isHdr || sdrVideo) &&
+          state !== "uploading" && state !== "success"
       ),
-    [slug, slugInvalid, sourceReady, state, title, token]
+    [slug, slugInvalid, sourceReady, state, title, token, appendProject, selectedProject, pairedSdr, isHdr, sdrVideo, sourceError]
   );
 
   const dropTexts = {
@@ -346,6 +404,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
     setProgress(0);
     setMessage("");
     setResult(null);
+    setPairedSdr(false); setSdrVideo(null); setSourceError("");
     if (value === "embedded") {
       setMasterPackageFiles([]);
       setMasterType("sdr");
@@ -365,11 +424,21 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
     setMasterType(value);
     setLabel(defaultMasterLabel(sourceKind, value));
     setMode("copy");
+    if (!["hdr10", "hlg", "dolby_vision"].includes(value)) { setPairedSdr(false); setSdrVideo(null); }
+  }
+
+  function selectSourceFiles(files: File[]) {
+    if (files.length > 2) { setSourceError(t.tooMany); return; }
+    setSourceError("");
+    setVideo(files[0] || null); setSdrVideo(files[1] || null);
+    setPairedSdr(files.length === 2);
+    if (files.length === 2) { setMode("copy"); setLabel("HDR"); }
+    else setLabel(defaultMasterLabel(sourceKind, masterType));
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || requestRef.current) return;
 
     setState("uploading");
     setProgress(0);
@@ -377,6 +446,10 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
     setResult(null);
 
     const form = new FormData();
+    if (appendProject && selectedProject) form.append("projectId", String(selectedProject.id));
+    // Embedded pairs use the same multipart field, matching the single source picker.
+    if (embeddedPair && sdrVideo) form.append("video", sdrVideo);
+    else if (sourceKind !== "embedded" && isHdr && pairedSdr && sdrVideo) form.append("sdrVideo", sdrVideo);
     form.append("sourceKind", sourceKind);
     if (sourceKind === "embedded" && video) {
       form.append("video", video);
@@ -411,6 +484,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
     form.append("overwrite", String(overwrite));
 
     const request = new XMLHttpRequest();
+    requestRef.current = request;
     request.open("POST", "/api/uploads/videos");
     request.setRequestHeader("Authorization", `Bearer ${token.trim()}`);
 
@@ -419,10 +493,11 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
       setProgress(Math.round((uploadEvent.loaded / uploadEvent.total) * 100));
     };
     request.upload.onload = () => {
-      if (masterType === "dolby_vision") setMessage(t.processingDolby);
+      if (isHdr || embeddedPair) setMessage(t.processingDolby);
     };
 
     request.onload = () => {
+      requestRef.current = null;
       let payload: UploadResponse | null = null;
       try {
         payload = request.responseText
@@ -436,7 +511,9 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
         setState("success");
         setProgress(100);
         setResult(payload);
-        setMessage(payload?.sdrDerivative?.status === "ready" ? t.dolbyComplete
+        setMessage(payload?.companionSdr?.status === "ready" ? t.pairedComplete
+          : payload?.companionSdr?.status === "failed" ? t.pairedPartial
+          : payload?.sdrDerivative?.status === "ready" ? t.dolbyComplete
           : payload?.sdrDerivative?.status === "failed" ? t.dolbyPartial : t.uploadComplete);
         return;
       }
@@ -446,6 +523,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
     };
 
     request.onerror = () => {
+      requestRef.current = null;
       setState("error");
       setMessage(t.networkError);
     };
@@ -465,6 +543,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
 
   return (
     <form className="upload-form" noValidate onSubmit={submit}>
+      <fieldset className="upload-form upload-fields" disabled={state === "uploading"}>
       {/* ── Access ── */}
       <section className="upload-panel">
         <h2>{t.access}</h2>
@@ -472,7 +551,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
           <label className="upload-wide">
             {t.uploadToken}
             <input
-              type="password"
+              type={showToken ? "text" : "password"}
               value={token}
               onChange={(event) => setToken(event.target.value)}
               autoComplete="off"
@@ -480,7 +559,27 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
               required
             />
           </label>
+          <button type="button" aria-pressed={showToken} onClick={() => setShowToken(value => !value)}>
+            {lang === "zh" ? (showToken ? "隐藏令牌" : "显示令牌") : (showToken ? "Hide token" : "Show token")}
+          </button>
         </div>
+      </section>
+
+      <section className="upload-panel">
+        <h2>{t.target}</h2>
+        <div className="upload-checks">
+          <label><input type="radio" name="projectTarget" checked={!appendProject} onChange={() => {
+            setAppendProject(false); setSelectedProject(null); setTitle(""); setSlug(""); setDescription(""); setTags(""); setIsDefault(true);
+          }} />{t.newProject}</label>
+          <label><input type="radio" name="projectTarget" checked={appendProject} onChange={() => {
+            setAppendProject(true); setIsDefault(false); setCover(null);
+          }} />{t.existingProject}</label>
+        </div>
+        {appendProject ? <>
+          <p className="field-note">{t.existingNote}</p>
+          <VideoProjectPicker token={token} lang={lang} initialProjectId={initialProjectId}
+            selected={selectedProject} onSelect={setSelectedProject} />
+        </> : null}
       </section>
 
       {/* ── Source ── */}
@@ -513,15 +612,27 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
 
         <div className="upload-grid">
           {sourceKind === "embedded" ? (
-            <label className="upload-span-2">
+            <div className="upload-span-2">
+            <label>
               {t.sourceVideo}
               <FileDropZone
                 accept="video/*,.mov,.mkv,.mp4,.m4v"
-                fileName={video?.name || ""}
+                multiple
+                fileName={embeddedPair ? t.selectedPair : video?.name || ""}
                 texts={dropTexts}
                 onChange={setVideo}
+                onFilesChange={selectSourceFiles}
               />
             </label>
+            <p className="field-note">{t.sourcePairNote}</p>
+            {sourceError ? <p role="alert">{sourceError}</p> : null}
+            {[video, sdrVideo].filter((file): file is File => Boolean(file)).map((file, index, files) =>
+              <div className="upload-source-file" key={`${index}-${file.name}`}>
+                <span>{file.name} · {(file.size / 1024 / 1024).toFixed(2)} MiB</span>
+                <button type="button" aria-label={`${t.removeSource} ${file.name}`}
+                  onClick={() => selectSourceFiles(files.filter((_, position) => position !== index))}>{t.removeSource}</button>
+              </div>)}
+            </div>
           ) : (
             <>
               <label className="upload-wide">
@@ -555,7 +666,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
             </>
           )}
 
-          <label>
+          {!appendProject ? <label>
             {t.coverImage}
             <FileDropZone
               accept="image/*"
@@ -563,7 +674,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
               texts={dropTexts}
               onChange={setCover}
             />
-          </label>
+          </label> : null}
 
           {sourceKind !== "embedded" && selectedSourceMode ? (
             <div className="upload-source-note">
@@ -572,6 +683,18 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
             </div>
           ) : null}
         </div>
+      {isHdr && sourceKind !== "embedded" ? <div className="upload-grid">
+        <h2>{t.pairedSdr}</h2>
+        <label className="upload-checks"><input type="checkbox" checked={pairedSdr}
+          onChange={event => { setPairedSdr(event.target.checked); if (!event.target.checked) setSdrVideo(null); }} />{t.pairedSdr}</label>
+        {pairedSdr ? <div className="upload-grid">
+          <p className="field-note upload-wide">{t.pairedNote}</p>
+          <label className="upload-wide">{t.pairedFile}<input type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v"
+            onChange={event => setSdrVideo(event.target.files?.[0] || null)} /></label>
+          {sdrVideo ? <p>{sdrVideo.name} · {(sdrVideo.size / 1024 / 1024).toFixed(1)} MiB</p> : null}
+        </div> : null}
+      </div> : null}
+
       </section>
 
       {/* ── Metadata ── */}
@@ -582,6 +705,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
             {t.titleLabel}
             <input
               value={title}
+              readOnly={appendProject}
               onChange={(event) => setTitle(event.target.value)}
               required
             />
@@ -590,6 +714,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
             {t.slug}
             <input
               value={slug}
+              readOnly={appendProject}
               onChange={(event) => setSlug(event.target.value)}
               pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
               aria-invalid={slugInvalid}
@@ -603,6 +728,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
             {t.tags}
             <input
               value={tags}
+              readOnly={appendProject}
               onChange={(event) => setTags(event.target.value)}
               placeholder={t.tagsPlaceholder}
             />
@@ -611,6 +737,8 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
             {t.description}
             <textarea
               value={description}
+              readOnly={appendProject}
+              style={{ resize: "none" }}
               onChange={(event) => setDescription(event.target.value)}
               rows={4}
             />
@@ -624,7 +752,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
         <div className="upload-grid">
           <label>
             {t.masterType}
-            <select
+            {embeddedPair ? <p className="field-note">{t.autoHdrType}</p> : <select
               value={masterType}
               onChange={(event) => updateMasterType(event.target.value)}
             >
@@ -633,7 +761,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
                   {type.label}
                 </option>
               ))}
-            </select>
+            </select>}
           </label>
           <label>
             {t.labelField}
@@ -647,7 +775,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
             <select
               value={mode}
               onChange={(event) => setMode(event.target.value)}
-              disabled={masterType !== "sdr" && masterType !== "custom"}
+              disabled={embeddedPair || (masterType !== "sdr" && masterType !== "custom")}
             >
               <option value="copy">{t.copySourceStream}</option>
               <option value="transcode">{t.transcodeSdr}</option>
@@ -657,6 +785,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
             {t.notes}
             <textarea
               value={notes}
+              style={{ resize: "none" }}
               onChange={(event) => setNotes(event.target.value)}
               rows={4}
             />
@@ -668,6 +797,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
             <input
               type="checkbox"
               checked={published}
+              disabled={appendProject}
               onChange={(event) => setPublished(event.target.checked)}
             />
             {t.published}
@@ -678,7 +808,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
               checked={isDefault}
               onChange={(event) => setIsDefault(event.target.checked)}
             />
-            {masterType === "dolby_vision" ? t.defaultSdrMaster : t.defaultMaster}
+            {isHdr && !appendProject && !pairedSdr ? t.defaultSdrMaster : t.defaultMaster}
           </label>
           <label>
             <input
@@ -692,7 +822,7 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
       </section>
 
       {/* ── Actions ── */}
-      {masterType === "dolby_vision" ? <p className="field-note">{t.automaticSdr}</p> : null}
+      {isHdr && !pairedSdr && !embeddedPair ? <p className="field-note">{t.automaticSdr}</p> : null}
       <div className="upload-actions">
         <button type="submit" disabled={!canSubmit}>
           {state === "uploading" ? t.uploading : t.uploadVideo}
@@ -701,17 +831,22 @@ export function UploadVideoForm({ lang = "zh" }: { lang?: Lang }) {
           <span style={{ width: `${progress}%` }} />
         </div>
       </div>
+      </fieldset>
 
       {/* ── Status / Result ── */}
       {message ? (
         <div
           className={
-            state === "error" || result?.sdrDerivative?.status === "failed"
+            state === "error" || result?.sdrDerivative?.status === "failed" || result?.companionSdr?.status === "failed"
               ? "upload-status error" : "upload-status"
           }
           role="status"
         >
           <p>{message}</p>
+          {result?.companionSdr?.error ? <p>{result.companionSdr.error}</p> : null}
+          {result?.project?.id ? <p><a href={`/upload?projectId=${result.project.id}`}>
+            {result.companionSdr?.status === "failed" || result.sdrDerivative?.status === "failed" ? t.addSdr : t.addMaster}
+          </a></p> : null}
           {result?.sdrDerivative?.error ? <p>{result.sdrDerivative.error}</p> : null}
           {result?.sdrDerivative?.hlsUrl ? <code>{result.sdrDerivative.hlsUrl}</code> : null}
           {result?.masterPackage ? (

@@ -54,8 +54,10 @@ const {
   AUTO_SDR_CONVERSION,
   buildDolbySdrConversion,
   buildSdrEncodeArgs,
+  buildSdrTranscodeFilter,
   validateSdrDerivative
 } = require("./video-sdr.cjs");
+const { hashDolbyRpu, compareHdrMetadata } = require("./video-integrity.cjs");
 const { audioCodecFromProbe, hlsAttributesFromProbe, videoCodecFromProbe } = require("./hls-metadata.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -517,13 +519,20 @@ async function parseMultipart(req) {
     });
 
     busboy.on("file", (name, file, info) => {
-      if (!["video", "cover", "masterPackage"].includes(name)) {
+      if (!["video", "sdrVideo", "cover", "masterPackage"].includes(name)) {
         file.resume();
         return;
       }
 
       const filename = name === "masterPackage" ? safeRelativePath(info.filename) : safeFileName(info.filename);
-      const tempPath = path.join(tempDir, name === "masterPackage" ? filename : safeFileName(filename));
+      // Paired exports often share a basename; isolate fields so they cannot overwrite each other.
+      if ((name === "video" && (files.videos?.length || 0) >= 2) ||
+          (name !== "video" && name !== "masterPackage" && files[name])) {
+        file.resume();
+        rejectOnce(httpError(400, name === "video" ? "Select at most two source videos." : `Only one ${name} file is allowed.`));
+        return;
+      }
+      const tempPath = path.join(tempDir, name, name === "video" ? `${crypto.randomUUID()}-${filename}` : filename);
       assertInside(tempDir, tempPath);
       fs.mkdirSync(path.dirname(tempPath), { recursive: true });
       const writeStream = fs.createWriteStream(tempPath);
@@ -539,12 +548,16 @@ async function parseMultipart(req) {
       if (name === "masterPackage") {
         files.masterPackage = files.masterPackage || [];
         files.masterPackage.push(currentFile);
+      } else if (name === "video") {
+        files.videos = files.videos || [];
+        files.videos.push(currentFile);
+        files.video = files.video || currentFile;
       } else {
         files[name] = currentFile;
       }
 
       if (name === "video") {
-        fileInfo = currentFile;
+        fileInfo = fileInfo || currentFile;
       }
 
       file.on("data", (chunk) => {
@@ -1734,7 +1747,7 @@ async function moveSourceFile(file, metadata) {
   }
 
   const sourceDir = path.join(MEDIA_ROOT, metadata.slug, "source");
-  const sourcePath = path.join(sourceDir, `${Date.now()}-${file.filename}`);
+  const sourcePath = path.join(sourceDir, `${Date.now()}-${crypto.randomUUID()}-${file.filename}`);
 
   assertInside(MEDIA_ROOT, sourceDir);
   assertInside(MEDIA_ROOT, sourcePath);
@@ -1936,6 +1949,38 @@ async function probeVideo(sourcePath) {
   const streams = await probeMediaStreams(sourcePath);
   const video = streams.find((stream) => stream.codec_type === "video");
   if (!video) return {};
+  // HDR SEI is commonly attached to decoded frames rather than stream metadata.
+  const dovi = extractDolbyVisionMetadata(video);
+  if (dovi.profile || ["smpte2084", "arib-std-b67"].includes(video.color_transfer)) {
+    const frameData = await withLocalHlsInput(sourcePath, async inputPath => {
+      const localHls = path.extname(inputPath).toLowerCase() === ".m3u8";
+      const { stdout } = await runProcess(FFPROBE_PATH, [
+        "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#32",
+        "-show_frames", "-show_entries", "frame=side_data_list", "-of", "json",
+        localHls ? path.basename(inputPath) : inputPath
+      ], localHls ? { cwd: path.dirname(inputPath) } : {});
+      return JSON.parse(stdout).frames || [];
+    });
+    const sideData = [...(video.side_data_list || [])];
+    video.dovi_frame_metadata_present = frameData.some(frame => (frame.side_data_list || [])
+      .some(item => item.side_data_type === "Dolby Vision Metadata"));
+    for (const frame of frameData) {
+      for (const item of frame.side_data_list || []) {
+        if (/mastering display|content light/i.test(item.side_data_type || "") &&
+            !sideData.some(existing => existing.side_data_type === item.side_data_type)) sideData.push(item);
+      }
+    }
+    video.side_data_list = sideData;
+  }
+  if (dovi.profile && isHevcCodec(video.codec_name)) {
+    // Hash actual RPU NAL payloads across the entire stream, not just its configuration flag.
+    video.dovi_rpu_integrity = await withLocalHlsInput(sourcePath, inputPath => {
+      const localHls = path.extname(inputPath).toLowerCase() === ".m3u8";
+      return hashDolbyRpu(FFMPEG_PATH, localHls ? path.basename(inputPath) : inputPath, {
+        timeoutMs: VIDEO_SDR_PROCESS_TIMEOUT_MS, ...(localHls ? { cwd: path.dirname(inputPath) } : {})
+      });
+    });
+  }
   return {
     ...video,
     audio_streams: streams.filter((stream) => stream.codec_type === "audio")
@@ -2000,14 +2045,22 @@ async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
     );
   }
 
+  const transcodeFilter = buildSdrTranscodeFilter(buildColorContract(probe, metadata));
+  const transcodeEngine = transcodeFilter.startsWith("libplacebo=") ? "libplacebo" : "zscale";
+  if (!(await availableVideoSdrFilters()).has(transcodeEngine)) {
+    throw httpError(422, `SDR conversion requires FFmpeg with ${transcodeEngine}${transcodeEngine === "libplacebo" ? " and working Vulkan" : ""}.`);
+  }
   const args = [
     "-y",
+    ...(transcodeEngine === "libplacebo" ? ["-init_hw_device", "vulkan"] : []),
     "-i",
     sourcePath,
     "-map",
     "0:v:0",
     "-map",
     "0:a:0?",
+    "-vf",
+    transcodeFilter,
     "-c:v",
     "libx264",
     "-preset",
@@ -2024,6 +2077,7 @@ async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
     "bt709",
     "-color_range",
     "tv",
+    "-chroma_sample_location", "left",
     "-force_key_frames",
     "expr:gte(t,n_forced*4)",
     "-sc_threshold",
@@ -2047,7 +2101,8 @@ async function generateHls(sourcePath, outputDir, metadata, probe = {}) {
     await runProcess(FFMPEG_PATH, args);
     return {
       masterPlaylistPath,
-      mediaPlaylistPath
+      mediaPlaylistPath,
+      conversion: { engine: transcodeEngine, intent: "sdr_to_bt709", filter: transcodeFilter }
     };
   }
 
@@ -2063,7 +2118,8 @@ async function availableVideoSdrFilters() {
   if (!videoSdrFiltersPromise) {
     videoSdrFiltersPromise = runProcess(FFMPEG_PATH, ["-hide_banner", "-filters"])
       .then(({ stdout }) => new Set(
-        [...stdout.matchAll(/\b(zscale|tonemap|libplacebo)\s+V->V\b/g)]
+        // Newer libplacebo supports multiple inputs and is listed as N->V.
+        [...stdout.matchAll(/\b(zscale|tonemap|libplacebo)\s+[VN]->V\b/g)]
           .map((match) => match[1])
       ))
       .catch((error) => { videoSdrFiltersPromise = null; throw error; });
@@ -2071,23 +2127,29 @@ async function availableVideoSdrFilters() {
   return videoSdrFiltersPromise;
 }
 
-async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract, records) {
+async function quarantineStaleSdrMasters(token, metadata, records) {
   // A replaced source must never fall back to an SDR derived from its previous contents.
-  const token = await directusLogin();
+  const conversionIntent = metadata.masterType === "dolby_vision" ? AUTO_SDR_CONVERSION : "hdr_to_sdr";
   const previous = await findMastersByIdentity(token, records.project.id, {
     masterType: "sdr", isDerivative: true,
-    derivedFromMasterId: records.master.id, conversionIntent: AUTO_SDR_CONVERSION
+    derivedFromMasterId: records.master.id, conversionIntent
   });
   for (const master of previous) {
     if (master.source_sha256 !== records.master.source_sha256) {
       await directusRequest(`/items/video_masters/${master.id}`, token, {
         method: "PATCH", body: {
           verification_status: "quarantine", is_default: false,
-          verification_errors: ["The source Dolby Vision master changed; regenerate this SDR version."]
+          verification_errors: ["The source HDR master changed; regenerate this SDR version."]
         }
       });
     }
   }
+}
+
+async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract, records) {
+  const token = await directusLogin();
+  await quarantineStaleSdrMasters(token, metadata, records);
+  const conversionIntent = metadata.masterType === "dolby_vision" ? AUTO_SDR_CONVERSION : "hdr_to_sdr";
   const conversion = buildDolbySdrConversion(sourceContract, await availableVideoSdrFilters());
   const sdrMetadata = {
     ...metadata,
@@ -2097,7 +2159,7 @@ async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract,
     processingMode: "transcode",
     isDerivative: true,
     derivedFromMasterId: records.master.id,
-    conversionIntent: AUTO_SDR_CONVERSION,
+    conversionIntent,
     conversionLutOrFilter: conversion.filter,
     overwrite: true,
     resolutionWidth: null,
@@ -2122,15 +2184,16 @@ async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract,
     const sdrContract = buildColorContract(sdrProbe, sdrMetadata);
     const errors = [
       ...validateColorContract(sdrMetadata, sdrContract, "SDR conversion"),
-      ...validateSdrDerivative(sdrContract, sourceContract)
+      ...validateSdrDerivative(sdrContract, sourceContract, probe)
     ];
     if (errors.length) throwColorContractError(errors);
 
     const hlsOutput = await generateHls(sdrPath, outputDir, { ...sdrMetadata, mode: "copy" }, sdrProbe);
     const finalized = await finalizeHlsOutput(hlsOutput, sdrMetadata, sdrContract, {}, sdrProbe);
     finalized.verification.conversion = {
-      intent: AUTO_SDR_CONVERSION,
+      intent: conversionIntent,
       engine: conversion.engine,
+      filter: conversion.filter,
       usesDolbyMetadata: conversion.usesDolbyMetadata,
       derivedFromMasterId: records.master.id
     };
@@ -2192,6 +2255,13 @@ async function prepareHlsPackageOutput(packageInfo, outputDir) {
   const mediaPlaylistPath = await primaryMediaPlaylistPath(copiedSourcePlaylistPath, outputDir);
   const masterPlaylistPath = path.join(outputDir, "master.m3u8");
   const variants = await copiedHlsVariants(copiedSourcePlaylistPath, outputDir);
+  for (const variant of variants) {
+    // Retain each input variant's contract so copy verification is not limited to the first rendition.
+    const originalPath = localHlsPath(path.join(sourceRoot, "master.m3u8"), variant.uri, sourceRoot);
+    variant.sourceContract = buildColorContract(await probeVideo(originalPath), {}, {}, {
+      hlsVideoRange: normalizeHlsVideoRange(variant.attributes["VIDEO-RANGE"])
+    });
+  }
   const masterTags = variants.length ? await copiedHlsMasterTags(copiedSourcePlaylistPath, outputDir) : undefined;
 
   if (path.resolve(mediaPlaylistPath) === path.resolve(masterPlaylistPath)) {
@@ -2466,11 +2536,13 @@ async function stampHlsPlaylist(playlistPath) {
 async function finalizeHlsOutput(output, metadata, sourceContract, sidecar = {}, sourceProbe = {}) {
   const outputProbe = await probeVideo(output.mediaPlaylistPath);
   const outputContract = buildColorContract(outputProbe, metadata, sidecar, {
-    hlsVideoRange: sourceContract.hlsVideoRange
+    hlsVideoRange: metadata.mode === "transcode" ? "SDR" : sourceContract.hlsVideoRange
   });
   const errors = [
     ...validateColorContract(metadata, outputContract, "output"),
-    ...compareColorContracts(sourceContract, outputContract)
+    // Transcodes normalize display rotation, while copy mode preserves encoded dimensions.
+    ...(metadata.mode === "transcode" ? validateSdrDerivative(outputContract, sourceContract, sourceProbe)
+      : compareColorContracts(sourceContract, outputContract))
   ];
 
   if (errors.length) {
@@ -2492,6 +2564,8 @@ async function finalizeHlsOutput(output, metadata, sourceContract, sidecar = {},
     outputProbeSummary: summarizeProbe(outputProbe),
     hlsVariants
   };
+  // Report the filter actually executed, separately from user-supplied provenance notes.
+  if (output.conversion) verification.conversion = output.conversion;
   await writeVerificationReport(path.dirname(output.masterPlaylistPath), {
     verification,
     sourceContract,
@@ -2562,6 +2636,11 @@ async function writeMultivariantPlaylist(masterPlaylistPath, mediaPlaylistPath, 
   for (const variant of entries) {
     const variantPath = localHlsPath(masterPlaylistPath, variant.uri, rootDir);
     const variantProbe = path.resolve(variantPath) === path.resolve(mediaPlaylistPath) ? probe : await probeVideo(variantPath);
+    if (variant.sourceContract) {
+      const actual = buildColorContract(variantProbe, {}, {}, { hlsVideoRange: contract.hlsVideoRange });
+      const errors = compareColorContracts(variant.sourceContract, actual);
+      if (errors.length) throwColorContractError(errors);
+    }
     const media = await inspectHlsMediaFiles(variantPath, rootDir);
     const additionalAudio = [];
     const additionalVideoCodecs = [];
@@ -2739,7 +2818,7 @@ function normalizePrimaries(value) {
     return { code: null, displayGamut: null, label: null };
   }
 
-  if (token === "bt709" || token === "bt470bg" || token === "smpte170m") {
+  if (token === "bt709") {
     return { code: "bt709", displayGamut: "bt709", label: "BT.709" };
   }
 
@@ -2772,8 +2851,12 @@ function normalizeTransfer(value) {
     return { code: "arib-std-b67", label: "HLG", hlsVideoRange: "HLG" };
   }
 
-  if (token === "bt709" || token === "bt470m" || token === "smpte170m") {
+  if (token === "bt709") {
     return { code: "bt709", label: "BT.709", hlsVideoRange: "SDR" };
+  }
+
+  if (["bt470m", "bt470bg", "smpte170m", "iec6196621"].includes(token)) {
+    return { code: token === "iec6196621" ? "iec61966-2-1" : token, label: value, hlsVideoRange: "SDR" };
   }
 
   return { code: token, label: value ? String(value) : "Custom", hlsVideoRange: null };
@@ -2842,9 +2925,9 @@ function buildColorContract(probe, metadata, sidecar = {}, options = {}) {
   const transfer = normalizeTransfer(probe.color_transfer);
   const hdrStaticMetadata = extractHdrStaticMetadata(probe);
   const dovi = extractDolbyVisionMetadata(probe);
-  const dolbyCompatibilityId = sidecar.compatibilityId || stringOrNull(dovi.compatibilityId);
+  const dolbyCompatibilityId = stringOrNull(dovi.compatibilityId);
   const dolbyProfile = normalizeDolbyProfileVersion(
-    sidecar.profile || stringOrNull(dovi.profile),
+    stringOrNull(dovi.profile),
     dolbyCompatibilityId
   );
   const bitDepth = inferBitDepth(probe, metadata.masterType);
@@ -2874,11 +2957,14 @@ function buildColorContract(probe, metadata, sidecar = {}, options = {}) {
     hdrStaticMetadata,
     dolbyMetadata: {
       profile: dolbyProfile,
-      level: sidecar.level || stringOrNull(dovi.level),
+      level: stringOrNull(dovi.level),
       compatibilityId: dolbyCompatibilityId,
       rpuPresent: booleanOrFalse(dovi.rpuPresent),
       elPresent: booleanOrFalse(dovi.elPresent),
       blPresent: booleanOrFalse(dovi.blPresent),
+      rpuCount: probe.dovi_rpu_integrity?.count || 0,
+      rpuSha256: probe.dovi_rpu_integrity?.sha256 || null,
+      decodedMetadataPresent: Boolean(probe.dovi_frame_metadata_present),
       sidecar: sidecar.sourceFile
         ? {
             sourceFile: sidecar.sourceFile,
@@ -2932,7 +3018,11 @@ function validateColorContract(metadata, contract, context = "source") {
     errors.push(`${context}: HLS VIDEO-RANGE must be ${expectedRange}, got ${contract.hlsVideoRange || "missing"}.`);
   }
 
-  if (metadata.masterType === "sdr") {
+  const sdrTranscodeSource = context === "source" && metadata.mode === "transcode" && TRANSCODE_TYPES.has(metadata.masterType);
+  if (sdrTranscodeSource) {
+    try { buildSdrTranscodeFilter(contract); } catch (error) { errors.push(`${context}: ${error.message}`); }
+  }
+  if (metadata.masterType === "sdr" && !sdrTranscodeSource) {
     if (contract.colorPrimaries !== "bt709") {
       errors.push(`${context}: SDR masters must use BT.709 primaries.`);
     }
@@ -2972,9 +3062,7 @@ function validateColorContract(metadata, contract, context = "source") {
     if (!contract.bitDepth || contract.bitDepth < 10) {
       errors.push(`${context}: Dolby Vision masters must be 10-bit or higher.`);
     }
-    if (!contract.dolbyMetadata.profile && !contract.dolbyMetadata.rpuPresent) {
-      errors.push(`${context}: Dolby Vision profile or RPU metadata is missing.`);
-    }
+    errors.push(...validateDolbyContract(contract).map(error => `${context}: ${error}`));
     if (!contract.hlsVideoRange) {
       errors.push(`${context}: Dolby Vision VIDEO-RANGE could not be inferred from the base layer transfer.`);
     }
@@ -3002,6 +3090,8 @@ function validateHdrGamut(contract, context, errors) {
 function compareColorContracts(sourceContract, outputContract) {
   const fields = [
     "codecName",
+    "width",
+    "height",
     "pixelFormat",
     "bitDepth",
     "colorPrimaries",
@@ -3022,6 +3112,28 @@ function compareColorContracts(sourceContract, outputContract) {
     }
   }
 
+  return [...errors, ...compareHdrMetadata(sourceContract, outputContract)];
+}
+
+function validateDolbyContract(contract) {
+  const d = contract.dolbyMetadata || {};
+  const profile = Number.parseInt(d.profile, 10);
+  const errors = [];
+  if (contract.codecName !== "hevc" || ![5, 8].includes(profile) || d.elPresent || !d.blPresent) {
+    errors.push("Browser Dolby Vision delivery requires single-layer HEVC Profile 5 or 8 with a base layer.");
+  }
+  if (!Number.isInteger(Number(d.level)) || Number(d.level) < 1 || Number(d.level) > 13) {
+    errors.push("Dolby Vision requires a valid embedded level for HLS codec signaling.");
+  }
+  if (!d.rpuPresent || !(d.rpuCount > 0) || !d.rpuSha256 || !d.decodedMetadataPresent) {
+    errors.push("Dolby Vision requires embedded configuration, decodable RPU metadata and a verified RPU bitstream; sidecars alone are not playable Dolby Vision.");
+  }
+  const compatibility = Number(d.compatibilityId);
+  if (profile === 5 && compatibility !== 0) errors.push("Dolby Vision Profile 5 must have compatibility ID 0.");
+  if (profile === 8 && !([1, 4].includes(compatibility) &&
+      contract.colorTransfer === (compatibility === 4 ? "arib-std-b67" : "smpte2084"))) {
+    errors.push("Dolby Vision Profile 8 requires matching PQ/ID 1 or HLG/ID 4 base-layer signaling.");
+  }
   return errors;
 }
 
@@ -3207,19 +3319,15 @@ function validateDolbyVisionUpload(metadata, probe, sidecar) {
     return;
   }
 
-  const dovi = extractDolbyVisionMetadata(probe);
-  const profile = sidecar.profile || stringOrNull(dovi.profile);
-  const hasRpu = booleanOrFalse(dovi.rpuPresent);
-
-  if (!profile && !hasRpu) {
-    const sidecarHint = sidecar.sourceFile
-      ? ` A Dolby sidecar candidate (${sidecar.sourceFile}) was scanned but no profile value was found in it.`
-      : "";
-    throw httpError(
-      422,
-      `Dolby Vision metadata was not detected. Use a source video with embedded DOVI/RPU metadata, or upload the complete Dolby Vision master package containing its XML/RPU/IMF metadata.${sidecarHint} If the XML uses a different clip name, fill the XML clip name field with the clip name shown inside the XML.`
-    );
+  const contract = buildColorContract(probe, metadata, sidecar);
+  const errors = validateDolbyContract(contract);
+  const claimed = normalizeDolbyProfileVersion(sidecar.profile, sidecar.compatibilityId);
+  if (["5", "8", "8.1", "8.4"].includes(claimed) &&
+      (claimed.includes(".") ? claimed !== contract.dolbyMetadata.profile
+        : Number.parseInt(claimed, 10) !== Number.parseInt(contract.dolbyMetadata.profile, 10))) {
+    errors.push("Sidecar Dolby profile disagrees with the embedded stream configuration.");
   }
+  if (errors.length) throwColorContractError(errors);
 }
 
 function firstDefined(...values) {
@@ -7662,11 +7770,13 @@ async function createOrUpdateDirectusRecords(
 ) {
   const token = await directusLogin();
   const existingProject = verificationResult.project || await findProjectBySlug(token, metadata.slug);
-  const coverImageId = await directusUploadFile(token, files.cover, `${metadata.title} cover`);
+  // Adding a rendition must not replace project metadata or upload an unused cover.
+  const coverImageId = verificationResult.project ? null
+    : await directusUploadFile(token, files.cover, `${metadata.title} cover`);
   const dovi = extractDolbyVisionMetadata(probe);
-  const dolbyCompatibilityId = sidecar.compatibilityId || stringOrNull(dovi.compatibilityId);
+  const dolbyCompatibilityId = stringOrNull(dovi.compatibilityId);
   const dolbyProfileVersion = normalizeDolbyProfileVersion(
-    sidecar.profile || stringOrNull(dovi.profile),
+    stringOrNull(dovi.profile),
     dolbyCompatibilityId
   );
   const projectPayload = {
@@ -7722,7 +7832,7 @@ async function createOrUpdateDirectusRecords(
     bit_depth: outputContract.bitDepth || inferBitDepth(probe, metadata.masterType),
     bitrate_mbps: metadata.bitrateMbps,
     dolby_profile: dolbyProfileVersion,
-    dolby_level: sidecar.level || stringOrNull(dovi.level),
+    dolby_level: stringOrNull(dovi.level),
     dolby_compatibility_id: dolbyCompatibilityId,
     dolby_rpu_present: booleanOrFalse(dovi.rpuPresent),
     dolby_el_present: booleanOrFalse(dovi.elPresent),
@@ -7758,6 +7868,16 @@ async function createOrUpdateDirectusRecords(
   const existingMasters = metadata.overwrite
     ? await findMastersByIdentity(token, project.id, metadata)
     : [];
+  // Omission preserves an overwritten master's default; a newly appended master defaults to false.
+  masterPayload.is_default = metadata.isDefault ?? existingMasters[0]?.is_default ?? false;
+  if (HDR_MASTER_TYPES.has(metadata.masterType)) {
+    // Invalidate old fallbacks before publishing a replacement, even when conversion is skipped.
+    for (const existingMaster of existingMasters) {
+      await quarantineStaleSdrMasters(token, metadata, {
+        project, master: { ...existingMaster, source_sha256: sourceHash }
+      });
+    }
+  }
   const master = existingMasters[0]
     ? (
         await directusRequest(`/items/video_masters/${existingMasters[0].id}`, token, {
@@ -7772,7 +7892,7 @@ async function createOrUpdateDirectusRecords(
         })
       ).data;
 
-  if (metadata.isDefault) {
+  if (masterPayload.is_default) {
     await clearDefaultMasters(token, project.id, master.id);
   }
 
@@ -7793,11 +7913,11 @@ async function findMastersByIdentity(token, projectId, metadata) {
     sort: "id",
     limit: "-1"
   });
-  if (metadata.isDerivative && metadata.conversionIntent === AUTO_SDR_CONVERSION) {
+  if (metadata.isDerivative && [AUTO_SDR_CONVERSION, "hdr_to_sdr"].includes(metadata.conversionIntent)) {
     params.delete("filter[label][_eq]");
     params.set("filter[is_derivative][_eq]", "true");
     params.set("filter[derived_from_master_id][_eq]", String(metadata.derivedFromMasterId));
-    params.set("filter[conversion_intent][_eq]", AUTO_SDR_CONVERSION);
+    params.set("filter[conversion_intent][_eq]", metadata.conversionIntent);
   }
   const data = await directusRequest(`/items/video_masters?${params.toString()}`, token);
   return data.data || [];
@@ -7822,14 +7942,119 @@ async function clearDefaultMasters(token, projectId, keepMasterId) {
   }
 }
 
+async function resolveVideoUploadProject(fields) {
+  const token = await directusLogin();
+  let project;
+  if (fields.projectId) {
+    const id = String(fields.projectId);
+    if (!/^[1-9]\d*$/.test(id)) throw httpError(400, "Invalid projectId.");
+    project = (await directusRequest(`/items/video_projects/${id}`, token)).data;
+    if (!project) throw httpError(404, "Video project no longer exists.");
+  } else {
+    project = await findProjectBySlug(token, String(fields.slug || "").trim());
+  }
+  // The CMS is authoritative on append, even if a stale client submits old metadata.
+  const metadata = normalizeUpload(project ? {
+    ...fields, title: project.title, slug: project.slug, description: project.description || "",
+    category: project.category || "", tags: JSON.stringify(project.tags || []),
+    published: String(Boolean(project.published)), isDefault: fields.isDefault ?? "false"
+  } : fields);
+  // Preserve omission until registration can distinguish an append from an overwrite.
+  if (project && fields.isDefault == null) metadata.isDefault = undefined;
+  return { project, metadata };
+}
+
+async function handleVideoUploadProjects(req, res, url) {
+  try {
+    requireUploadAuth(req);
+    const token = await directusLogin();
+    const fields = "id,title,slug,description,tags,category,published,masters.id,masters.type,masters.label";
+    const id = url.searchParams.get("id");
+    if (id) {
+      if (!/^[1-9]\d*$/.test(id)) throw httpError(400, "Invalid project ID.");
+      const result = await directusRequest(`/items/video_projects/${id}?${new URLSearchParams({ fields })}`, token);
+      if (!result.data) throw httpError(404, "Video project no longer exists.");
+      sendJson(res, 200, { projects: [result.data], hasMore: false });
+      return;
+    }
+    const page = Math.max(1, Math.min(100000, Number.parseInt(url.searchParams.get("page"), 10) || 1));
+    const params = new URLSearchParams({ fields, limit: "21", offset: String((page - 1) * 20), sort: "-id" });
+    const search = (url.searchParams.get("search") || "").trim().slice(0, 200);
+    if (search) params.set("search", search);
+    const result = await directusRequest(`/items/video_projects?${params}`, token);
+    sendJson(res, 200, { projects: (result.data || []).slice(0, 20), hasMore: result.data?.length > 20 });
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, { error: error.message });
+  }
+}
+
+async function identifyPairedSources(parsed, metadata) {
+  const videos = parsed.files.videos || [];
+  if (videos.length !== 2) return;
+  if (metadata.sourceKind !== "embedded" || parsed.files.sdrVideo) {
+    throw httpError(400, "Two source videos cannot be combined with a package or a separate SDR file.");
+  }
+  if (metadata.mode !== "copy") throw httpError(400, "Paired HDR/SDR uploads must use copy mode.");
+  const probes = await Promise.all(videos.map(file => probeVideo(file.tempPath)));
+  const isHdr = probe => ["arib-std-b67", "smpte2084"].includes(probe.color_transfer) ||
+    Boolean(extractDolbyVisionMetadata(probe).profile);
+  if (probes.filter(isHdr).length !== 1) {
+    throw httpError(422, "Select exactly one HDR and one SDR master. Their color metadata must identify the formats.");
+  }
+  const index = probes.findIndex(isHdr);
+  const previousType = metadata.masterType;
+  const dovi = extractDolbyVisionMetadata(probes[index]);
+  metadata.masterType = dovi.profile ? "dolby_vision"
+    : probes[index].color_transfer === "arib-std-b67" ? "hlg" : "hdr10";
+  if (metadata.label === defaultLabel(previousType) || metadata.label === "HDR") metadata.label = defaultLabel(metadata.masterType);
+  // File order and filenames never determine HDR/SDR roles; downstream validation remains mandatory.
+  parsed.file = videos[index];
+  parsed.files.sdrVideo = videos[1 - index];
+}
+
+async function inspectCompanionSdr(file, metadata) {
+  if (!file) return null;
+  if (!HDR_MASTER_TYPES.has(metadata.masterType)) throw httpError(400, "A paired SDR requires an HDR primary master.");
+  const sdrMetadata = {
+    ...metadata, sourceKind: "embedded", masterType: "sdr", label: "SDR", mode: "copy", processingMode: "copy",
+    isDefault: false, overwrite: false, isDerivative: false, derivedFromMasterId: null,
+    conversionIntent: null, conversionLutOrFilter: null, notes: ""
+  };
+  const probe = await probeVideo(file.tempPath);
+  const contract = buildColorContract(probe, sdrMetadata);
+  const errors = validateColorContract(sdrMetadata, contract, "paired SDR");
+  if (contract.dolbyMetadata.profile || contract.dolbyMetadata.rpuPresent) {
+    errors.push("paired SDR: Dolby Vision metadata is not allowed on an SDR master.");
+  }
+  if (errors.length) throwColorContractError(errors);
+  // Video is copied, but generateHls converts source audio (including PCM) to AAC before verification.
+  videoCodecFromProbe(probe);
+  return { file, metadata: sdrMetadata, probe, contract };
+}
+
+async function saveCompanionSdr(input, project) {
+  const { metadata, probe, contract } = input;
+  const sourcePath = await moveSourceFile(input.file, metadata);
+  const outputDir = await prepareOutputDir(metadata);
+  const output = await generateHls(sourcePath, outputDir, metadata, probe);
+  const finalized = await finalizeHlsOutput(output, metadata, contract, {}, probe);
+  const records = await createOrUpdateDirectusRecords(metadata, sourcePath, finalized.playlistPath, probe, {}, {}, {
+    project, sourceContract: contract, outputContract: finalized.outputContract,
+    sourceProbe: probe, outputProbe: finalized.outputProbe, verification: finalized.verification
+  });
+  return { status: "ready", master: records.master, hlsUrl: mediaUrlFromPath(finalized.playlistPath) };
+}
+
 async function handleUpload(req, res) {
   let parsed = null;
 
   try {
     requireUploadAuth(req);
     parsed = await parseMultipart(req);
-    const metadata = normalizeUpload(parsed.fields);
+    const { metadata, project: existingProject } = await resolveVideoUploadProject(parsed.fields);
+    await identifyPairedSources(parsed, metadata);
     validateProcessingPolicy(metadata);
+    const companionInput = await inspectCompanionSdr(parsed.files.sdrVideo, metadata);
     const packageInfo =
       metadata.sourceKind === "master_package" || metadata.sourceKind === "hls_package"
         ? await moveMasterPackageFiles(parsed.files.masterPackage, metadata)
@@ -7877,6 +8102,7 @@ async function handleUpload(req, res) {
       parsed.files,
       dolbySidecar,
       {
+        project: existingProject || undefined,
         sourceContract,
         outputContract: finalized.outputContract,
         sourceProbe: probe,
@@ -7885,8 +8111,17 @@ async function handleUpload(req, res) {
       }
     );
 
+    let companionSdr = null;
+    if (companionInput) {
+      try {
+        companionSdr = await saveCompanionSdr(companionInput, records.project);
+      } catch (error) {
+        // The HDR is already saved. Report partial success; never generate over a supplied SDR.
+        companionSdr = { status: "failed", error: error.message.slice(0, 2000) };
+      }
+    }
     let sdrDerivative = null;
-    if (metadata.masterType === "dolby_vision") {
+    if (!existingProject && !companionInput && HDR_MASTER_TYPES.has(metadata.masterType)) {
       try {
         sdrDerivative = await createDolbySdrMaster(
           metadata, hlsInspection?.playlistPath || sourcePath,
@@ -7906,9 +8141,9 @@ async function handleUpload(req, res) {
       status: "ok",
       project: records.project,
       master: records.master,
-      masters: sdrDerivative?.status === "ready"
-        ? [records.master, sdrDerivative.master]
-        : [records.master],
+      masters: [records.master, ...(companionSdr?.status === "ready" ? [companionSdr.master] : []),
+        ...(sdrDerivative?.status === "ready" ? [sdrDerivative.master] : [])],
+      companionSdr,
       sdrDerivative,
       sourceKind: metadata.sourceKind,
       masterPackage: packageInfo
@@ -8008,6 +8243,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && url.pathname === "/uploads/videos") {
     await handleUpload(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/uploads/video-projects") {
+    await handleVideoUploadProjects(req, res, url);
     return;
   }
 

@@ -67,6 +67,12 @@ corners and inset preview chips use 4px corners.
 
 ## Components
 
+- `UploadVideoForm` owns new-project, paired HDR/SDR, and existing-project uploads.
+  `VideoProjectPicker` owns authenticated project search and explicit selection.
+  These flows reuse the existing upload panels, native inputs/selects, typography
+  and CSS tokens; no separate visual theme or persistence of credentials is introduced.
+  Behavioral contracts live in `docs/upload-api.md` and `docs/video-workflow.md`.
+
 - `AppearanceControl` owns the non-modal appearance panel and tab keyboard behavior.
 - `HsvPicker` owns the shared saturation/value plane, hue slider and numeric fields.
 - `LiquidSettings` owns disclosure and slot feedback, including a one-step undo.

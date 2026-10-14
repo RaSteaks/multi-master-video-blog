@@ -85,6 +85,17 @@ Use one of:
 
 `sourceKind=hls_package` must include a multivariant `master.m3u8` with `VIDEO-RANGE=SDR|PQ|HLG`. All variants must share the same verified color contract.
 
+### Paired HDR / SDR and later additions
+
+- The source-video picker accepts one file or two files together. Two embedded sources are sent as two `video` fields; the server identifies exactly one HDR and one SDR from their probed metadata, regardless of order or filename, and infers the HDR master type. Two HDR files, two SDR files, more than two files, or mixing this mode with `sdrVideo`/a package are rejected. Both sources must use copy mode.
+
+- A single HDR upload may include an optional `sdrVideo` file (a browser-deliverable BT.709 MP4/MOV master). Both files use the same project title, slug, description, tags and cover. The SDR is validated before publishing HDR, then packaged in copy mode as an independent manual `SDR` master. It is not an automatic derivative and does not replace an existing master.
+- `companionSdr.status=ready|failed` reports the supplied SDR independently. If packaging fails after HDR was saved, HTTP 201 retains the HDR and project; `masters` contains only successfully saved masters. The UI offers an add-SDR link using the returned project ID. Do not resend HDR to recover the missing SDR.
+- To add a master later, send `projectId` with the normal source/master fields. Title, slug, description, tags, category, cover and publication state are taken from the existing project and are not modified. `isDefault` defaults to false in this mode. An invalid/deleted ID fails instead of creating another project. Legacy uploads matching an existing slug also reuse its project information.
+- `GET /uploads/video-projects` requires the upload bearer token. It accepts `search` and a one-based `page`, returning up to 20 `projects` and `hasMore`. Pass `id` to load a specific project, including an unpublished one. The upload page supports searching, and `/upload?projectId=<id>` opens the add-master flow with SDR selected initially.
+- Automatic SDR generation occurs only when the primary is HDR10, HLG or Dolby Vision, no project existed at upload resolution, and no `sdrVideo` was supplied. Supplying an invalid SDR does not silently trigger auto generation. Existing projects do not automatically regenerate or backfill SDR.
+- Multipart file limits apply per file. HDR and SDR may have identical filenames; their temporary and saved source paths remain distinct. No upload token is stored in the URL or browser storage.
+
 ## Upload Example
 
 ```powershell
@@ -125,9 +136,9 @@ Directus `video_masters.hls_url` will be:
 
 ### Automatic SDR Derivative
 
-Dolby Vision uploads automatically generate a second, verified SDR master after saving the original. This applies to embedded files, master packages, and verified HLS packages (using the inspected primary media variant). Original Dolby Vision uploads still require `mode=copy`; the internal SDR conversion is a separate operation.
+New-project HDR uploads without a supplied SDR automatically generate a second, verified SDR master after saving the original. This applies to embedded files, master packages, and verified HLS packages. HDR originals still require `mode=copy`; the internal SDR conversion is a separate operation.
 
-P8.4/HLG and PQ-compatible sources are tone-mapped using `zscale` and `tonemap`, without applying RPU metadata. Profile 5 requires embedded RPU metadata, `libplacebo`, and working Vulkan support. The output is H.264 8-bit BT.709 limited-range video with AAC audio, plus an SDR MP4 download and fMP4 HLS playlist carrying `VIDEO-RANGE=SDR`.
+All HDR derivatives require `libplacebo` and working Vulkan, using dynamic peak detection, BT.2390 tone mapping and perceptual gamut mapping. Verified Dolby sources apply embedded RPU metadata. The output is H.264 8-bit BT.709 limited-range video with AAC audio, plus an SDR MP4 download and fMP4 HLS playlist carrying `VIDEO-RANGE=SDR`.
 
 For Dolby Vision requests, `isDefault=true` makes the generated SDR the default after successful conversion. With `isDefault=false`, the existing default is preserved; an SDR default is assigned if none exists. Automatic derivatives are identified by source master ID and conversion intent, so a manually uploaded SDR with the same label is preserved.
 
@@ -147,7 +158,7 @@ Responses retain the existing `master`, `hlsUrl`, `probe`, and `verification` fi
 }
 ```
 
-These string placeholders represent objects. For non-Dolby uploads, `sdrDerivative` is `null` and `masters` contains only the uploaded master. If automatic SDR processing fails, HTTP `201` still confirms that the original was saved, `sdrDerivative` instead contains `status: "failed"`, `error`, and optional `verificationErrors`, and `masters` contains only the original. Clients must inspect that status before reporting that both versions are ready. Retry with `overwrite=true` after resolving the failure; existing uploads are not backfilled automatically.
+These string placeholders represent objects. When automatic conversion is not requested, `sdrDerivative` is `null`. If automatic SDR processing fails, HTTP `201` still confirms that the original was saved, `sdrDerivative` instead contains `status: "failed"`, `error`, and optional `verificationErrors`, and `masters` contains only the original. Clients must inspect that status before reporting that both versions are ready. Supply a manually prepared SDR using the returned project ID; uploading HDR to the now-existing project does not automatically retry conversion. `companionSdr` is null unless a paired SDR was supplied.
 
 `VIDEO_SDR_PROCESS_TIMEOUT_MS` controls the encoding timeout (default `3600000`). Allow enough reverse-proxy time for both upload and processing. The API registers SDR only after conversion and HLS verification succeed.
 
@@ -195,6 +206,13 @@ HDR primaries are normalized as:
 - `smpte432` -> `P3-D65(smpte432)`
 - `smpte431` -> `DCI-P3(smpte431)`
 
-HDR10 requires `smpte2084/PQ`, 10-bit or higher, mastering display metadata, and MaxCLL/MaxFALL. HLG requires `arib-std-b67/HLG` and 10-bit or higher. Dolby Vision requires copy/remux plus embedded DOVI/RPU metadata or a trusted sidecar.
+HDR10 requires `smpte2084/PQ`, 10-bit or higher, mastering display metadata, and MaxCLL/MaxFALL. HLG requires `arib-std-b67/HLG` and 10-bit or higher. Dolby Vision requires copy/remux, a supported single-layer embedded configuration, decodable RPU metadata and a nonempty RPU bitstream. Sidecar-only and enhancement-layer sources are rejected. RPU counts/hashes and static HDR metadata must match after packaging.
 
 Successful responses include `colorContract` and `verification`. Failed color checks include `verificationErrors`.
+
+SDR `mode=transcode` accepts tagged SDR inputs (including non-AVC and higher bit
+depths), performs explicit color conversion, and validates against the output
+BT.709/limited/H.264/yuv420p target. `mode=copy` retains strict source/output equality.
+Use matching recent FFmpeg and FFprobe builds: stream flags alone cannot replace
+frame-level Dolby metadata parsing. Vulkan availability must be tested under the
+same service account used by the upload API.
