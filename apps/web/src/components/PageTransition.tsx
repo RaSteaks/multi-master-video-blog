@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 
 const animatedSections = new Set([
@@ -11,28 +11,48 @@ const animatedSections = new Set([
   "write",
   "upload",
   "about",
+  "albums",
 ]);
 const pendingClass = "route-transition-pending";
+// Route skeletons (loading.tsx) carry this marker so the veil can wait for the
+// real content instead of finishing while only a skeleton is on screen.
+const LOADING_SELECTOR = "[data-route-loading]";
+const VEIL_DURATION_MS = 240;
+const VEIL_EASING = "cubic-bezier(.22, 1, .36, 1)";
 
 /**
- * Slow-navigation state machine (docs/performance-optimization-plan.md §7):
+ * Two independent concerns (docs/performance-optimization-plan.md §7):
  *
- *   idle          no feedback, no animation
- *   pending-fast  < SLOW_NAV_THRESHOLD_MS after click — stay silent so
- *                 prefetched/instant navigations never flash a progress bar
- *                 or pay the ~300ms enter-animation cost
- *   pending-slow  threshold exceeded — show progress bar, mark the
- *                 navigation as "should animate" for when it commits
- *   committed     pathname changed — new page plays the enter animation
- *                 only if this navigation was actually slow
+ * Enter animation — every route change in an animated section fades a short
+ * veil out above the page (see globals.css "Enter transition"), however fast
+ * the navigation was. The new page is interactive immediately; the animation
+ * is only decoration. The veil plays when the *real content* appears: at once
+ * if the committed route shows content, or when the loading skeleton is
+ * replaced by it, so a slow load is not "used up" while only a skeleton shows.
+ * Rapid successive navigations cancel the earlier veil, so only the final
+ * target animates.
+ *   - first load: no animation (the page is simply shown)
+ *   - back/forward (popstate): no animation, so scroll restoration is instant
+ *   - prefers-reduced-motion: no animation
+ *   - same-page / hash-only links never change the pathname, so they neither
+ *     remount nor animate
+ *
+ * Loading hint — only navigations that outlast SLOW_NAV_THRESHOLD_MS show the
+ * progress bar and set aria-busy, so prefetched or instant navigations never
+ * flash a bar.
+ *   idle          no feedback
+ *   pending-fast  < threshold after click — stay silent
+ *   pending-slow  threshold exceeded — progress bar
+ *   committed     pathname changed — hint cleared (a skeleton, if any, takes
+ *                 over the remaining wait)
  *
  * Pathname changes are the source of truth for completion. The recovery
  * timeout only clears a stuck pending state when a navigation is cancelled
  * or fails without emitting a route update.
  */
 
-// Fast navigations stay silent; slow ones get the progress bar + enter
-// animation. Initial value per plan §7.1 (test 80–120ms against real TTFB).
+// Only navigations slower than this get the progress bar. Initial
+// value per plan §7.1 (test 80–120ms against real TTFB).
 const SLOW_NAV_THRESHOLD_MS = 100;
 const TRANSITION_RECOVERY_TIMEOUT_MS = 15_000;
 
@@ -40,23 +60,49 @@ export function PageTransition({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "/";
   const thresholdTimerRef = useRef<number | null>(null);
   const recoveryTimerRef = useRef<number | null>(null);
-  // Whether the in-flight navigation has exceeded the slow threshold. Read
-  // during render when the pathname commits, reset by the cleanup effect.
-  const slowNavRef = useRef(false);
+  // Loading-hint state only: whether the in-flight navigation has exceeded the
+  // slow threshold. It no longer decides whether the enter animation plays.
   const pendingRef = useRef(false);
+  // Set by popstate (back/forward), read when the pathname commits.
+  const historyNavRef = useRef(false);
   const section = pathname.split("/").filter(Boolean)[0] || "home";
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const veilRef = useRef<HTMLDivElement>(null);
 
-  // Decide the animation flag synchronously while the new page renders, so
+  // Decide the animation mode synchronously while the new page renders, so
   // `data-animate-route` is already correct on the first painted frame (an
   // effect-based flip would show the finished page for one frame, then flash
   // back into the animation's start state). Adjusting state during render is
   // React's documented pattern for deriving state from changed "props".
   const [committedPathname, setCommittedPathname] = useState(pathname);
-  const [animateRoute, setAnimateRoute] = useState(false);
+  const [animateRoute, setAnimateRoute] = useState<RouteAnimation>("false");
   if (pathname !== committedPathname) {
     setCommittedPathname(pathname);
-    setAnimateRoute(slowNavRef.current && animatedSections.has(section));
+    setAnimateRoute(routeAnimation(section, historyNavRef.current));
   }
+
+  useLayoutEffect(() => {
+    const veil = veilRef.current;
+    const wrapper = wrapperRef.current;
+    if (!veil || !wrapper) return;
+    // A superseded navigation's veil must not keep playing over the new page.
+    veil.getAnimations().forEach((animation) => animation.cancel());
+    if (animateRoute !== "true") return;
+
+    if (!wrapper.querySelector(LOADING_SELECTOR)) {
+      playVeil(veil);
+      return;
+    }
+
+    // Skeleton on screen: wait until the real content replaces it.
+    const observer = new MutationObserver(() => {
+      if (wrapper.querySelector(LOADING_SELECTOR)) return;
+      observer.disconnect();
+      playVeil(veil);
+    });
+    observer.observe(wrapper, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [pathname, animateRoute]);
 
   useEffect(() => {
     // Navigation committed: release pending state for the next cycle.
@@ -64,14 +110,13 @@ export function PageTransition({ children }: { children: ReactNode }) {
     clearTimer(recoveryTimerRef);
     thresholdTimerRef.current = null;
     recoveryTimerRef.current = null;
-    slowNavRef.current = false;
+    historyNavRef.current = false;
     pendingRef.current = false;
     setNavigationPending(false);
   }, [pathname]);
 
   useEffect(() => {
     function markSlowNavigation() {
-      slowNavRef.current = true;
       pendingRef.current = true;
       setNavigationPending(true);
       armRecovery();
@@ -93,9 +138,12 @@ export function PageTransition({ children }: { children: ReactNode }) {
       clearTimer(recoveryTimerRef);
       thresholdTimerRef.current = null;
       recoveryTimerRef.current = null;
-      slowNavRef.current = false;
       pendingRef.current = false;
       setNavigationPending(false);
+    }
+
+    function onPopState() {
+      historyNavRef.current = true;
     }
 
     function onClick(event: MouseEvent) {
@@ -117,9 +165,13 @@ export function PageTransition({ children }: { children: ReactNode }) {
         return;
       }
 
+      // A new link navigation supersedes any earlier popstate that never
+      // changed the pathname (e.g. back across a hash-only history entry).
+      historyNavRef.current = false;
+
       if (pendingRef.current) {
         // A slow navigation is already in flight (rapid successive clicks):
-        // keep the slow marking and only re-arm recovery for the newest one.
+        // keep the loading hint and only re-arm recovery for the newest one.
         armRecovery();
         return;
       }
@@ -134,25 +186,52 @@ export function PageTransition({ children }: { children: ReactNode }) {
     // Listen at the end of the bubbling phase. The editor's unsaved-change
     // guard stops cancelled navigations before they can reach this handler.
     window.addEventListener("click", onClick);
+    window.addEventListener("popstate", onPopState);
     window.addEventListener("pageshow", clearTransition);
 
     return () => {
       window.removeEventListener("click", onClick);
+      window.removeEventListener("popstate", onPopState);
       window.removeEventListener("pageshow", clearTransition);
       clearTransition();
     };
   }, []);
 
   return (
-    <div
-      key={pathname}
-      className="page-transition"
-      data-animate-route={animateRoute ? "true" : "false"}
-      data-route-section={section}
-    >
-      {children}
-    </div>
+    <>
+      <div ref={veilRef} className="route-veil" aria-hidden="true" />
+      <div
+        key={pathname}
+        ref={wrapperRef}
+        className="page-transition"
+        data-animate-route={animateRoute}
+        data-route-section={section}
+      >
+        {children}
+      </div>
+    </>
   );
+}
+
+type RouteAnimation = "true" | "false";
+
+function playVeil(veil: HTMLElement) {
+  veil.animate([{ opacity: 1 }, { opacity: 0 }], {
+    duration: VEIL_DURATION_MS,
+    easing: VEIL_EASING,
+  });
+}
+
+function routeAnimation(section: string, fromHistory: boolean): RouteAnimation {
+  // Back/forward restores scroll and should feel instant, so it is not animated.
+  if (
+    fromHistory ||
+    !animatedSections.has(section) ||
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  ) {
+    return "false";
+  }
+  return "true";
 }
 
 function shouldIgnoreClick(event: MouseEvent) {
@@ -177,6 +256,7 @@ function isInternalPageNavigation(anchor: HTMLAnchorElement) {
     return false;
   }
 
+  // Same-path links (including #hash anchors) are not route changes.
   if (url.pathname === window.location.pathname) {
     return false;
   }

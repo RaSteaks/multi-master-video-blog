@@ -208,16 +208,8 @@ a {
     scroll-behavior: auto !important;
   }
 
-  html.route-transition-pending
-    .page-transition[data-animate-route="true"]
-    > :not(.liquid-bg):not(.site-bg),
-  .page-transition[data-animate-route="true"]
-    > :not(.liquid-bg):not(.site-bg) {
-    opacity: 1 !important;
-    filter: none !important;
-    translate: none !important;
-    transform: none !important;
-    animation: none !important;
+  .route-veil {
+    display: none !important;
   }
 
   html.route-transition-pending body::after {
@@ -442,42 +434,23 @@ html.route-transition-pending body::after {
   animation: route-progress 1.8s cubic-bezier(.16, 1, .3, 1) forwards;
 }
 
-/* Animate one page surface instead of every nested card. `backwards` keeps
-   the entry frame for any delay, then releases the compositor layer. */
-.page-transition[data-animate-route="true"]
-  > :not(.liquid-bg):not(.site-bg) {
-  animation: route-frame-enter 220ms cubic-bezier(.22, 1, .36, 1) backwards;
-}
-
-.page-transition[data-animate-route="true"] > .liquid-bg {
-  animation: route-background-enter 180ms ease-out backwards;
-}
-
-html.route-transition-pending
-  .page-transition[data-animate-route="true"]
-  > :not(.liquid-bg):not(.site-bg) {
-  opacity: 0.9;
-  translate: 0 -3px;
-  transition:
-    opacity 110ms ease,
-    translate 150ms cubic-bezier(.22, 1, .36, 1);
-}
-
-@keyframes route-frame-enter {
-  from {
-    opacity: 0.42;
-    translate: 0 7px;
-  }
-
-  to {
-    opacity: 1;
-    translate: 0 0;
-  }
-}
-
-@keyframes route-background-enter {
-  from { opacity: 0.72; }
-  to { opacity: 1; }
+/* Enter transition: a theme-coloured veil above the page fades out (played by
+   PageTransition via the Web Animations API once the real content is on
+   screen, not while a loading skeleton is). Animating the page surface itself
+   (opacity/translate) is deliberately avoided: it makes the surface a
+   backdrop root, so every `backdrop-filter` glass panel inside loses its blur
+   until the animation ends and then pops in, and it re-parents
+   `position: fixed` descendants (they jump at the end). The veil is a sibling
+   layer, so page content is never composited differently. It is invisible
+   and non-interactive outside the animation. The loading hint (progress bar)
+   is separate and never moves the page. */
+.route-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  background: color-mix(in srgb, var(--background) 50%, transparent);
+  opacity: 0;
+  pointer-events: none;
 }
 
 @keyframes route-progress {
@@ -485,38 +458,6 @@ html.route-transition-pending
   55% { transform: scaleX(.7); }
   to { transform: scaleX(.92); }
 }
-
-/* ---- Staggered section reveal ----
-   Page sections rise in one after another. Uses the standalone `translate`
-   property so it never fights `transform`-based hover/layout effects. */
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > *,
-.page-transition[data-animate-route="true"] .orbital-stage > *:not(.home-action-row),
-.page-transition[data-animate-route="true"] .home-action-row > * {
-  animation: route-item-enter 240ms cubic-bezier(.22, 1, .36, 1) backwards;
-}
-
-@keyframes route-item-enter {
-  from {
-    opacity: 0.68;
-    translate: 0 5px;
-  }
-
-  to {
-    opacity: 1;
-    translate: 0 0;
-  }
-}
-
-/* Section-level cascade */
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(2) { animation-delay: 32ms; }
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(3) { animation-delay: 64ms; }
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(n + 4) { animation-delay: 96ms; }
-
-/* Home widget cascade: hub → collection → action pills */
-.page-transition[data-animate-route="true"] .orbital-stage > :nth-child(1) { animation-delay: 0ms; }
-.page-transition[data-animate-route="true"] .orbital-stage > :nth-child(2) { animation-delay: 32ms; }
-.page-transition[data-animate-route="true"] .home-action-row > :nth-child(1) { animation-delay: 64ms; }
-.page-transition[data-animate-route="true"] .home-action-row > :nth-child(n + 2) { animation-delay: 96ms; }
 
 /* ---- Shell ---- */
 .shell {
