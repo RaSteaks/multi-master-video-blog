@@ -3777,6 +3777,12 @@ h3 {
 }
 
 
+/* Transparent wrapper: the tablet/mobile grid and flex layouts treat the hub
+   and collection card as direct children of .orbital-stage. */
+.orbital-canvas {
+  display: contents;
+}
+
 .profile-hub {
   position: relative;
   z-index: 2;
@@ -4154,20 +4160,60 @@ h3 {
   color: var(--text);
 }
 
-/* Desktop action dock: one centered rhythm instead of five unrelated offsets. */
+/* Desktop: the stage stacks a positioning canvas (profile card + collection
+   card) above the action dock in normal flow. The canvas has a minimum height
+   but grows with the profile card, so a wrapped name or longer bio pushes the
+   dock down instead of sliding underneath it. */
 @media (min-width: 1201px) {
+  .orbital-stage {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .orbital-canvas {
+    position: relative;
+    display: grid;
+    width: 100%;
+    min-height: var(--home-stage-height, clamp(520px, 66dvh, 640px));
+    place-items: center;
+  }
+
+  /* The profile card is centred by the canvas grid and sizes to its content.
+     Its configured x/y/dx/dy anchor is intentionally not used here, because a
+     fixed anchor is what let tall content run into the dock. */
+  .orbital-canvas > .profile-hub.home-free-widget {
+    --motion-x: 0px;
+    --motion-y: 0px;
+    grid-column: 1;
+    grid-row: 1;
+    position: relative;
+    left: auto;
+    top: auto;
+    align-self: center;
+    justify-self: center;
+    margin: 0;
+  }
+
+  /* Absolutely positioned: clear the legacy grid lines so its containing block
+     is the canvas itself rather than a stray grid area. */
+  .orbital-canvas > .orbit-collection {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
   .home-action-row {
-    position: absolute;
-    left: 50%;
-    top: 80%;
+    position: relative;
     z-index: 2;
     display: grid;
     width: max-content;
+    max-width: 100%;
+    margin-top: clamp(20px, 4dvh, 44px);
     grid-template-columns: repeat(5, 140px);
     align-items: center;
     justify-content: center;
     gap: clamp(10px, 1.25vw, 18px);
-    transform: translateX(-50%);
   }
 
   .home-action-row > .home-free-widget {
