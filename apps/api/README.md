@@ -136,5 +136,12 @@ files second. Photo deletion returns HTTP 202 with `cleanupRequired` and
 `orphanFileIds` if the record is gone but one or more file deletions fail.
 
 Original assets are available at `/api/assets/:id`. The proxy accepts only
-the named query presets `?key=album-cover` and `?key=album-thumb`; arbitrary
-width, height, quality, or Sharp transforms are rejected.
+the named presets in `config/directus-asset-presets.json`: `album-cover`,
+`album-thumb`, `album-thumb-sm`, `content-card`, `content-hero`,
+`site-background`, and `site-background-thumb`, requested with `?key=...`.
+Arbitrary width, height, quality, or Sharp transforms are rejected.
+
+Management photos include nullable `width` and `height` from their SDR files,
+with EXIF orientation already handled by Directus. Before deploying changed
+presets, run `npm run setup:cms-schema` and `npm run test:cms-schema` against
+the target CMS; rebuilding the web app does not update Directus settings.

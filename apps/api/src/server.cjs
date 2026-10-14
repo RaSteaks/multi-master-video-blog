@@ -143,14 +143,10 @@ const ARTICLE_IMAGE_MIME_EXTENSIONS = new Map([
 const ARTICLE_IMAGE_PREFIX = "article-image://";
 const ARTICLE_IMAGE_TARGET_PATTERN =
   /!\[([^\]\r\n]*)\]\(article-image:\/\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,127})\)/g;
-const ASSET_PRESETS = new Set([
-  "album-cover",
-  "album-thumb",
-  "content-card",
-  "content-hero",
-  "site-background",
-  "site-background-thumb"
-]);
+// Accept exactly the named presets installed by the schema setup script.
+const ASSET_PRESETS = new Set(
+  require("../../../config/directus-asset-presets.json").map((preset) => preset.key)
+);
 const JSON_COMPRESSION_MIN_BYTES = 1024;
 const COLOR_REQUIRED_FIELDS = [
   "colorPrimaries",
@@ -3968,7 +3964,10 @@ const ALBUM_ITEM_FIELDS = [
 const ALBUM_PHOTO_FIELDS = [
   "id",
   "album_id",
-  "sdr_image",
+  // Expand the SDR relation so management responses retain image geometry after mutations.
+  "sdr_image.id",
+  "sdr_image.width",
+  "sdr_image.height",
   "hdr_image",
   "caption",
   "alt_text",
@@ -4560,10 +4559,17 @@ function serializeManagedPhoto(photo) {
       }))
     : [];
   const hlgRendition = renditions.find((rendition) => rendition.kind === "hlg");
+  // Directus has already corrected these dimensions for EXIF rotation.
+  const width = Number(photo.sdr_image?.width);
+  const height = Number(photo.sdr_image?.height);
+  const hasDimensions = Number.isInteger(width) && width > 0 &&
+    Number.isInteger(height) && height > 0;
   return {
     id: photo.id,
     albumId: directusRelationId(photo.album_id),
     sdrImage: directusFileId(photo.sdr_image),
+    width: hasDimensions ? width : null,
+    height: hasDimensions ? height : null,
     hdrImage: directusFileId(photo.hdr_image),
     caption: photo.caption || "",
     altText: photo.alt_text || "",

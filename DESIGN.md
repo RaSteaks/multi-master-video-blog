@@ -67,6 +67,13 @@ corners and inset preview chips use 4px corners.
 
 ## Components
 
+- `AlbumGallery` owns both public and managed photo tiles. Its responsive CSS grid
+  follows row order so number badges, keyboard focus, lightbox navigation, and the
+  first three eager images agree. Images retain their natural aspect ratios;
+  Directus display dimensions reserve their space in both modes. Named thumbnail
+  parameters come from `config/directus-asset-presets.json`, shared with CMS setup
+  and validation; no fixed skipped-content height is used for these tiles.
+
 - `UploadVideoForm` owns new-project, paired HDR/SDR, and existing-project uploads.
   `VideoProjectPicker` owns authenticated project search and explicit selection.
   These flows reuse the existing upload panels, native inputs/selects, typography

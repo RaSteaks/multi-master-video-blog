@@ -5893,21 +5893,20 @@ h3 {
 }
 
 .album-photo-grid {
+  --album-grid-gap: clamp(14px, 2vw, 22px);
+  /* Row order matches the number badges, keyboard focus, lightbox and first three eager images. */
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: clamp(14px, 2vw, 22px);
+  gap: var(--album-grid-gap);
   align-items: start;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .album-photo-grid > li {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 420px;
-}
-
-.album-photo-grid > li.is-featured {
-  grid-column: span 2;
+  /* Use the image's width/height reservation; a generic skipped-content height shifts later rows. */
+  min-width: 0;
 }
 
 .album-photo-tile {
@@ -5947,16 +5946,15 @@ h3 {
 }
 
 .album-photo-open img {
+  display: block;
   width: 100%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
+  height: auto;
+  /* `auto` uses the width/height attributes' ratio when dimensions are known;
+     otherwise reserve a portrait-ish frame so lazy images don't collapse to 0. */
+  aspect-ratio: auto 4 / 5;
   transition:
     scale 650ms cubic-bezier(0.22, 1, 0.36, 1),
     filter 220ms ease;
-}
-
-.album-photo-grid > li.is-featured .album-photo-open img {
-  aspect-ratio: 16 / 9;
 }
 
 .album-photo-open:hover img {
@@ -6559,14 +6557,6 @@ h3 {
 
   .album-photo-grid {
     grid-template-columns: 1fr;
-  }
-
-  .album-photo-grid > li.is-featured {
-    grid-column: span 1;
-  }
-
-  .album-photo-grid > li.is-featured .album-photo-open img {
-    aspect-ratio: 4 / 3;
   }
 
   .album-photo-controls {

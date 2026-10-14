@@ -18,6 +18,7 @@ import {
   type ManagedAlbum,
   type ManagedPhoto,
 } from "@/lib/album-management";
+import { albumThumbSrcSet, assetUrl } from "@/lib/asset-url";
 
 export type GalleryPhoto = {
   id: number;
@@ -25,6 +26,10 @@ export type GalleryPhoto = {
   hdrImage: string | null;
   hlgImage: string | null;
   thumbnailUrl: string;
+  thumbnailSrcSet: string | null;
+  /** SDR pixel size, when known, used to reserve the tile's space before the image loads. */
+  width: number | null;
+  height: number | null;
   sdrUrl: string;
   hdrUrl: string | null;
   hlgUrl: string | null;
@@ -40,6 +45,10 @@ export type GalleryPhoto = {
   published: boolean;
   sortOrder: number;
 };
+
+/** Mirrors the .album-photo-grid responsive tracks and the 1120px shell in globals.css. */
+const ALBUM_TILE_SIZES =
+  "(max-width: 640px) calc(100vw - 40px), (max-width: 900px) calc(50vw - 30px), 360px";
 
 export type GalleryAlbum = {
   id: number;
@@ -414,9 +423,7 @@ export function AlbumGallery({
             const isCover = visibleAlbum.coverImage === photo.sdrImage;
             return (
               <li
-                className={`${index % 7 === 0 ? "is-featured " : ""}${
-                  !photo.published ? "is-draft" : ""
-                }`}
+                className={!photo.published ? "is-draft" : undefined}
                 key={photo.id}
               >
                 <article className="album-photo-tile">
@@ -430,9 +437,13 @@ export function AlbumGallery({
                   >
                     <img
                       src={photo.thumbnailUrl}
+                      srcSet={photo.thumbnailSrcSet ?? undefined}
+                      sizes={
+                        photo.thumbnailSrcSet ? ALBUM_TILE_SIZES : undefined
+                      }
                       alt={photo.altText || ""}
-                      width={720}
-                      height={720}
+                      width={photo.width ?? undefined}
+                      height={photo.height ?? undefined}
                       loading={index < 3 ? "eager" : "lazy"}
                       fetchPriority={index === 0 ? "high" : "auto"}
                       decoding="async"
@@ -1106,12 +1117,20 @@ function PhotoLightbox({
 }
 
 function managedPhotoToGallery(photo: ManagedPhoto): GalleryPhoto {
+  // Management refreshes use the same geometry and responsive assets as the public page.
+  const dimensions =
+    photo.width && photo.height
+      ? { width: photo.width, height: photo.height }
+      : null;
   return {
     id: photo.id,
     sdrImage: photo.sdrImage,
     hdrImage: photo.hdrImage,
     hlgImage: photo.hlgImage,
-    thumbnailUrl: `/api/assets/${photo.sdrImage}?key=album-thumb`,
+    thumbnailUrl: assetUrl(photo.sdrImage, "album-thumb")!,
+    thumbnailSrcSet: albumThumbSrcSet(photo.sdrImage, dimensions),
+    width: dimensions?.width ?? null,
+    height: dimensions?.height ?? null,
     sdrUrl: `/api/assets/${photo.sdrImage}`,
     hdrUrl: photo.hdrImage ? `/api/assets/${photo.hdrImage}` : null,
     hlgUrl: photo.hlgImage ? `/api/assets/${photo.hlgImage}` : null,
