@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { Lang } from "@/components/UploadPageClient";
+import { SLUG_MAX_LENGTH, SLUG_PATTERN, sanitizeSlugInput, slugify, slugifyFileName, timestampSlug } from "@/lib/slug";
 import { VideoProjectPicker, type UploadProject } from "./VideoProjectPicker";
 
 type UploadState = "idle" | "uploading" | "success" | "error";
@@ -77,7 +78,18 @@ const translations = {
     metadata: "Metadata",
     titleLabel: "Title",
     slug: "Slug",
-    invalidSlug: "Use lowercase letters, numbers, and hyphens for the slug.",
+    invalidSlug: "Use lowercase letters, numbers, and single hyphens, without a leading or trailing hyphen.",
+    slugGenerate: "Generate",
+    slugGenerateLabel: "Generate slug from title or file name",
+    slugAddress: "Address",
+    slugRulesTitle: "Slug rules",
+    slugRules: [
+      "Lowercase letters (a–z), numbers (0–9) and hyphens (-) only.",
+      "No spaces, underscores or non-Latin text; use English or pinyin.",
+      "No leading, trailing or repeated hyphens. Max 200 characters; ≤ 60 recommended.",
+      "It becomes the page URL and media folder name and must be unique. Do not change it after publishing.",
+    ],
+    slugExample: "Good: black-hole-dolby-vision · Bad: Black_Hole 杜比",
     tags: "Tags",
     tagsPlaceholder: "dolby, hdr, test",
     description: "Description",
@@ -154,7 +166,18 @@ const translations = {
     metadata: "元数据",
     titleLabel: "标题",
     slug: "Slug",
-    invalidSlug: "Slug 只能包含小写英文字母、数字和短横线。",
+    invalidSlug: "Slug 只能包含小写英文字母、数字和单个短横线，且不能以短横线开头或结尾。",
+    slugGenerate: "生成",
+    slugGenerateLabel: "根据标题或文件名生成 Slug",
+    slugAddress: "访问地址",
+    slugRulesTitle: "Slug 填写规范",
+    slugRules: [
+      "仅限小写英文字母（a–z）、数字（0–9）和短横线（-）。",
+      "不要使用空格、下划线或中文；中文标题请写英文或拼音。",
+      "不能以短横线开头或结尾，也不能连续出现；最长 200 字符，建议不超过 60。",
+      "它会成为页面地址和媒体目录名，必须唯一，发布后请勿修改。",
+    ],
+    slugExample: "正确：black-hole-dolby-vision · 错误：Black_Hole 杜比",
     tags: "标签",
     tagsPlaceholder: "dolby, hdr, 测试",
     description: "描述",
@@ -332,6 +355,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
   const requestRef = useRef<XMLHttpRequest | null>(null);
   const [title, setTitle] = useState("");
   const [slug, setSlug] = useState("");
+  const [slugTouched, setSlugTouched] = useState(false);
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState("");
   const [sourceKind, setSourceKind] = useState<SourceKind>("embedded");
@@ -353,6 +377,12 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
   const [sourceError, setSourceError] = useState("");
   const embeddedPair = sourceKind === "embedded" && Boolean(video && sdrVideo);
   const isHdr = ["hdr10", "hlg", "dolby_vision"].includes(masterType);
+
+  // Until the user edits the slug by hand, derive it from the title, then from the source file name.
+  useEffect(() => {
+    if (appendProject || slugTouched) return;
+    setSlug(slugify(title) || (video ? slugifyFileName(video.name) : ""));
+  }, [title, video, appendProject, slugTouched]);
 
   useEffect(() => {
     if (!selectedProject) return;
@@ -376,7 +406,11 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
       : null;
   const sourceReady =
     sourceKind === "embedded" ? Boolean(video) : masterPackageFiles.length > 0;
-  const slugInvalid = Boolean(slug.trim() && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug.trim()));
+  const slugInvalid = Boolean(slug.trim() && !SLUG_PATTERN.test(slug.trim()));
+  const generateSlug = () => {
+    setSlug(slugify(title) || (video ? slugifyFileName(video.name) : "") || timestampSlug());
+    setSlugTouched(true);
+  };
   const canSubmit = useMemo(
     () =>
       Boolean(
@@ -569,7 +603,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
         <h2>{t.target}</h2>
         <div className="upload-checks">
           <label><input type="radio" name="projectTarget" checked={!appendProject} onChange={() => {
-            setAppendProject(false); setSelectedProject(null); setTitle(""); setSlug(""); setDescription(""); setTags(""); setIsDefault(true);
+            setAppendProject(false); setSelectedProject(null); setTitle(""); setSlug(""); setSlugTouched(false); setDescription(""); setTags(""); setIsDefault(true);
           }} />{t.newProject}</label>
           <label><input type="radio" name="projectTarget" checked={appendProject} onChange={() => {
             setAppendProject(true); setIsDefault(false); setCover(null);
@@ -710,20 +744,46 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
               required
             />
           </label>
-          <label>
-            {t.slug}
-            <input
-              value={slug}
-              readOnly={appendProject}
-              onChange={(event) => setSlug(event.target.value)}
-              pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-              aria-invalid={slugInvalid}
-              aria-describedby={slugInvalid ? "video-slug-error" : undefined}
-              placeholder="dolby-vision-test"
-              required
-            />
-            {slugInvalid ? <span id="video-slug-error" role="alert">{t.invalidSlug}</span> : null}
-          </label>
+          <div className="slug-field upload-wide">
+            <label htmlFor="video-slug">{t.slug}</label>
+            <div className="slug-input">
+              <input
+                id="video-slug"
+                value={slug}
+                readOnly={appendProject}
+                onChange={(event) => {
+                  setSlug(sanitizeSlugInput(event.target.value));
+                  setSlugTouched(true);
+                }}
+                onBlur={() => setSlug((value) => value.replace(/-+$/, ""))}
+                maxLength={SLUG_MAX_LENGTH}
+                pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+                autoCapitalize="none"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={slugInvalid}
+                aria-describedby={slugInvalid ? "video-slug-error video-slug-rules" : "video-slug-rules"}
+                placeholder="black-hole-dolby-vision"
+                required
+              />
+              {appendProject ? null : (
+                <button type="button" onClick={generateSlug} aria-label={t.slugGenerateLabel}>
+                  {t.slugGenerate}
+                </button>
+              )}
+            </div>
+            <p className="slug-preview">
+              {t.slugAddress} <code>/videos/<strong>{slug || "…"}</strong></code>
+            </p>
+            {slugInvalid ? <p className="slug-error" id="video-slug-error" role="alert">{t.invalidSlug}</p> : null}
+            {appendProject ? null : (
+              <div className="slug-rules" id="video-slug-rules">
+                <p>{t.slugRulesTitle}</p>
+                <ul>{t.slugRules.map((rule) => <li key={rule}>{rule}</li>)}</ul>
+                <p className="slug-example">{t.slugExample}</p>
+              </div>
+            )}
+          </div>
           <label>
             {t.tags}
             <input

@@ -181,6 +181,7 @@ a {
 :is(
   .site-header nav a,
   .master-button,
+  .master-add,
   .info-toggle,
   .info-close,
   .retry-button,
@@ -3509,6 +3510,104 @@ html.vt-panel::view-transition-new(root) {
 
 .upload-form textarea {
   resize: vertical;
+}
+
+/* ---- Slug field: input + generate action, live URL preview, rules ---- */
+.slug-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.upload-form .slug-field > label {
+  display: block;
+}
+
+.slug-input {
+  display: flex;
+  gap: 8px;
+}
+
+.slug-input input {
+  flex: 1;
+  font-family: var(--font-mono);
+}
+
+.slug-input button {
+  min-height: 42px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0 16px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.84rem;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.slug-input button:hover {
+  border-color: var(--line-light);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.slug-input button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.slug-preview,
+.slug-rules,
+.slug-error {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.slug-preview {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.slug-preview code {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.slug-preview strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.slug-error {
+  color: var(--danger);
+}
+
+.slug-rules {
+  border-left: 2px solid var(--line);
+  padding-left: 12px;
+  color: var(--text-secondary);
+}
+
+.slug-rules p {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.slug-rules ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.slug-rules .slug-example {
+  font-family: var(--font-mono);
+  font-weight: 400;
 }
 
 .upload-form input[type="file"] {
