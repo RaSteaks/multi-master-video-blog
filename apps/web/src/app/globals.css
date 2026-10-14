@@ -349,12 +349,14 @@ body:has(.orbital-home) .orbital-home {
 }
 
 .site-header nav {
+  position: relative;
   display: flex;
   gap: 4px;
 }
 
 .site-header nav a {
   position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -367,27 +369,31 @@ body:has(.orbital-home) .orbital-home {
   transition: color var(--transition-fast), background var(--transition-fast);
 }
 
-/* Animated active-page underline */
-.site-header nav a::after {
-  content: "";
+/* Sliding active-page pill. Positioned by NavBar via --pill-x / --pill-w and
+   animated only after the first placement (data-ready) so it never flies in
+   from the left edge on load. */
+.site-header nav .nav-pill {
   position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 3px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent-base);
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--pill-w, 0);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
   opacity: 0;
-  transform: scaleX(0);
-  transform-origin: 50% 50%;
-  transition:
-    transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 200ms ease;
+  pointer-events: none;
+  transform: translateX(var(--pill-x, 0));
 }
 
-.site-header nav a[aria-current="page"]::after {
+.site-header nav .nav-pill[data-visible="true"] {
   opacity: 1;
-  transform: scaleX(1);
+}
+
+.site-header nav .nav-pill[data-ready="true"] {
+  transition:
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease;
 }
 
 .site-header nav a:hover {
@@ -400,9 +406,9 @@ body:has(.orbital-home) .orbital-home {
   background: var(--accent-soft);
 }
 
-.site-header nav a[aria-current="page"] {
+/* The pill supplies the active background; the link only changes colour. */
+.site-header nav a[data-active="true"] {
   color: var(--text);
-  background: var(--surface-raised);
 }
 
 /* ---- Route transitions ---- */
@@ -451,6 +457,64 @@ html.route-transition-pending body::after {
   background: color-mix(in srgb, var(--background) 50%, transparent);
   opacity: 0;
   pointer-events: none;
+}
+
+/* View transitions (PageTransition wraps link navigations in
+   document.startViewTransition where supported; the veil above is the
+   fallback). The animation runs on root pseudo-elements, so page content and
+   its backdrop-filter panels are never composited differently. */
+.site-header {
+  view-transition-name: site-header;
+}
+
+/* The header persists across routes: show it as-is (live) instead of
+   cross-fading it with itself, so the nav pill slide stays visible. */
+::view-transition-group(site-header),
+::view-transition-new(site-header) {
+  animation: none;
+}
+
+/* Hide the old header only once the new one exists. An animation on a
+   view-transition pseudo-element starts when the transition is ready (new
+   state captured); `display: none` instead would blank the header for the
+   whole wait before that. */
+::view-transition-old(site-header) {
+  animation: vt-hide 1ms both;
+}
+
+@keyframes vt-hide {
+  to {
+    opacity: 0;
+  }
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 320ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Shared cover/title morph ("Morph"-style): the group interpolates position
+   and size between the card and the detail page. */
+::view-transition-group(vt-cover),
+::view-transition-group(vt-title) {
+  animation-duration: 420ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(vt-cover),
+::view-transition-new(vt-cover) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }
 
 @keyframes route-progress {
@@ -1091,6 +1155,8 @@ h3 {
 
 /* Panel opens upward from the floating button */
 .bg-control-floating .bg-control-panel {
+  /* Opens upward from the bottom-right button (20px + 44px + 10px gap). */
+  max-height: calc(100dvh - 100px);
   top: auto;
   bottom: calc(100% + 10px);
   transform-origin: right bottom;
@@ -1107,9 +1173,15 @@ h3 {
   right: 0;
   z-index: 60;
   display: grid;
+  /* Content stays top-aligned while the height morph runs; the default
+     (stretch) would spread the grid rows apart whenever the animated height
+     exceeds the content height. */
+  align-content: start;
   gap: 12px;
   width: 352px;
-  max-height: min(680px, calc(100dvh - 84px));
+  /* Bounded by the viewport only: a tall window shows the whole panel
+     (no fixed cap), a short one scrolls it. */
+  max-height: calc(100dvh - 88px);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1158,6 +1230,37 @@ h3 {
     scale var(--transition-base),
     translate var(--transition-base),
     visibility 0s 0s;
+  /* Circular reveal from the toggle's centre (--reveal-* set by
+     AppearanceControl). No fill-mode: once finished the clip is removed, so
+     the box-shadow is not cut off. */
+  animation: bg-panel-reveal 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.bg-control-panel.closing {
+  pointer-events: none;
+  animation: bg-panel-conceal 300ms cubic-bezier(0.55, 0, 0.7, 0.2) forwards;
+}
+
+@keyframes bg-panel-reveal {
+  from {
+    clip-path: circle(0 at var(--reveal-x, 100%) var(--reveal-y, 0));
+    opacity: 0.6;
+  }
+  to {
+    clip-path: circle(var(--reveal-r, 900px) at var(--reveal-x, 100%) var(--reveal-y, 0));
+    opacity: 1;
+  }
+}
+
+@keyframes bg-panel-conceal {
+  from {
+    clip-path: circle(var(--reveal-r, 900px) at var(--reveal-x, 100%) var(--reveal-y, 0));
+    opacity: 1;
+  }
+  to {
+    clip-path: circle(0 at var(--reveal-x, 100%) var(--reveal-y, 0));
+    opacity: 0.6;
+  }
 }
 
 .appearance-panel-header {
@@ -1229,6 +1332,46 @@ h3 {
   outline-offset: 2px;
 }
 
+/* Segmented controls (panel tabs, colour picker tabs, background mode): one
+   pill slides between the two options, like the navigation pill. --i (0/1)
+   is set inline; --seg-w is one segment's width (2 columns, 3px padding,
+   2px gap, 1px border excluded from the padding box). */
+.appearance-panel-tabs,
+.theme-editor-tabs,
+.bg-control-modes {
+  --seg-w: calc((100% - 8px) / 2);
+  --seg-x: calc(3px + var(--i, 0) * (var(--seg-w) + 2px));
+  position: relative;
+}
+
+.appearance-panel-tabs::before,
+.theme-editor-tabs::before,
+.bg-control-modes::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: var(--seg-x);
+  width: var(--seg-w);
+  pointer-events: none;
+  transition: left 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.appearance-panel-tabs button,
+.theme-editor-tabs button,
+.bg-control-modes button {
+  position: relative;
+  z-index: 1;
+}
+
+/* Same pill as the navigation bar. */
+.appearance-panel-tabs::before,
+.theme-editor-tabs::before,
+.bg-control-modes::before {
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+
 .appearance-panel-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1255,28 +1398,18 @@ h3 {
     color var(--transition-fast);
 }
 
-.appearance-panel-tabs button:hover {
+.appearance-panel-tabs button:hover:not(.active) {
   background: var(--surface-overlay);
   color: var(--text-secondary);
 }
 
 .appearance-panel-tabs button.active {
-  background: rgba(255, 255, 255, 0.07);
   color: var(--text);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 3px 8px rgba(0, 0, 0, 0.16);
 }
 
-.appearance-panel-tabs button.active::after {
-  content: "";
-  position: absolute;
-  right: 32%;
-  bottom: 3px;
-  left: 32%;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent-readable);
+.appearance-panel-tabs button:active,
+.theme-editor-tabs button:active {
+  scale: 0.97;
 }
 
 .appearance-panel-tabs button:focus-visible {
@@ -1326,8 +1459,7 @@ h3 {
 }
 
 .bg-control-modes button.active {
-  background: var(--accent-base);
-  color: var(--on-accent);
+  color: var(--text);
 }
 
 .bg-control-modes button:active {
@@ -1616,16 +1748,49 @@ h3 {
     color var(--transition-fast);
 }
 
-.theme-editor-tabs button:hover {
+.theme-editor-tabs button:hover:not(.active) {
   background: var(--surface-overlay);
   color: var(--text);
 }
 
 .theme-editor-tabs button.active {
-  background:
-    linear-gradient(180deg, rgb(var(--accent-rgb) / 0.16), rgb(var(--accent-rgb) / 0.08));
-  color: var(--accent-readable);
-  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.36);
+  color: var(--text);
+}
+
+/* Content swaps inside the panel: the incoming section fades and rises in
+   (same easing as page transitions); the panel's height morphs in JS. */
+.appearance-swap {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Content swaps inside the panel are cross-faded by the view transition (see
+   runPanelTransition); there is deliberately no CSS entrance animation here —
+   toggling one off during the transition would restart it when it ends. */
+
+/* Panel-scoped view transition: only the panel animates. The page root keeps
+   rendering live (old snapshot hidden, no cross-fade), the header keeps its
+   own name, and the panel group morphs size while clipping its images. */
+html.vt-panel::view-transition-old(root) {
+  animation: vt-hide 1ms both;
+}
+
+html.vt-panel::view-transition-new(root) {
+  animation: none;
+}
+
+::view-transition-group(appearance-panel) {
+  overflow: clip;
+  border-radius: 16px;
+  animation-duration: 340ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(appearance-panel),
+::view-transition-new(appearance-panel) {
+  animation-duration: 340ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .color-checker-picker {

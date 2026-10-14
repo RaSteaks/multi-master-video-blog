@@ -85,6 +85,7 @@ export default async function PostPage({ params }: PostPageProps) {
             {coverImageUrl ? (
               <img
                 className="article-toc-cover"
+                data-vt="cover"
                 src={coverImageUrl}
                 alt={`Cover image for ${post.title}`}
                 width={640}
@@ -110,7 +111,7 @@ export default async function PostPage({ params }: PostPageProps) {
           <div className="content-glass">
             <header className="page-header">
               <p className="eyebrow">{post.category || "Article"}</p>
-              <h1>{post.title}</h1>
+              <h1 data-vt="title">{post.title}</h1>
             </header>
 
             <article className="markdown-body">
@@ -124,12 +125,13 @@ export default async function PostPage({ params }: PostPageProps) {
         <div className="content-glass">
           <header className="page-header">
             <p className="eyebrow">{post.category || "Article"}</p>
-            <h1>{post.title}</h1>
+            <h1 data-vt="title">{post.title}</h1>
           </header>
 
           {coverImageUrl ? (
             <img
               className="hero-media"
+              data-vt="cover"
               src={coverImageUrl}
               alt={`Cover image for ${post.title}`}
               width={1600}

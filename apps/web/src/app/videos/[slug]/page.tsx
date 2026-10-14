@@ -43,7 +43,7 @@ export default async function VideoPage({ params }: VideoPageProps) {
       <AnalyticsTracker itemType="video" itemId={video.id} />
       <header className="page-header video-title">
         <p className="eyebrow">{video.category || "Video"}</p>
-        <h1>{video.title}</h1>
+        <h1 data-vt="title">{video.title}</h1>
         {video.description ? (
           <p className="summary">{video.description}</p>
         ) : null}

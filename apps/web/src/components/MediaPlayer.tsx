@@ -394,7 +394,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
     <section className="player-shell" aria-label="Video player">
       <div className="player-layout">
         <div className="player-main">
-          <div className="player-frame" data-state={playbackState}>
+          <div className="player-frame" data-state={playbackState} data-vt="cover">
             <video
               ref={videoRef}
               className="video-player"

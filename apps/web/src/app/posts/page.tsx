@@ -44,6 +44,7 @@ export default async function PostsPage() {
               >
                 {cover ? (
                   <img
+                    data-vt="cover"
                     alt={`Cover image for ${post.title}`}
                     src={cover}
                     width={960}
@@ -59,7 +60,7 @@ export default async function PostsPage() {
                 )}
                 <div>
                   <p className="meta-line">{post.category || "Article"}</p>
-                  <h2>{post.title}</h2>
+                  <h2 data-vt="title">{post.title}</h2>
                 </div>
               </Link>
             );

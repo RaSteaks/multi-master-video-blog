@@ -3,13 +3,14 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { usePathname } from "next/navigation";
 import type { SiteBackgroundImage } from "@/lib/directus";
 import {
@@ -99,6 +100,34 @@ function handleTabKeyDown(
   nextTab?.click();
 }
 
+const PANEL_VT_NAME = "appearance-panel";
+
+// Runs `update` (state changes inside the panel) inside a view transition
+// that only involves the panel: it gets its own transition name, and the page
+// root is neutralised via `html.vt-panel` (globals.css) so the rest of the
+// page keeps rendering live. Falls back to a plain update.
+function runPanelTransition(panel: HTMLElement | null, update: () => void) {
+  if (
+    !panel ||
+    typeof document.startViewTransition !== "function" ||
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  ) {
+    update();
+    return;
+  }
+  const root = document.documentElement;
+  panel.style.setProperty("view-transition-name", PANEL_VT_NAME);
+  root.classList.add("vt-panel");
+  const transition = document.startViewTransition(() => {
+    flushSync(update);
+  });
+  const done = () => {
+    panel.style.removeProperty("view-transition-name");
+    root.classList.remove("vt-panel");
+  };
+  transition.finished.then(done, done);
+}
+
 function clampBlur(value: number) {
   return Math.min(MAX_BLUR, Math.max(MIN_BLUR, Math.round(value)));
 }
@@ -153,6 +182,9 @@ export function AppearanceControl({
 
   const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(false);
+  // The panel stays mounted after `open` turns false until its circular
+  // collapse animation ends, so closing can animate too.
+  const [panelMounted, setPanelMounted] = useState(false);
   const [mode, setModeState] = useState<BgMode | null>(null);
   const [blur, setBlurState] = useState(clampBlur(defaultBlur));
   const [hasUserBlur, setHasUserBlur] = useState(false);
@@ -332,6 +364,37 @@ export function AppearanceControl({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (open) setPanelMounted(true);
+  }, [open]);
+
+  // The panel reveals as a circle growing from the toggle's centre. Measure
+  // that centre and the distance to the panel's farthest corner so the circle
+  // ends exactly when it covers the whole panel (any layout, any breakpoint).
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const toggle = toggleRef.current;
+    if (!open || !panel || !toggle) return;
+    const panelBox = panel.getBoundingClientRect();
+    const toggleBox = toggle.getBoundingClientRect();
+    const x = toggleBox.left + toggleBox.width / 2 - panelBox.left;
+    const y = toggleBox.top + toggleBox.height / 2 - panelBox.top;
+    const radius = Math.hypot(
+      Math.max(x, panelBox.width - x),
+      Math.max(y, panelBox.height - y)
+    );
+    panel.style.setProperty("--reveal-x", `${x}px`);
+    panel.style.setProperty("--reveal-y", `${y}px`);
+    panel.style.setProperty("--reveal-r", `${Math.ceil(radius)}px`);
+  }, [open]);
+
+  // Switches inside the panel (tabs, colour picker, background mode, fold)
+  // run as a view transition scoped to the panel: old and new content
+  // cross-fade while the panel's size interpolates, like a page change.
+  function transitionPanel(update: () => void) {
+    runPanelTransition(panelRef.current, update);
+  }
+
   function selectMode(next: BgMode) {
     setModeState(next);
     writeLocal(MODE_KEY, next);
@@ -440,13 +503,18 @@ export function AppearanceControl({
         <SlidersIcon />
       </button>
 
-      {open ? (
+      {open || panelMounted ? (
         <div
           ref={panelRef}
           id={panelId}
-          className="bg-control-panel open"
+          className={`bg-control-panel open${open ? "" : " closing"}`}
           role="dialog"
           aria-labelledby={panelTitleId}
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget && !open) {
+              setPanelMounted(false);
+            }
+          }}
         >
         <header className="appearance-panel-header">
           <div>
@@ -470,6 +538,7 @@ export function AppearanceControl({
           className="appearance-panel-tabs"
           role="tablist"
           aria-label="设置类别"
+          style={{ "--i": appearanceView === "color" ? 1 : 0 } as CSSProperties}
         >
           <button
             id={backgroundTabId}
@@ -479,7 +548,10 @@ export function AppearanceControl({
             aria-controls={backgroundPanelId}
             tabIndex={appearanceView === "background" ? 0 : -1}
             className={appearanceView === "background" ? "active" : ""}
-            onClick={() => setAppearanceView("background")}
+            onClick={() =>
+              appearanceView !== "background" &&
+              transitionPanel(() => setAppearanceView("background"))
+            }
             onKeyDown={handleTabKeyDown}
           >
             背景
@@ -492,7 +564,10 @@ export function AppearanceControl({
             aria-controls={colorPanelId}
             tabIndex={appearanceView === "color" ? 0 : -1}
             className={appearanceView === "color" ? "active" : ""}
-            onClick={() => setAppearanceView("color")}
+            onClick={() =>
+              appearanceView !== "color" &&
+              transitionPanel(() => setAppearanceView("color"))
+            }
             onKeyDown={handleTabKeyDown}
           >
             颜色
@@ -550,6 +625,7 @@ export function AppearanceControl({
             className="theme-editor-tabs"
             role="tablist"
             aria-label="颜色选择方式"
+            style={{ "--i": colorEditor === "custom" ? 1 : 0 } as CSSProperties}
           >
             <button
               id={presetsTabId}
@@ -559,7 +635,10 @@ export function AppearanceControl({
               aria-controls={presetsPanelId}
               tabIndex={colorEditor === "presets" ? 0 : -1}
               className={colorEditor === "presets" ? "active" : ""}
-              onClick={() => setColorEditor("presets")}
+              onClick={() =>
+                colorEditor !== "presets" &&
+                transitionPanel(() => setColorEditor("presets"))
+              }
               onKeyDown={handleTabKeyDown}
             >
               ColorChecker
@@ -572,7 +651,9 @@ export function AppearanceControl({
               aria-controls={customPanelId}
               tabIndex={colorEditor === "custom" ? 0 : -1}
               className={colorEditor === "custom" ? "active" : ""}
-              onClick={openCustomEditor}
+              onClick={() =>
+                colorEditor !== "custom" && transitionPanel(openCustomEditor)
+              }
               onKeyDown={handleTabKeyDown}
             >
               HSV 自定义
@@ -648,7 +729,9 @@ export function AppearanceControl({
                   aria-expanded={colorCheckerExpanded}
                   aria-controls={colorCheckerId}
                   onClick={() =>
-                    setColorCheckerExpanded((expanded) => !expanded)
+                    transitionPanel(() =>
+                      setColorCheckerExpanded((expanded) => !expanded)
+                    )
                   }
                 >
                   <span>
@@ -752,13 +835,17 @@ export function AppearanceControl({
             className="bg-control-modes"
             role="radiogroup"
             aria-label="背景样式"
+            style={{ "--i": effectiveMode === "liquid" ? 1 : 0 } as CSSProperties}
           >
             <button
               type="button"
               role="radio"
               aria-checked={effectiveMode === "image"}
               className={effectiveMode === "image" ? "active" : ""}
-              onClick={() => selectMode("image")}
+              onClick={() =>
+                effectiveMode !== "image" &&
+                transitionPanel(() => selectMode("image"))
+              }
             >
               背景图片
             </button>
@@ -767,12 +854,16 @@ export function AppearanceControl({
               role="radio"
               aria-checked={effectiveMode === "liquid"}
               className={effectiveMode === "liquid" ? "active" : ""}
-              onClick={() => selectMode("liquid")}
+              onClick={() =>
+                effectiveMode !== "liquid" &&
+                transitionPanel(() => selectMode("liquid"))
+              }
             >
               液体流动
             </button>
           </div>
 
+          <div className="appearance-swap" key={effectiveMode}>
           {effectiveMode === "image" ? (
             <>
               {!hasImage ? (
@@ -826,6 +917,7 @@ export function AppearanceControl({
           ) : (
             <LiquidSettings controller={liquid} />
           )}
+          </div>
           </section>
         )}
         </div>

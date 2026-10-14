@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 const animatedSections = new Set([
   "home",
@@ -37,6 +37,12 @@ const VEIL_EASING = "cubic-bezier(.22, 1, .36, 1)";
  *   - same-page / hash-only links never change the pathname, so they neither
  *     remount nor animate
  *
+ * Where document.startViewTransition exists, link clicks are intercepted in
+ * the capture phase and routed through it instead (see onClickCapture): the
+ * browser cross-fades the page and morphs elements marked `data-vt` (cover,
+ * title) between the clicked card and the destination. The veil above is then
+ * skipped and remains the fallback for unsupported browsers.
+ *
  * Loading hint — only navigations that outlast SLOW_NAV_THRESHOLD_MS show the
  * progress bar and set aria-busy, so prefetched or instant navigations never
  * flash a bar.
@@ -56,8 +62,21 @@ const VEIL_EASING = "cubic-bezier(.22, 1, .36, 1)";
 const SLOW_NAV_THRESHOLD_MS = 100;
 const TRANSITION_RECOVERY_TIMEOUT_MS = 15_000;
 
+// View Transition budget. Rendering is frozen on the old page while the
+// transition callback is pending, so it must never wait on a slow load: once
+// the route has committed but still shows a skeleton after SKELETON_BUDGET_MS
+// the transition proceeds with the skeleton, and VT_HARD_CAP_MS bounds the
+// freeze if the route never commits.
+const SKELETON_BUDGET_MS = 450;
+const VT_HARD_CAP_MS = 1500;
+
 export function PageTransition({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "/";
+  const router = useRouter();
+  const pathnameRef = useRef(pathname);
+  // True from the click that starts a view transition until it finishes. The
+  // veil is skipped meanwhile: the browser cross-fades the page itself.
+  const viewTransitionActiveRef = useRef(false);
   const thresholdTimerRef = useRef<number | null>(null);
   const recoveryTimerRef = useRef<number | null>(null);
   // Loading-hint state only: whether the in-flight navigation has exceeded the
@@ -87,7 +106,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
     if (!veil || !wrapper) return;
     // A superseded navigation's veil must not keep playing over the new page.
     veil.getAnimations().forEach((animation) => animation.cancel());
-    if (animateRoute !== "true") return;
+    if (animateRoute !== "true" || viewTransitionActiveRef.current) return;
 
     if (!wrapper.querySelector(LOADING_SELECTOR)) {
       playVeil(veil);
@@ -103,6 +122,10 @@ export function PageTransition({ children }: { children: ReactNode }) {
     observer.observe(wrapper, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, [pathname, animateRoute]);
+
+  useLayoutEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
 
   useEffect(() => {
     // Navigation committed: release pending state for the next cycle.
@@ -165,6 +188,10 @@ export function PageTransition({ children }: { children: ReactNode }) {
         return;
       }
 
+      beginNavigation();
+    }
+
+    function beginNavigation() {
       // A new link navigation supersedes any earlier popstate that never
       // changed the pathname (e.g. back across a hash-only history entry).
       historyNavRef.current = false;
@@ -183,19 +210,64 @@ export function PageTransition({ children }: { children: ReactNode }) {
       );
     }
 
+    // Capture phase on <html>: runs before React's root listener (so before
+    // next/link starts the navigation) but after the editor's document-level
+    // unsaved-changes guard, which may stop the click first.
+    function onClickCapture(event: MouseEvent) {
+      if (
+        event.defaultPrevented ||
+        shouldIgnoreClick(event) ||
+        typeof document.startViewTransition !== "function"
+      ) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest("a[href]");
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      if (!isInternalPageNavigation(anchor)) return;
+
+      const url = new URL(anchor.href);
+      const section = url.pathname.split("/").filter(Boolean)[0] || "home";
+      if (routeAnimation(section, false) !== "true") return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      beginNavigation();
+      viewTransitionActiveRef.current = true;
+      const sharedKinds = markSharedElements(anchor);
+
+      const fromPathname = pathnameRef.current;
+      const transition = document.startViewTransition(async () => {
+        router.push(`${url.pathname}${url.search}${url.hash}`);
+        await waitForRouteReady(fromPathname, pathnameRef);
+        // Only the first match per kind: a destination that is itself a list
+        // (e.g. nav → /videos) has many [data-vt] elements, and duplicate
+        // names would abort the whole transition.
+        markSharedElements(document.getElementById("main-content"), sharedKinds);
+      });
+      const done = () => {
+        viewTransitionActiveRef.current = false;
+        clearSharedElementNames();
+      };
+      transition.finished.then(done, done);
+    }
+
     // Listen at the end of the bubbling phase. The editor's unsaved-change
     // guard stops cancelled navigations before they can reach this handler.
+    document.documentElement.addEventListener("click", onClickCapture, true);
     window.addEventListener("click", onClick);
     window.addEventListener("popstate", onPopState);
     window.addEventListener("pageshow", clearTransition);
 
     return () => {
+      document.documentElement.removeEventListener("click", onClickCapture, true);
       window.removeEventListener("click", onClick);
       window.removeEventListener("popstate", onPopState);
       window.removeEventListener("pageshow", clearTransition);
       clearTransition();
     };
-  }, []);
+  }, [router]);
 
   return (
     <>
@@ -219,6 +291,75 @@ function playVeil(veil: HTMLElement) {
   veil.animate([{ opacity: 1 }, { opacity: 0 }], {
     duration: VEIL_DURATION_MS,
     easing: VEIL_EASING,
+  });
+}
+
+const SHARED_SELECTOR = "[data-vt]";
+
+// Give the clicked card's cover/title (and later the matching elements on the
+// destination page) a shared view-transition-name so the browser morphs one
+// into the other. Names must be unique per document, so they only exist on
+// the single pair involved in the current navigation. Without `kinds` every
+// kind found under `root` is marked; with it, only those kinds (first match).
+function markSharedElements(root: Element | null, kinds?: Set<string>) {
+  const marked = new Set<string>();
+  root?.querySelectorAll<HTMLElement>(SHARED_SELECTOR).forEach((element) => {
+    const kind = element.dataset.vt;
+    if (!kind || marked.has(kind) || (kinds && !kinds.has(kind))) return;
+    marked.add(kind);
+    element.style.setProperty("view-transition-name", `vt-${kind}`);
+  });
+  return marked;
+}
+
+function clearSharedElementNames() {
+  document.querySelectorAll<HTMLElement>(SHARED_SELECTOR).forEach((element) => {
+    element.style.removeProperty("view-transition-name");
+  });
+}
+
+// Resolves once the new route's real content is on screen, so the transition
+// captures it rather than a skeleton. Bounded by SKELETON_BUDGET_MS /
+// VT_HARD_CAP_MS (see above).
+function waitForRouteReady(
+  fromPathname: string,
+  pathnameRef: { current: string },
+) {
+  return new Promise<void>((resolve) => {
+    const main = document.getElementById("main-content");
+    const startedAt = performance.now();
+    let committedAt: number | null = null;
+    let timer: number | undefined;
+    let observer: MutationObserver | undefined;
+    let settled = false;
+
+    function finish() {
+      settled = true;
+      observer?.disconnect();
+      window.clearTimeout(timer);
+      resolve();
+    }
+
+    function check() {
+      const now = performance.now();
+      if (now - startedAt >= VT_HARD_CAP_MS) return finish();
+      if (pathnameRef.current === fromPathname) return;
+      committedAt ??= now;
+      const loading = main?.querySelector(LOADING_SELECTOR);
+      if (!loading || now - committedAt >= SKELETON_BUDGET_MS) finish();
+    }
+
+    if (main) {
+      observer = new MutationObserver(check);
+      observer.observe(main, { childList: true, subtree: true });
+    }
+    // Also re-check on a timer so the budgets fire without further mutations.
+    const tick = () => {
+      check();
+      if (settled) return;
+      timer = window.setTimeout(tick, 50);
+    };
+    tick();
   });
 }
 
