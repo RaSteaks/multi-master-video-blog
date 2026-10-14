@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { trackAnalyticsEvent } from "@/components/AnalyticsTracker";
 import type { VideoMaster } from "@/lib/directus";
@@ -11,6 +12,7 @@ type MediaPlayerProps = {
   masters: VideoMaster[];
   poster?: string | null;
   videoProjectId?: number;
+  addMaster?: { href: string; label: string };
 };
 
 type PlaybackState = "idle" | "loading" | "ready" | "playing" | "paused" | "error";
@@ -47,7 +49,7 @@ type ShakaNamespace = {
   };
 };
 
-export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProps) {
+export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: MediaPlayerProps) {
   const playableMasters = useMemo(() => masters.filter(isPlayableMaster), [masters]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playerRef = useRef<ShakaPlayer | null>(null);
@@ -375,6 +377,14 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
               : "No video masters have been configured for this project."}
         </p>
         {playableMasters.map(master => <button key={master.id} type="button" onClick={() => switchMaster(master)}>{master.label}</button>)}
+        {addMaster ? (
+    <Link className="master-add" href={addMaster.href}>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      {addMaster.label}
+    </Link>
+        ) : null}
       </div>
     );
   }
@@ -432,6 +442,14 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
                   </span>
                 </button>
               ))}
+              {addMaster ? (
+    <Link className="master-add" href={addMaster.href}>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      {addMaster.label}
+    </Link>
+              ) : null}
             </div>
 
             <div className="info-toggle-row">

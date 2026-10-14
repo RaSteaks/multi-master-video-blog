@@ -619,17 +619,8 @@ html.route-transition-pending body::after {
   max-width: 62ch;
 }
 
-.video-title-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px 24px;
-  margin-top: 28px;
-}
-
-.video-title-meta .meta-line {
-  margin: 0;
+.video-title .meta-line {
+  margin: 28px 0 0;
 }
 
 /* ---- Article shell ---- */
@@ -3067,6 +3058,37 @@ html.vt-panel::view-transition-new(root) {
     border-color var(--transition-fast),
     background var(--transition-fast),
     color var(--transition-fast);
+}
+
+/* Add-master affordance: a quiet dashed slot at the end of the switcher */
+.master-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  border: 1px dashed var(--line-light);
+  border-radius: var(--radius);
+  background: transparent;
+  padding: 8px 14px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.master-add:hover {
+  border-color: var(--neutral-ref);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.master-add:focus-visible {
+  border-color: var(--neutral-ref);
+  box-shadow: 0 0 0 3px var(--neutral-ref-glow);
 }
 
 .master-button:hover {
