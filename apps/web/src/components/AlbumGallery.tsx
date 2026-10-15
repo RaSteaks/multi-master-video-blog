@@ -18,6 +18,7 @@ import {
   type ManagedAlbum,
   type ManagedPhoto,
 } from "@/lib/album-management";
+import { AlbumPhotoUploader, UploadIcon } from "@/components/AlbumPhotoUploader";
 import { albumThumbSrcSet, assetUrl } from "@/lib/asset-url";
 
 export type GalleryPhoto = {
@@ -79,6 +80,7 @@ export function AlbumGallery({
   const [managedAlbum, setManagedAlbum] = useState<ManagedAlbum | null>(
     initialManagedAlbum,
   );
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [adminBusy, setAdminBusy] = useState(false);
   const [adminError, setAdminError] = useState("");
   const [adminNotice, setAdminNotice] = useState("");
@@ -87,6 +89,7 @@ export function AlbumGallery({
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [failedHdr, setFailedHdr] = useState<Set<number>>(() => new Set());
   const lastTrigger = useRef<HTMLButtonElement | null>(null);
+  const uploadPanelRef = useRef<HTMLDivElement | null>(null);
 
   const managedPhotos = useMemo(
     () => managedAlbum?.photos.map(managedPhotoToGallery) ?? null,
@@ -112,6 +115,12 @@ export function AlbumGallery({
       setLightboxIndex(photos.length ? photos.length - 1 : null);
     }
   }, [lightboxIndex, photos.length]);
+
+  useEffect(() => {
+    if (uploadOpen && managedAlbum) {
+      uploadPanelRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [uploadOpen, Boolean(managedAlbum)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadAdminAlbum() {
     if (!token.trim()) {
@@ -170,9 +179,16 @@ export function AlbumGallery({
     }
   }
 
+  /** Uploading needs the admin token, so this opens the management panel (login first) and then the uploader. */
+  function openUpload() {
+    setAdminOpen(true);
+    setUploadOpen(true);
+  }
+
   function toggleAdmin() {
     if (adminOpen) {
       setAdminOpen(false);
+      setUploadOpen(false);
       setManagedAlbum(null);
       setToken("");
       setAdminError("");
@@ -315,6 +331,17 @@ export function AlbumGallery({
               </div>
             </dl>
           ) : null}
+          <div className="album-detail-actions">
+            <button
+              className="album-action-button"
+              type="button"
+              aria-expanded={uploadOpen}
+              aria-controls="album-upload-panel"
+              onClick={openUpload}
+            >
+              <UploadIcon />
+              上传照片
+            </button>
           {!embedded ? (
             <button
               className="album-action-button"
@@ -327,6 +354,7 @@ export function AlbumGallery({
               {adminOpen ? "退出管理" : "管理模式"}
             </button>
           ) : null}
+          </div>
         </div>
       </header>
 
@@ -370,6 +398,20 @@ export function AlbumGallery({
             </form>
           ) : (
             <>
+              {uploadOpen ? (
+                <div id="album-upload-panel" ref={uploadPanelRef}>
+                  <AlbumPhotoUploader
+                    albumId={managedAlbum.id}
+                    token={token}
+                    onClose={() => setUploadOpen(false)}
+                    onUploaded={async (message) => {
+                      await refreshAdminAlbum();
+                      setAdminNotice(message);
+                      router.refresh();
+                    }}
+                  />
+                </div>
+              ) : null}
               <AlbumAdminForm
                 key={`${managedAlbum.id}-${managedAlbum.updatedAt}`}
                 album={managedAlbum}

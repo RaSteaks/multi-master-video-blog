@@ -6136,6 +6136,32 @@ html.vt-panel::view-transition-new(root) {
   gap: 18px;
 }
 
+.album-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.album-photo-uploader {
+  display: grid;
+  gap: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 18px;
+}
+
+.album-photo-uploader-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.album-photo-uploader-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
 .album-detail-stats {
   display: flex;
   overflow: hidden;

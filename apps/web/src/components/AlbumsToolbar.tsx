@@ -21,6 +21,15 @@ import {
   type ManagedAlbum,
 } from "@/lib/album-management";
 import { ManagedAlbumGallery } from "@/components/AlbumGallery";
+import {
+  FileDropZone,
+  MAX_BATCH_BYTES,
+  MAX_FILE_BYTES,
+  MAX_PHOTOS,
+  UploadIcon,
+  UploadPairEditor,
+  type UploadMetadata,
+} from "@/components/AlbumPhotoUploader";
 
 const FilmScanImport = dynamic(
   () =>
@@ -40,19 +49,9 @@ type AlbumOption = {
   published: boolean;
 };
 
-type UploadMetadata = {
-  caption: string;
-  altText: string;
-  published: boolean;
-};
-
 type AlbumDialogName = "create" | "upload" | "film" | "manage" | null;
 
 const FILM_SCAN_ENABLED = process.env.NODE_ENV !== "production";
-
-const MAX_PHOTOS = 24;
-const MAX_FILE_BYTES = 64 * 1024 * 1024;
-const MAX_BATCH_BYTES = 512 * 1024 * 1024;
 
 export function AlbumsToolbar({
   albums,
@@ -793,146 +792,6 @@ function AlbumSettings({
   );
 }
 
-function FileDropZone({
-  label,
-  hint,
-  accept,
-  files,
-  onFiles,
-}: {
-  label: string;
-  hint: string;
-  accept: string;
-  files: File[];
-  onFiles: (files: File[]) => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
-
-  function select(event: ChangeEvent<HTMLInputElement>) {
-    onFiles(Array.from(event.target.files ?? []));
-    event.target.value = "";
-  }
-
-  function drop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setDragging(false);
-    onFiles(Array.from(event.dataTransfer.files));
-  }
-
-  return (
-    <div
-      className={`album-drop-zone${dragging ? " is-dragging" : ""}`}
-      onDragEnter={(event) => {
-        event.preventDefault();
-        setDragging(true);
-      }}
-      onDragOver={(event) => event.preventDefault()}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          setDragging(false);
-        }
-      }}
-      onDrop={drop}
-    >
-      <input
-        ref={inputRef}
-        className="visually-hidden"
-        type="file"
-        accept={accept}
-        multiple
-        onChange={select}
-      />
-      <div className="album-drop-icon" aria-hidden="true">
-        <UploadIcon />
-      </div>
-      <strong>{label}</strong>
-      <span>{hint}</span>
-      <button
-        className="album-text-button"
-        type="button"
-        onClick={() => inputRef.current?.click()}
-      >
-        选择文件
-      </button>
-      <small>
-        {files.length
-          ? `已选择 ${files.length} 个文件`
-          : "拖放到此处，或使用文件选择器"}
-      </small>
-    </div>
-  );
-}
-
-function UploadPairEditor({
-  pair,
-  value,
-  onChange,
-}: {
-  pair: {
-    key: string;
-    sdr: File;
-    hdr: File | null;
-  };
-  value: UploadMetadata;
-  onChange: (value: UploadMetadata) => void;
-}) {
-  const [preview, setPreview] = useState("");
-
-  useEffect(() => {
-    const url = URL.createObjectURL(pair.sdr);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [pair.sdr]);
-
-  return (
-    <article className="album-pair-row">
-      <div className="album-pair-preview">
-        {preview ? <img src={preview} alt="" /> : null}
-        <span className={pair.hdr ? "is-hdr" : ""}>
-          {pair.hdr ? "HDR 配对" : "SDR"}
-        </span>
-      </div>
-      <div className="album-pair-copy">
-        <strong>{pair.sdr.name}</strong>
-        <small>{pair.hdr?.name ?? "无 HDR 文件"}</small>
-      </div>
-      <label className="album-field">
-        <span>说明</span>
-        <input
-          value={value.caption}
-          onChange={(event) =>
-            onChange({ ...value, caption: event.target.value })
-          }
-          maxLength={2000}
-        />
-      </label>
-      <label className="album-field">
-        <span>替代文本</span>
-        <input
-          value={value.altText}
-          onChange={(event) =>
-            onChange({ ...value, altText: event.target.value })
-          }
-          maxLength={500}
-        />
-      </label>
-      <label className="album-switch album-switch--compact">
-        <input
-          type="checkbox"
-          checked={value.published}
-          onChange={(event) =>
-            onChange({ ...value, published: event.target.checked })
-          }
-        />
-        <span>
-          <strong>{value.published ? "发布" : "草稿"}</strong>
-        </span>
-      </label>
-    </article>
-  );
-}
-
 function FormFeedback({
   error,
   success,
@@ -955,15 +814,6 @@ function PlusIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
-function UploadIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 16V4m0 0-4 4m4-4 4 4" />
-      <path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4" />
     </svg>
   );
 }
