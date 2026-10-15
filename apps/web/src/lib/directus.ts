@@ -28,6 +28,7 @@ export type Post = {
   updated_at: string | null;
 };
 
+// Public playback projection; raw probe/verification documents stay in the CMS.
 export type VideoMaster = {
   id: number;
   project_id: number;
@@ -54,7 +55,6 @@ export type VideoMaster = {
   processing_mode: "copy" | "transcode" | string | null;
   is_derivative: boolean | number | null;
   derived_from_master_id: number | null;
-  source_sha256: string | null;
   display_gamut: "bt709" | "bt2020" | "p3_d65" | "dci_p3" | "custom" | string | null;
   color_primaries: string | null;
   color_transfer: string | null;
@@ -63,17 +63,10 @@ export type VideoMaster = {
   pixel_format: string | null;
   chroma_location: string | null;
   hls_video_range: "SDR" | "PQ" | "HLG" | string | null;
-  hdr_static_metadata: Record<string, unknown> | null;
-  dolby_metadata: Record<string, unknown> | null;
-  source_probe_json: Record<string, unknown> | null;
-  output_probe_json: Record<string, unknown> | null;
   verification_status: "ready" | "rejected" | "quarantine" | string | null;
-  verification_errors: unknown[] | Record<string, unknown> | null;
   verified_at: string | null;
   conversion_intent: string | null;
-  conversion_lut_or_filter: string | null;
   uploaded_at: string | null;
-  notes: string | null;
 };
 
 export type VideoProject = {
@@ -154,8 +147,20 @@ const POST_DETAIL_FIELDS =
 const VIDEO_LIST_FIELDS =
   "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at," +
   "masters.id,masters.label,masters.type,masters.hls_url,masters.is_default,masters.sort_order";
+// Explicit fields also bound the props serialized across the server/client boundary.
+const VIDEO_MASTER_FIELDS = [
+  "id", "project_id", "label", "type", "hls_url", "file_url", "codec",
+  "resolution_width", "resolution_height", "color_space", "transfer_function",
+  "bit_depth", "bitrate_mbps", "dolby_profile", "dolby_level", "dolby_compatibility_id",
+  "dolby_rpu_present", "dolby_el_present", "dolby_bl_present", "is_default", "sort_order",
+  "status", "processing_mode", "is_derivative", "derived_from_master_id", "display_gamut",
+  "color_primaries", "color_transfer", "matrix_coefficients", "color_range", "pixel_format",
+  "chroma_location", "hls_video_range", "verification_status", "verified_at",
+  "conversion_intent", "uploaded_at",
+] as const satisfies readonly (keyof VideoMaster)[];
 const VIDEO_DETAIL_FIELDS =
-  "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at,masters.*";
+  "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at," +
+  VIDEO_MASTER_FIELDS.map((field) => `masters.${field}`).join(",");
 const ALBUM_LIST_FIELDS =
   "id,title,slug,description,cover_image,published,created_at,updated_at," +
   "photos.id,photos.sdr_image,photos.hdr_image,photos.published,photos.sort_order";

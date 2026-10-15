@@ -1358,7 +1358,10 @@ export function ArticleEditor() {
                 <small>{deferredContent !== content ? "正在排版…" : "GFM"}</small>
               </div>
               <div className={styles.previewScroller}>
-                <ArticlePreview content={deferredContent} images={images} />
+                {/* CSS hiding alone still parses Markdown and creates image elements while typing. */}
+                {viewMode !== "write" ? (
+                  <ArticlePreview content={deferredContent} images={images} />
+                ) : null}
               </div>
             </div>
           </div>
