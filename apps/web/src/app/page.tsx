@@ -32,13 +32,17 @@ export default async function Home() {
           className="orbital-stage"
           style={{ "--home-stage-height": homeLayout.stage.minHeight } as HomeWidgetStyle}
         >
-          <ProfileHub layout={homeLayout.widgets.profileHub} titleId="home-title" />
-          <CollectionCard
-            layout={homeLayout.widgets.collection}
-            postCount={postCount}
-            videoCount={videoCount}
-            albumCount={albumCount}
-          />
+          {/* Desktop: positioning canvas that grows with the profile card so the
+              action dock below can never overlap it. Elsewhere it is transparent. */}
+          <div className="orbital-canvas">
+            <ProfileHub layout={homeLayout.widgets.profileHub} titleId="home-title" />
+            <CollectionCard
+              layout={homeLayout.widgets.collection}
+              postCount={postCount}
+              videoCount={videoCount}
+              albumCount={albumCount}
+            />
+          </div>
 
           <div className="home-action-row">
             <UploadWidget

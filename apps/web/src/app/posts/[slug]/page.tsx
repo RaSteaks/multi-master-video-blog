@@ -9,6 +9,8 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownImageComponent } from "@/components/MarkdownImage";
+import { ArticleToc } from "@/components/ArticleToc";
+import { BackLink } from "@/components/BackLink";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
 import { GaussianSplatEmbed } from "@/components/GaussianSplatEmbed";
 import {
@@ -78,13 +80,19 @@ export default async function PostPage({ params }: PostPageProps) {
         />
       ) : null}
     <main className={hasToc ? "shell article-shell article-shell-with-toc" : "shell article-shell"}>
+      <BackLink href="/posts" label="返回文章" />
       {hasToc ? (
         <div className="article-content-grid">
           {/* TOC: standalone frosted glass card, sticky beside the article */}
-          <aside className="article-toc" aria-label="Article table of contents">
+          <aside
+            className="article-toc"
+            aria-label="Article table of contents"
+            data-collapsible={tocItems.length > 4}
+          >
             {coverImageUrl ? (
               <img
                 className="article-toc-cover"
+                data-vt="cover"
                 src={coverImageUrl}
                 alt={`Cover image for ${post.title}`}
                 width={640}
@@ -93,24 +101,17 @@ export default async function PostPage({ params }: PostPageProps) {
                 fetchPriority="high"
               />
             ) : null}
-            <p>{siteConfig.articleTocLabel}</p>
-            <nav>
-              {tocItems.map((item) => (
-                <a
-                  className={`article-toc-level-${item.level}`}
-                  href={`#${item.id}`}
-                  key={item.id}
-                >
-                  {item.text}
-                </a>
-              ))}
-            </nav>
+            <ArticleToc
+              label={siteConfig.articleTocLabel}
+              items={tocItems}
+              collapsible={tocItems.length > 4}
+            />
           </aside>
 
           <div className="content-glass">
             <header className="page-header">
               <p className="eyebrow">{post.category || "Article"}</p>
-              <h1>{post.title}</h1>
+              <h1 data-vt="title">{post.title}</h1>
             </header>
 
             <article className="markdown-body">
@@ -124,12 +125,13 @@ export default async function PostPage({ params }: PostPageProps) {
         <div className="content-glass">
           <header className="page-header">
             <p className="eyebrow">{post.category || "Article"}</p>
-            <h1>{post.title}</h1>
+            <h1 data-vt="title">{post.title}</h1>
           </header>
 
           {coverImageUrl ? (
             <img
               className="hero-media"
+              data-vt="cover"
               src={coverImageUrl}
               alt={`Cover image for ${post.title}`}
               width={1600}

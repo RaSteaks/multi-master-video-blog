@@ -1,20 +1,18 @@
-export type DirectusFileId = string | null;
-export type AssetPreset =
-  | "album-cover"
-  | "album-thumb"
-  | "content-card"
-  | "content-hero"
-  | "site-background"
-  | "site-background-thumb";
+import {
+  assetUrl,
+  type AssetPreset,
+  type DirectusFileId,
+  type ImageDimensions,
+} from "./asset-url";
 
-const ASSET_PRESETS = new Set<AssetPreset>([
-  "album-cover",
-  "album-thumb",
-  "content-card",
-  "content-hero",
-  "site-background",
-  "site-background-thumb",
-]);
+// Re-exported so existing importers keep one entry point for asset helpers.
+export {
+  albumThumbSrcSet,
+  assetUrl,
+  type AssetPreset,
+  type DirectusFileId,
+  type ImageDimensions,
+} from "./asset-url";
 
 export type Post = {
   id: number;
@@ -30,6 +28,7 @@ export type Post = {
   updated_at: string | null;
 };
 
+// Public playback projection; raw probe/verification documents stay in the CMS.
 export type VideoMaster = {
   id: number;
   project_id: number;
@@ -56,7 +55,6 @@ export type VideoMaster = {
   processing_mode: "copy" | "transcode" | string | null;
   is_derivative: boolean | number | null;
   derived_from_master_id: number | null;
-  source_sha256: string | null;
   display_gamut: "bt709" | "bt2020" | "p3_d65" | "dci_p3" | "custom" | string | null;
   color_primaries: string | null;
   color_transfer: string | null;
@@ -65,17 +63,10 @@ export type VideoMaster = {
   pixel_format: string | null;
   chroma_location: string | null;
   hls_video_range: "SDR" | "PQ" | "HLG" | string | null;
-  hdr_static_metadata: Record<string, unknown> | null;
-  dolby_metadata: Record<string, unknown> | null;
-  source_probe_json: Record<string, unknown> | null;
-  output_probe_json: Record<string, unknown> | null;
   verification_status: "ready" | "rejected" | "quarantine" | string | null;
-  verification_errors: unknown[] | Record<string, unknown> | null;
   verified_at: string | null;
   conversion_intent: string | null;
-  conversion_lut_or_filter: string | null;
   uploaded_at: string | null;
-  notes: string | null;
 };
 
 export type VideoProject = {
@@ -121,6 +112,8 @@ export type AlbumPhoto = {
   sort_order: number | null;
   created_at: string | null;
   updated_at: string | null;
+  /** Pixel size of the SDR file, merged in by getAlbum so tiles can reserve space before loading. */
+  sdr_dimensions?: ImageDimensions | null;
 };
 
 export type Album = {
@@ -154,8 +147,20 @@ const POST_DETAIL_FIELDS =
 const VIDEO_LIST_FIELDS =
   "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at," +
   "masters.id,masters.label,masters.type,masters.hls_url,masters.is_default,masters.sort_order";
+// Explicit fields also bound the props serialized across the server/client boundary.
+const VIDEO_MASTER_FIELDS = [
+  "id", "project_id", "label", "type", "hls_url", "file_url", "codec",
+  "resolution_width", "resolution_height", "color_space", "transfer_function",
+  "bit_depth", "bitrate_mbps", "dolby_profile", "dolby_level", "dolby_compatibility_id",
+  "dolby_rpu_present", "dolby_el_present", "dolby_bl_present", "is_default", "sort_order",
+  "status", "processing_mode", "is_derivative", "derived_from_master_id", "display_gamut",
+  "color_primaries", "color_transfer", "matrix_coefficients", "color_range", "pixel_format",
+  "chroma_location", "hls_video_range", "verification_status", "verified_at",
+  "conversion_intent", "uploaded_at",
+] as const satisfies readonly (keyof VideoMaster)[];
 const VIDEO_DETAIL_FIELDS =
-  "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at,masters.*";
+  "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at," +
+  VIDEO_MASTER_FIELDS.map((field) => `masters.${field}`).join(",");
 const ALBUM_LIST_FIELDS =
   "id,title,slug,description,cover_image,published,created_at,updated_at," +
   "photos.id,photos.sdr_image,photos.hdr_image,photos.published,photos.sort_order";
@@ -264,18 +269,6 @@ async function directusFetch<T>(
   return (await response.json()) as T;
 }
 
-export function assetUrl(
-  fileId: DirectusFileId,
-  preset?: AssetPreset,
-) {
-  if (!fileId) return null;
-  if (preset && !ASSET_PRESETS.has(preset)) {
-    throw new Error(`Unsupported asset preset: ${preset}`);
-  }
-  const suffix = preset ? `?key=${encodeURIComponent(preset)}` : "";
-  return `/api/assets/${fileId}${suffix}`;
-}
-
 export function albumPictureSources(
   photo: Pick<AlbumPhoto, "sdr_image" | "hdr_image" | "renditions">,
 ) {
@@ -286,6 +279,52 @@ export function albumPictureSources(
     hdr: assetUrl(photo.hdr_image),
     hlg: assetUrl(hlg?.file ?? null),
   };
+}
+
+async function attachSdrDimensions(albums: Album[]) {
+  const ids = [
+    ...new Set(
+      albums.flatMap((album) =>
+        (album.photos ?? []).map((photo) => photo.sdr_image),
+      ),
+    ),
+  ].filter((id): id is string => Boolean(id));
+  if (!ids.length) return albums;
+
+  const byId = new Map<string, ImageDimensions>();
+  // Fifty UUIDs keep each query around 2 KB and below typical proxy/header limits.
+  const batchSize = 50;
+  for (let offset = 0; offset < ids.length; offset += batchSize) {
+    const batch = ids.slice(offset, offset + batchSize);
+    const params = new URLSearchParams({
+      "filter[id][_in]": batch.join(","),
+      fields: "id,width,height",
+      limit: String(batch.length),
+    });
+    try {
+      const { data } = await directusFetch<{
+        data: Array<{ id: string; width: number | null; height: number | null }>;
+      }>(`/files?${params.toString()}`, false, ["albums:list"]);
+      for (const file of data) {
+        if (file.width && file.width > 0 && file.height && file.height > 0) {
+          byId.set(file.id, { width: file.width, height: file.height });
+        }
+      }
+    } catch (cause) {
+      // Keep successful batches and the gallery usable, while making lost dimensions observable.
+      console.warn(
+        `[albums] SDR dimensions batch ${offset / batchSize + 1} failed`,
+        cause,
+      );
+    }
+  }
+  return albums.map((album) => ({
+    ...album,
+    photos: (album.photos ?? []).map((photo) => ({
+      ...photo,
+      sdr_dimensions: (photo.sdr_image && byId.get(photo.sdr_image)) || null,
+    })),
+  }));
 }
 
 export function mediaUrl(pathname: string | null | undefined) {
@@ -411,7 +450,10 @@ export async function getAlbum(slug: string) {
     false,
     ["albums:list", `albums:slug:${slug}`],
   );
-  return filterPublishedAlbums(response.data)[0] ?? null;
+  const [album] = await attachSdrDimensions(
+    filterPublishedAlbums(response.data),
+  );
+  return album ?? null;
 }
 
 export type SiteSettings = {

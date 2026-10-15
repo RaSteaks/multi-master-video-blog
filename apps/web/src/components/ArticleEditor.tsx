@@ -356,6 +356,17 @@ export function ArticleEditor() {
   const [linkText, setLinkText] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const [linkError, setLinkError] = useState("");
+  // Phones have no room for side-by-side panes: start in "write" and never stay in split view there.
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 640px)");
+    const enforce = () => {
+      if (query.matches) setViewMode((mode) => (mode === "split" ? "write" : mode));
+    };
+    enforce();
+    query.addEventListener("change", enforce);
+    return () => query.removeEventListener("change", enforce);
+  }, []);
+
   const [phase, setPhase] = useState<SubmitPhase>("idle");
   const [message, setMessage] = useState("尚未保存");
   const [progress, setProgress] = useState(0);
@@ -1264,6 +1275,7 @@ export function ArticleEditor() {
                 <button
                   key={mode}
                   type="button"
+                  data-mode={mode}
                   className={viewMode === mode ? styles.activeView : undefined}
                   onClick={() => setViewMode(mode)}
                   aria-pressed={viewMode === mode}
@@ -1358,7 +1370,10 @@ export function ArticleEditor() {
                 <small>{deferredContent !== content ? "正在排版…" : "GFM"}</small>
               </div>
               <div className={styles.previewScroller}>
-                <ArticlePreview content={deferredContent} images={images} />
+                {/* CSS hiding alone still parses Markdown and creates image elements while typing. */}
+                {viewMode !== "write" ? (
+                  <ArticlePreview content={deferredContent} images={images} />
+                ) : null}
               </div>
             </div>
           </div>

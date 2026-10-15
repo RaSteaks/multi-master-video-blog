@@ -13,6 +13,20 @@ build/
 # Astro or other optional frontend caches
 .astro/
 
+# Tests, verification scripts, and sample fixtures are local-only deployment exclusions.
+/apps/api/test/
+/apps/web/**/*.test.*
+/apps/web/**/*.spec.*
+/scripts/test-*
+
+# Generated test reports and caches.
+coverage/
+.nyc_output/
+.vitest/
+playwright-report/
+blob-report/
+test-results/
+
 # Logs
 logs/
 *.log
@@ -32,6 +46,8 @@ apps/web/content/about.md
 !apps/web/content/about.example.md
 
 # Directus local state
+# Keep the standalone SQLite preview CMS, credentials, dependencies, and data local.
+/cms/
 apps/cms/directus/database/
 apps/cms/directus/uploads/
 apps/cms/directus/extensions/.cache/
@@ -62,6 +78,13 @@ Desktop.ini
 !.vscode/extensions.json
 !.vscode/settings.example.json
 .idea/
+
+# Local UI tool metadata; shared workflow specifications are maintained in docs/.
+/UX-CONTRACT.md
+/premium-ui.json
+
+# Generated UI audit reports are local verification output.
+/premium-audit*.json
 
 # Temporary files
 tmp/

@@ -46,6 +46,7 @@ export default async function VideosPage() {
               >
                 {cover ? (
                   <img
+                    data-vt="cover"
                     alt={`Cover image for ${video.title}`}
                     src={cover}
                     width={960}
@@ -64,7 +65,7 @@ export default async function VideosPage() {
                     {video.category || "Video"} · {masterCount} master
                     {masterCount !== 1 ? "s" : ""}
                   </p>
-                  <h2>{video.title}</h2>
+                  <h2 data-vt="title">{video.title}</h2>
                   <p>{video.description || "No description yet."}</p>
                 </div>
               </Link>

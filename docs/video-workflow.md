@@ -42,9 +42,9 @@ HDR color primaries may be:
 - `smpte432` -> `P3-D65(smpte432)`
 - `smpte431` -> `DCI-P3(smpte431)`
 
-HDR10 must include mastering display metadata and MaxCLL/MaxFALL. HLG must use `arib-std-b67`. Dolby Vision must retain embedded DOVI/RPU metadata or a trusted sidecar.
+HDR10 must include mastering display metadata and MaxCLL/MaxFALL. HLG must use `arib-std-b67`. Dolby Vision must contain an embedded configuration and actual decodable RPU; a sidecar alone is not a playable Dolby Vision master.
 
-The frontend player should default to SDR and let users manually switch to HDR-capable versions.
+The player automatically prefers a verified HDR master only when the display and exact codec/range configuration report support. Unknown or unsupported capability falls back to SDR. Manual choices take precedence over pending detection.
 
 The frontend player uses Shaka Player and only exposes masters with `verification_status=ready`.
 
@@ -66,19 +66,67 @@ For local FFmpeg/ffprobe reads, temporary playlists resolve local references wit
 
 Dolby Vision, HDR10, and HLG uploads must use `mode=copy` to avoid stripping or re-encoding color metadata. Prepackaged HLS uploads use `sourceKind=hls_package` and must include a multivariant playlist with `VIDEO-RANGE`.
 
-## Automatic Dolby Vision SDR Version
+## Paired Uploads and Automatic HDR SDR Version
 
-Every successful `masterType=dolby_vision` upload now also attempts to create an independent SDR master. The original Dolby Vision stream is copied and verified first; the SDR conversion never modifies it.
+Upload HDR with an optional matching SDR file to create two masters with one set of project information. From a video's page, choose "添加视频母版" / "补充 SDR 母版" to add a version later; the upload page also searches existing projects after authentication. Adding a master preserves project information and the existing default unless explicitly changed.
 
-- Profile 8.4 uses its HLG base layer; PQ-compatible sources such as Profile 8.1 use their PQ base layer. FFmpeg `zscale` linearizes the HDR signal, `tonemap` maps highlights, and the output is converted to BT.709 limited-range 8-bit H.264 with AAC audio. This CPU path does not apply Dolby Vision RPU metadata.
-- Sources without a compatible HLG/PQ base layer, including Profile 5, require embedded RPU metadata and an FFmpeg build with `libplacebo` and a working Vulkan device. That path applies the embedded Dolby Vision metadata.
+Only new-project HDR10, HLG and Dolby Vision uploads without a supplied SDR attempt automatic SDR conversion. The original HDR stream is copied and verified first; conversion never modifies it. A supplied SDR is kept as a manual master and suppresses automatic conversion.
+
+- All HDR derivatives use `libplacebo` with Vulkan, `peak_detect=true`, `tonemapping=bt.2390`, and `gamut_mode=perceptual`. Peak analysis uses a 20-frame smoothing period with scene-cut thresholds 1/3. Output is BT.709 limited-range 8-bit H.264/AAC; wide-gamut colors are compressed rather than individually clipped. Missing filter/device support fails the derivative and preserves the original; there is no silent fixed-Hable fallback.
+- Verified single-layer Dolby Vision Profiles 5 and 8.1/8.4 apply embedded RPU via `apply_dolbyvision=true`. Enhancement-layer/FEL reconstruction and sidecar injection are not supported: those sources must be exported as a supported single-layer delivery master first. This is an adaptive web rendition, not Dolby reference-renderer/trim certification.
 - The SDR MP4 and fMP4 HLS are stored in their own versioned directory under `media/<slug>/sdr/`. The generated record has `is_derivative=true`, `derived_from_master_id`, and the conversion filter and intent. Its file URL points to the SDR MP4, while its source probe/hash identify the original master.
 - Both the converted MP4 and packaged HLS must pass SDR color checks before registration. The original color-preservation gate remains strict; intentional conversion is recorded separately in `color-verification.json`.
-- `isDefault=true` makes the generated SDR the default once it is ready. Otherwise an existing default is preserved; if no default exists, the SDR becomes the default. Manually uploaded SDR records are never overwritten by automatic derivatives. With `overwrite=true`, replacing a Dolby Vision master updates its paired automatic SDR record, even if the label changes.
+- `isDefault=true` makes an automatically generated SDR the default once it is ready. For paired uploads it applies to the primary HDR master; the supplied SDR is added without changing that default. Later additions default to preserving the existing default. Manually uploaded SDR records are never overwritten by automatic derivatives.
 - The upload waits for SDR processing. The form distinguishes file upload from server processing and reports success or partial failure. `VIDEO_SDR_PROCESS_TIMEOUT_MS` bounds encoding (default one hour); proxy timeouts must allow the full upload and processing duration.
 
 The player exposes both verified masters. Manual switches preserve playback position and whether playback was active. If Dolby Vision fails to load or decode, the player automatically selects its paired verified SDR, or another verified SDR if needed. SDR failure stops with a retry action; it cannot loop back to HDR.
 
-If SDR encoding or verification fails, the original Dolby Vision remains saved and playable. The upload response includes `sdrDerivative.status=failed` and an error, and no unverified SDR record is published. Fix the reported issue and upload again with `overwrite=true` to retry. Existing uploads are not retroactively converted.
+If automatic SDR encoding or verification fails, the original HDR remains saved and playable. The upload response includes `sdrDerivative.status=failed` and an error, and no unverified SDR record is published. Add a manually prepared SDR to that project to recover. A supplied SDR that fails after HDR registration instead reports `companionSdr.status=failed`. Existing projects are not automatically retried or retroactively converted.
 
 When an overwrite changes the source hash, the previous automatic SDR is quarantined until regenerated, so playback cannot silently fall back to an older edit.
+
+## Verification contracts
+
+Copy/remux compares dimensions, codec, pixel format, bit depth, primaries, transfer,
+matrix, range, chroma location and static HDR metadata values. Dolby verification
+requires a supported embedded configuration, decoded frame metadata and actual
+RPU NAL payloads. The entire HEVC stream is scanned with bounded memory; RPU count
+and SHA-256 must survive packaging unchanged. Each copied video variant is checked.
+Frame metadata sampling covers the first 32 packets; RPU hashing covers the full
+stream. Sidecar profiles never replace missing stream evidence.
+
+SDR transcoding validates tagged SDR input separately from its BT.709/H.264/8-bit
+output target. `zscale` explicitly converts range, matrix, transfer and primaries
+in floating point with dithering. Intentional codec/depth changes are permitted;
+HDR input must use the HDR upload route rather than being retagged SDR.
+Wide-gamut SDR (P3/BT.2020 primaries) uses libplacebo perceptual gamut mapping
+without HDR peak detection or inverse tone mapping, instead of clipping via a matrix.
+
+## Automatic playback selection
+
+The display's HDR media query is only a prerequisite, not proof of decoding.
+The player reads each candidate HLS variant's exact CODECS (Dolby supplemental
+codec where present), VIDEO-RANGE, resolution, frame rate and bandwidth, then
+queries MediaCapabilities with gamut and transfer. Native HLS uses `file` checks;
+MSE uses `media-source` checks. Unsupported/unknown/unsmooth results or a five-second
+selection deadline fall back to verified SDR. Among supported HDR masters, the
+explicit HDR default is preferred, followed by Dolby Vision, HDR10 and HLG.
+A pending probe cannot override manual selection. Fatal playback errors retain the
+paired SDR fallback; an SDR error never loops back to HDR. Reported capability is
+not a measurement of monitor calibration, actual luminance or visual fidelity.
+
+## Local verification (2026-10-14)
+
+- API: 122 tests passed, including real Vulkan/libplacebo pixel tests, single-layer
+  Profile 5/8 synthetic RPU fixtures, remux hash equality, stripped-RPU rejection,
+  static metadata changes, and an independently calculated BT.601-to-BT.709 red patch.
+  A subsequent wide-gamut SDR regression also passed, with the two related SDR
+  conversion tests rerun after that addition.
+- Web: 118 tests passed; TypeScript and production build passed with a disposable CMS.
+- Browser: an isolated instance of the actual player confirmed automatic HLG selection
+  and that a delayed affirmative HDR capability response cannot override manual SDR.
+  Capability responses were controlled test inputs; this does not certify a display.
+- GPU execution used local FFmpeg 9.0.2/libplacebo 7.360.1 with MoltenVK on Apple M3 Max.
+  Windows was not deployed or modified. Its FFmpeg 8.1.1/Vulkan smoke test was supplied
+  separately by the user; service-account and calibrated-display acceptance remain
+  deployment checks. Existing unrelated UI static-audit findings were not refactored.

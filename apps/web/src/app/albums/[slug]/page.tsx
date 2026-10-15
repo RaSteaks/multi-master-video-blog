@@ -5,6 +5,7 @@ import {
 } from "@/components/AlbumGallery";
 import {
   albumPictureSources,
+  albumThumbSrcSet,
   assetUrl,
   getAlbum,
 } from "@/lib/directus";
@@ -57,6 +58,12 @@ export default async function AlbumPage({ params }: AlbumPageProps) {
           photo.renditions?.find((rendition) => rendition.kind === "hlg")?.file ??
           null,
         thumbnailUrl: sources.thumbnail,
+        thumbnailSrcSet: albumThumbSrcSet(
+          photo.sdr_image,
+          photo.sdr_dimensions,
+        ),
+        width: photo.sdr_dimensions?.width ?? null,
+        height: photo.sdr_dimensions?.height ?? null,
         sdrUrl: sources.sdr,
         hdrUrl: sources.hdr,
         hlgUrl: sources.hlg,

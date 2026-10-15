@@ -2,6 +2,9 @@ export type ManagedPhoto = {
   id: number;
   albumId: number;
   sdrImage: string;
+  /** Directus supplies the display dimensions after accounting for EXIF orientation. */
+  width: number | null;
+  height: number | null;
   hdrImage: string | null;
   caption: string;
   altText: string;

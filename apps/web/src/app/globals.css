@@ -181,6 +181,7 @@ a {
 :is(
   .site-header nav a,
   .master-button,
+  .master-add,
   .info-toggle,
   .info-close,
   .retry-button,
@@ -208,16 +209,8 @@ a {
     scroll-behavior: auto !important;
   }
 
-  html.route-transition-pending
-    .page-transition[data-animate-route="true"]
-    > :not(.liquid-bg):not(.site-bg),
-  .page-transition[data-animate-route="true"]
-    > :not(.liquid-bg):not(.site-bg) {
-    opacity: 1 !important;
-    filter: none !important;
-    translate: none !important;
-    transform: none !important;
-    animation: none !important;
+  .route-veil {
+    display: none !important;
   }
 
   html.route-transition-pending body::after {
@@ -357,12 +350,14 @@ body:has(.orbital-home) .orbital-home {
 }
 
 .site-header nav {
+  position: relative;
   display: flex;
   gap: 4px;
 }
 
 .site-header nav a {
   position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -375,27 +370,31 @@ body:has(.orbital-home) .orbital-home {
   transition: color var(--transition-fast), background var(--transition-fast);
 }
 
-/* Animated active-page underline */
-.site-header nav a::after {
-  content: "";
+/* Sliding active-page pill. Positioned by NavBar via --pill-x / --pill-w and
+   animated only after the first placement (data-ready) so it never flies in
+   from the left edge on load. */
+.site-header nav .nav-pill {
   position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 3px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent-base);
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--pill-w, 0);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
   opacity: 0;
-  transform: scaleX(0);
-  transform-origin: 50% 50%;
-  transition:
-    transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 200ms ease;
+  pointer-events: none;
+  transform: translateX(var(--pill-x, 0));
 }
 
-.site-header nav a[aria-current="page"]::after {
+.site-header nav .nav-pill[data-visible="true"] {
   opacity: 1;
-  transform: scaleX(1);
+}
+
+.site-header nav .nav-pill[data-ready="true"] {
+  transition:
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease;
 }
 
 .site-header nav a:hover {
@@ -408,9 +407,9 @@ body:has(.orbital-home) .orbital-home {
   background: var(--accent-soft);
 }
 
-.site-header nav a[aria-current="page"] {
+/* The pill supplies the active background; the link only changes colour. */
+.site-header nav a[data-active="true"] {
   color: var(--text);
-  background: var(--surface-raised);
 }
 
 /* ---- Route transitions ---- */
@@ -442,42 +441,81 @@ html.route-transition-pending body::after {
   animation: route-progress 1.8s cubic-bezier(.16, 1, .3, 1) forwards;
 }
 
-/* Animate one page surface instead of every nested card. `backwards` keeps
-   the entry frame for any delay, then releases the compositor layer. */
-.page-transition[data-animate-route="true"]
-  > :not(.liquid-bg):not(.site-bg) {
-  animation: route-frame-enter 220ms cubic-bezier(.22, 1, .36, 1) backwards;
+/* Enter transition: a theme-coloured veil above the page fades out (played by
+   PageTransition via the Web Animations API once the real content is on
+   screen, not while a loading skeleton is). Animating the page surface itself
+   (opacity/translate) is deliberately avoided: it makes the surface a
+   backdrop root, so every `backdrop-filter` glass panel inside loses its blur
+   until the animation ends and then pops in, and it re-parents
+   `position: fixed` descendants (they jump at the end). The veil is a sibling
+   layer, so page content is never composited differently. It is invisible
+   and non-interactive outside the animation. The loading hint (progress bar)
+   is separate and never moves the page. */
+.route-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  background: color-mix(in srgb, var(--background) 50%, transparent);
+  opacity: 0;
+  pointer-events: none;
 }
 
-.page-transition[data-animate-route="true"] > .liquid-bg {
-  animation: route-background-enter 180ms ease-out backwards;
+/* View transitions (PageTransition wraps link navigations in
+   document.startViewTransition where supported; the veil above is the
+   fallback). The animation runs on root pseudo-elements, so page content and
+   its backdrop-filter panels are never composited differently. */
+.site-header {
+  view-transition-name: site-header;
 }
 
-html.route-transition-pending
-  .page-transition[data-animate-route="true"]
-  > :not(.liquid-bg):not(.site-bg) {
-  opacity: 0.9;
-  translate: 0 -3px;
-  transition:
-    opacity 110ms ease,
-    translate 150ms cubic-bezier(.22, 1, .36, 1);
+/* The header persists across routes: show it as-is (live) instead of
+   cross-fading it with itself, so the nav pill slide stays visible. */
+::view-transition-group(site-header),
+::view-transition-new(site-header) {
+  animation: none;
 }
 
-@keyframes route-frame-enter {
-  from {
-    opacity: 0.42;
-    translate: 0 7px;
-  }
+/* Hide the old header only once the new one exists. An animation on a
+   view-transition pseudo-element starts when the transition is ready (new
+   state captured); `display: none` instead would blank the header for the
+   whole wait before that. */
+::view-transition-old(site-header) {
+  animation: vt-hide 1ms both;
+}
 
+@keyframes vt-hide {
   to {
-    opacity: 1;
-    translate: 0 0;
+    opacity: 0;
   }
 }
 
-@keyframes route-background-enter {
-  from { opacity: 0.72; }
-  to { opacity: 1; }
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 320ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Shared cover/title morph ("Morph"-style): the group interpolates position
+   and size between the card and the detail page. */
+::view-transition-group(vt-cover),
+::view-transition-group(vt-title) {
+  animation-duration: 420ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(vt-cover),
+::view-transition-new(vt-cover) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }
 
 @keyframes route-progress {
@@ -485,38 +523,6 @@ html.route-transition-pending
   55% { transform: scaleX(.7); }
   to { transform: scaleX(.92); }
 }
-
-/* ---- Staggered section reveal ----
-   Page sections rise in one after another. Uses the standalone `translate`
-   property so it never fights `transform`-based hover/layout effects. */
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > *,
-.page-transition[data-animate-route="true"] .orbital-stage > *:not(.home-action-row),
-.page-transition[data-animate-route="true"] .home-action-row > * {
-  animation: route-item-enter 240ms cubic-bezier(.22, 1, .36, 1) backwards;
-}
-
-@keyframes route-item-enter {
-  from {
-    opacity: 0.68;
-    translate: 0 5px;
-  }
-
-  to {
-    opacity: 1;
-    translate: 0 0;
-  }
-}
-
-/* Section-level cascade */
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(2) { animation-delay: 32ms; }
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(3) { animation-delay: 64ms; }
-.page-transition[data-animate-route="true"] :is(.page-stack, .article-shell) > :nth-child(n + 4) { animation-delay: 96ms; }
-
-/* Home widget cascade: hub → collection → action pills */
-.page-transition[data-animate-route="true"] .orbital-stage > :nth-child(1) { animation-delay: 0ms; }
-.page-transition[data-animate-route="true"] .orbital-stage > :nth-child(2) { animation-delay: 32ms; }
-.page-transition[data-animate-route="true"] .home-action-row > :nth-child(1) { animation-delay: 64ms; }
-.page-transition[data-animate-route="true"] .home-action-row > :nth-child(n + 2) { animation-delay: 96ms; }
 
 /* ---- Shell ---- */
 .shell {
@@ -531,6 +537,88 @@ html.route-transition-pending
 .page-stack {
   display: grid;
   gap: 56px;
+}
+
+/* ---- Back link: detail page -> its list ---- */
+.back-link {
+  position: absolute;
+  top: 18px;
+  left: 0;
+  z-index: 2;
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(12, 14, 16, 0.5);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  padding: 0 14px 0 11px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.back-link svg {
+  transition: translate var(--transition-fast);
+}
+
+.back-link:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(12, 14, 16, 0.72);
+  color: var(--text);
+}
+
+.back-link:hover svg {
+  translate: -2px 0;
+}
+
+.back-link:active {
+  scale: 0.97;
+}
+
+.back-link:focus-visible {
+  outline: 2px solid var(--accent-readable, var(--accent));
+  outline-offset: 3px;
+}
+
+/* Wide screens: move the button into the empty left gutter beside the content. */
+@media (min-width: 1400px) {
+  .back-link {
+    left: auto;
+    right: calc(100% + 20px);
+  }
+}
+
+/* No gutter: reserve a row above the content so the button never overlaps the TOC or lists.
+   :has() outranks the later .shell padding overrides, so every breakpoint is restated here. */
+@media (max-width: 1399px) {
+  .shell:has(> .back-link) {
+    padding-top: 86px;
+  }
+}
+
+@media (max-width: 960px) {
+  .shell:has(> .back-link) {
+    padding-top: 74px;
+  }
+}
+
+@media (max-width: 640px) {
+  .shell:has(> .back-link) {
+    padding-top: 62px;
+  }
+
+  .back-link {
+    top: 12px;
+  }
 }
 
 /* ---- Page Header ---- */
@@ -598,18 +686,24 @@ html.route-transition-pending
   outline-offset: 4px;
 }
 
-/* ---- Video title (two-column header) ---- */
+/* ---- Video title (single reading column: title → description → meta/action) ---- */
 .video-title {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.55fr);
-  gap: 36px;
-  max-width: none;
-  align-items: end;
+  max-width: 880px;
 }
 
-/* Tighten gap between video header and meta-line (offsets page-stack gap) */
-.video-title + .meta-line {
-  margin-top: -36px;
+.video-title h1 {
+  margin-bottom: 18px;
+  font-size: clamp(2.2rem, 5vw, 3.75rem);
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.video-title .summary {
+  max-width: 62ch;
+}
+
+.video-title .meta-line {
+  margin: 28px 0 0;
 }
 
 /* ---- Article shell ---- */
@@ -1135,6 +1229,8 @@ h3 {
 
 /* Panel opens upward from the floating button */
 .bg-control-floating .bg-control-panel {
+  /* Opens upward from the bottom-right button (20px + 44px + 10px gap). */
+  max-height: calc(100dvh - 100px);
   top: auto;
   bottom: calc(100% + 10px);
   transform-origin: right bottom;
@@ -1151,9 +1247,15 @@ h3 {
   right: 0;
   z-index: 60;
   display: grid;
+  /* Content stays top-aligned while the height morph runs; the default
+     (stretch) would spread the grid rows apart whenever the animated height
+     exceeds the content height. */
+  align-content: start;
   gap: 12px;
   width: 352px;
-  max-height: min(680px, calc(100dvh - 84px));
+  /* Bounded by the viewport only: a tall window shows the whole panel
+     (no fixed cap), a short one scrolls it. */
+  max-height: calc(100dvh - 88px);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1202,6 +1304,37 @@ h3 {
     scale var(--transition-base),
     translate var(--transition-base),
     visibility 0s 0s;
+  /* Circular reveal from the toggle's centre (--reveal-* set by
+     AppearanceControl). No fill-mode: once finished the clip is removed, so
+     the box-shadow is not cut off. */
+  animation: bg-panel-reveal 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.bg-control-panel.closing {
+  pointer-events: none;
+  animation: bg-panel-conceal 300ms cubic-bezier(0.55, 0, 0.7, 0.2) forwards;
+}
+
+@keyframes bg-panel-reveal {
+  from {
+    clip-path: circle(0 at var(--reveal-x, 100%) var(--reveal-y, 0));
+    opacity: 0.6;
+  }
+  to {
+    clip-path: circle(var(--reveal-r, 900px) at var(--reveal-x, 100%) var(--reveal-y, 0));
+    opacity: 1;
+  }
+}
+
+@keyframes bg-panel-conceal {
+  from {
+    clip-path: circle(var(--reveal-r, 900px) at var(--reveal-x, 100%) var(--reveal-y, 0));
+    opacity: 1;
+  }
+  to {
+    clip-path: circle(0 at var(--reveal-x, 100%) var(--reveal-y, 0));
+    opacity: 0.6;
+  }
 }
 
 .appearance-panel-header {
@@ -1273,6 +1406,46 @@ h3 {
   outline-offset: 2px;
 }
 
+/* Segmented controls (panel tabs, colour picker tabs, background mode): one
+   pill slides between the two options, like the navigation pill. --i (0/1)
+   is set inline; --seg-w is one segment's width (2 columns, 3px padding,
+   2px gap, 1px border excluded from the padding box). */
+.appearance-panel-tabs,
+.theme-editor-tabs,
+.bg-control-modes {
+  --seg-w: calc((100% - 8px) / 2);
+  --seg-x: calc(3px + var(--i, 0) * (var(--seg-w) + 2px));
+  position: relative;
+}
+
+.appearance-panel-tabs::before,
+.theme-editor-tabs::before,
+.bg-control-modes::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: var(--seg-x);
+  width: var(--seg-w);
+  pointer-events: none;
+  transition: left 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.appearance-panel-tabs button,
+.theme-editor-tabs button,
+.bg-control-modes button {
+  position: relative;
+  z-index: 1;
+}
+
+/* Same pill as the navigation bar. */
+.appearance-panel-tabs::before,
+.theme-editor-tabs::before,
+.bg-control-modes::before {
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+
 .appearance-panel-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1299,28 +1472,18 @@ h3 {
     color var(--transition-fast);
 }
 
-.appearance-panel-tabs button:hover {
+.appearance-panel-tabs button:hover:not(.active) {
   background: var(--surface-overlay);
   color: var(--text-secondary);
 }
 
 .appearance-panel-tabs button.active {
-  background: rgba(255, 255, 255, 0.07);
   color: var(--text);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 3px 8px rgba(0, 0, 0, 0.16);
 }
 
-.appearance-panel-tabs button.active::after {
-  content: "";
-  position: absolute;
-  right: 32%;
-  bottom: 3px;
-  left: 32%;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent-readable);
+.appearance-panel-tabs button:active,
+.theme-editor-tabs button:active {
+  scale: 0.97;
 }
 
 .appearance-panel-tabs button:focus-visible {
@@ -1370,8 +1533,7 @@ h3 {
 }
 
 .bg-control-modes button.active {
-  background: var(--accent-base);
-  color: var(--on-accent);
+  color: var(--text);
 }
 
 .bg-control-modes button:active {
@@ -1660,16 +1822,49 @@ h3 {
     color var(--transition-fast);
 }
 
-.theme-editor-tabs button:hover {
+.theme-editor-tabs button:hover:not(.active) {
   background: var(--surface-overlay);
   color: var(--text);
 }
 
 .theme-editor-tabs button.active {
-  background:
-    linear-gradient(180deg, rgb(var(--accent-rgb) / 0.16), rgb(var(--accent-rgb) / 0.08));
-  color: var(--accent-readable);
-  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.36);
+  color: var(--text);
+}
+
+/* Content swaps inside the panel: the incoming section fades and rises in
+   (same easing as page transitions); the panel's height morphs in JS. */
+.appearance-swap {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Content swaps inside the panel are cross-faded by the view transition (see
+   runPanelTransition); there is deliberately no CSS entrance animation here —
+   toggling one off during the transition would restart it when it ends. */
+
+/* Panel-scoped view transition: only the panel animates. The page root keeps
+   rendering live (old snapshot hidden, no cross-fade), the header keeps its
+   own name, and the panel group morphs size while clipping its images. */
+html.vt-panel::view-transition-old(root) {
+  animation: vt-hide 1ms both;
+}
+
+html.vt-panel::view-transition-new(root) {
+  animation: none;
+}
+
+::view-transition-group(appearance-panel) {
+  overflow: clip;
+  border-radius: 16px;
+  animation-duration: 340ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(appearance-panel),
+::view-transition-new(appearance-panel) {
+  animation-duration: 340ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .color-checker-picker {
@@ -2848,6 +3043,67 @@ h3 {
   background: #000;
 }
 
+/* Paired and follow-up uploads reuse the existing form rhythm and native controls. */
+.upload-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.upload-project-picker {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.upload-source-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.upload-source-file span {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.upload-source-file button {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.upload-source-file button:hover:not(:disabled),
+.upload-source-file button:focus-visible {
+  color: var(--text);
+  border-color: var(--text-secondary);
+}
+
+.upload-source-file button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.upload-form .field-note {
+  margin: 8px 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.file-drop-zone:focus-within {
+  outline: 2px solid var(--text-secondary);
+  outline-offset: 2px;
+}
+
 /* ---- Controls row ---- */
 .player-controls-row {
   display: grid;
@@ -2885,6 +3141,37 @@ h3 {
     border-color var(--transition-fast),
     background var(--transition-fast),
     color var(--transition-fast);
+}
+
+/* Add-master affordance: a quiet dashed slot at the end of the switcher */
+.master-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  border: 1px dashed var(--line-light);
+  border-radius: var(--radius);
+  background: transparent;
+  padding: 8px 14px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.master-add:hover {
+  border-color: var(--neutral-ref);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.master-add:focus-visible {
+  border-color: var(--neutral-ref);
+  box-shadow: 0 0 0 3px var(--neutral-ref-glow);
 }
 
 .master-button:hover {
@@ -3188,6 +3475,7 @@ h3 {
 }
 
 .source-mode {
+  position: relative;
   display: grid;
   gap: 6px;
   min-height: 108px;
@@ -3207,10 +3495,14 @@ h3 {
     box-shadow var(--transition-fast);
 }
 
-.source-mode input {
+/* Keep the keyboard-accessible radio inside its card despite generic input sizing. */
+.upload-form .source-mode input {
   position: absolute;
   width: 1px;
   height: 1px;
+  padding: 0;
+  border: 0;
+  clip-path: inset(50%);
   opacity: 0;
 }
 
@@ -3300,6 +3592,104 @@ h3 {
 
 .upload-form textarea {
   resize: vertical;
+}
+
+/* ---- Slug field: input + generate action, live URL preview, rules ---- */
+.slug-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.upload-form .slug-field > label {
+  display: block;
+}
+
+.slug-input {
+  display: flex;
+  gap: 8px;
+}
+
+.slug-input input {
+  flex: 1;
+  font-family: var(--font-mono);
+}
+
+.slug-input button {
+  min-height: 42px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0 16px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.84rem;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.slug-input button:hover {
+  border-color: var(--line-light);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.slug-input button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.slug-preview,
+.slug-rules,
+.slug-error {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.slug-preview {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.slug-preview code {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.slug-preview strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.slug-error {
+  color: var(--danger);
+}
+
+.slug-rules {
+  border-left: 2px solid var(--line);
+  padding-left: 12px;
+  color: var(--text-secondary);
+}
+
+.slug-rules p {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.slug-rules ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.slug-rules .slug-example {
+  font-family: var(--font-mono);
+  font-weight: 400;
 }
 
 .upload-form input[type="file"] {
@@ -3755,6 +4145,12 @@ h3 {
 }
 
 
+/* Transparent wrapper: the tablet/mobile grid and flex layouts treat the hub
+   and collection card as direct children of .orbital-stage. */
+.orbital-canvas {
+  display: contents;
+}
+
 .profile-hub {
   position: relative;
   z-index: 2;
@@ -4132,20 +4528,60 @@ h3 {
   color: var(--text);
 }
 
-/* Desktop action dock: one centered rhythm instead of five unrelated offsets. */
+/* Desktop: the stage stacks a positioning canvas (profile card + collection
+   card) above the action dock in normal flow. The canvas has a minimum height
+   but grows with the profile card, so a wrapped name or longer bio pushes the
+   dock down instead of sliding underneath it. */
 @media (min-width: 1201px) {
+  .orbital-stage {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .orbital-canvas {
+    position: relative;
+    display: grid;
+    width: 100%;
+    min-height: var(--home-stage-height, clamp(520px, 66dvh, 640px));
+    place-items: center;
+  }
+
+  /* The profile card is centred by the canvas grid and sizes to its content.
+     Its configured x/y/dx/dy anchor is intentionally not used here, because a
+     fixed anchor is what let tall content run into the dock. */
+  .orbital-canvas > .profile-hub.home-free-widget {
+    --motion-x: 0px;
+    --motion-y: 0px;
+    grid-column: 1;
+    grid-row: 1;
+    position: relative;
+    left: auto;
+    top: auto;
+    align-self: center;
+    justify-self: center;
+    margin: 0;
+  }
+
+  /* Absolutely positioned: clear the legacy grid lines so its containing block
+     is the canvas itself rather than a stray grid area. */
+  .orbital-canvas > .orbit-collection {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
   .home-action-row {
-    position: absolute;
-    left: 50%;
-    top: 80%;
+    position: relative;
     z-index: 2;
     display: grid;
     width: max-content;
+    max-width: 100%;
+    margin-top: clamp(20px, 4dvh, 44px);
     grid-template-columns: repeat(5, 140px);
     align-items: center;
     justify-content: center;
     gap: clamp(10px, 1.25vw, 18px);
-    transform: translateX(-50%);
   }
 
   .home-action-row > .home-free-widget {
@@ -4668,11 +5104,6 @@ h3 {
 
   .upload-source-grid {
     grid-template-columns: 1fr;
-  }
-
-  .video-title {
-    grid-template-columns: 1fr;
-    gap: 16px;
   }
 
   .article-content-grid {
@@ -5787,6 +6218,32 @@ h3 {
   gap: 18px;
 }
 
+.album-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.album-photo-uploader {
+  display: grid;
+  gap: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 18px;
+}
+
+.album-photo-uploader-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.album-photo-uploader-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
 .album-detail-stats {
   display: flex;
   overflow: hidden;
@@ -5876,21 +6333,20 @@ h3 {
 }
 
 .album-photo-grid {
+  --album-grid-gap: clamp(14px, 2vw, 22px);
+  /* Row order matches the number badges, keyboard focus, lightbox and first three eager images. */
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: clamp(14px, 2vw, 22px);
+  gap: var(--album-grid-gap);
   align-items: start;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .album-photo-grid > li {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 420px;
-}
-
-.album-photo-grid > li.is-featured {
-  grid-column: span 2;
+  /* Use the image's width/height reservation; a generic skipped-content height shifts later rows. */
+  min-width: 0;
 }
 
 .album-photo-tile {
@@ -5930,16 +6386,15 @@ h3 {
 }
 
 .album-photo-open img {
+  display: block;
   width: 100%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
+  height: auto;
+  /* `auto` uses the width/height attributes' ratio when dimensions are known;
+     otherwise reserve a portrait-ish frame so lazy images don't collapse to 0. */
+  aspect-ratio: auto 4 / 5;
   transition:
     scale 650ms cubic-bezier(0.22, 1, 0.36, 1),
     filter 220ms ease;
-}
-
-.album-photo-grid > li.is-featured .album-photo-open img {
-  aspect-ratio: 16 / 9;
 }
 
 .album-photo-open:hover img {
@@ -6148,13 +6603,106 @@ h3 {
   display: grid;
   width: 100%;
   height: 100%;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
   padding:
     max(14px, env(safe-area-inset-top))
     max(16px, env(safe-area-inset-right))
     max(14px, env(safe-area-inset-bottom))
     max(16px, env(safe-area-inset-left));
+}
+
+.album-lightbox-stage.has-rail {
+  grid-template-columns: 112px minmax(0, 1fr);
+}
+
+.album-lightbox-main {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+/* ---- Photo rail: top-to-bottom previews for quick switching ---- */
+.album-lightbox-rail {
+  min-height: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 86%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 86%, transparent);
+}
+
+/* The whole column slides (JS sets translate) so the active thumbnail stays centered. */
+.album-lightbox-rail ol {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  will-change: transform;
+}
+
+.album-lightbox-rail ol.is-animated {
+  transition: transform 560ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .album-lightbox-rail ol.is-animated {
+    transition: none;
+  }
+}
+
+.album-rail-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: #000;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.58;
+  transition:
+    opacity var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.album-rail-thumb img {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 48px;
+}
+
+.album-rail-thumb > span {
+  position: absolute;
+  left: 5px;
+  bottom: 4px;
+  border-radius: 3px;
+  background: rgba(3, 4, 5, 0.72);
+  padding: 1px 5px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+}
+
+.album-rail-thumb:hover,
+.album-rail-thumb:focus-visible {
+  border-color: rgba(255, 255, 255, 0.34);
+  opacity: 0.92;
+}
+
+.album-rail-thumb.active {
+  border-color: rgba(215, 160, 82, 0.85);
+  box-shadow: 0 0 0 1px rgba(215, 160, 82, 0.5);
+  opacity: 1;
+}
+
+.album-rail-thumb.is-draft img {
+  filter: grayscale(0.6);
 }
 
 .album-lightbox-toolbar {
@@ -6278,7 +6826,7 @@ h3 {
 
 .album-lightbox picture img {
   width: auto;
-  max-width: min(92vw, 1680px);
+  max-width: min(calc(100vw - 176px), 1680px);
   height: auto;
   max-height: calc(100dvh - 166px);
   object-fit: contain;
@@ -6293,7 +6841,7 @@ h3 {
 
 .album-lightbox figcaption {
   display: flex;
-  width: min(920px, 92vw);
+  width: min(920px, calc(100vw - 176px));
   align-items: baseline;
   justify-content: space-between;
   gap: 22px;
@@ -6544,14 +7092,6 @@ h3 {
     grid-template-columns: 1fr;
   }
 
-  .album-photo-grid > li.is-featured {
-    grid-column: span 1;
-  }
-
-  .album-photo-grid > li.is-featured .album-photo-open img {
-    aspect-ratio: 4 / 3;
-  }
-
   .album-photo-controls {
     grid-template-columns: auto 1fr 1fr;
   }
@@ -6577,6 +7117,25 @@ h3 {
     gap: 8px;
   }
 
+  .album-lightbox-stage.has-rail {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .album-lightbox-rail {
+    grid-row: 2;
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
+    mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
+  }
+
+  .album-lightbox-rail ol {
+    display: flex;
+  }
+
+  .album-lightbox-rail li {
+    flex: 0 0 72px;
+  }
+
   .album-lightbox-toolbar {
     grid-template-columns: 1fr auto;
   }
@@ -6600,7 +7159,7 @@ h3 {
 
   .album-lightbox picture img {
     max-width: calc(100vw - 20px);
-    max-height: calc(100dvh - 230px);
+    max-height: calc(100dvh - 310px);
   }
 
   .album-lightbox figcaption {
@@ -7566,4 +8125,340 @@ h3 {
   .film-roll-actions { grid-template-columns: 1fr; }
   .film-roll-actions .film-live-state { grid-column: auto; }
   .film-commit-bar { position: static; }
+}
+
+/* ==========================================================================
+   Responsive hardening
+   - long unbroken strings (URLs, identifiers, CJK-free slugs) must wrap, never widen the page
+   - embedded frames never exceed their container
+   - touch devices get >= 40px tap targets on small text links / controls
+   - the floating appearance button never sits on top of the last home-page row
+   ========================================================================== */
+h1,
+h2,
+h3,
+h4,
+.eyebrow,
+.summary,
+.meta-line,
+.master-button-label,
+.markdown-body {
+  overflow-wrap: anywhere;
+}
+
+.master-button,
+.master-button-label {
+  min-width: 0;
+  max-width: 100%;
+}
+
+iframe,
+embed,
+object {
+  max-width: 100%;
+}
+
+@media (pointer: coarse) {
+  .brand,
+  .album-back-link,
+  .back-link {
+    display: inline-flex;
+    min-height: 40px;
+    align-items: center;
+  }
+
+  .article-toc a {
+    display: flex;
+    min-height: 40px;
+    align-items: center;
+  }
+
+  .upload-form button {
+    min-height: 40px;
+  }
+}
+
+@media (max-width: 1200px) {
+  .orbital-home {
+    padding-bottom: calc(76px + env(safe-area-inset-bottom));
+  }
+}
+
+/* ==========================================================================
+   Mobile type scale (<= 640px). Desktop sizes are untouched.
+   decorative labels 11-12px - secondary info 12-12.5px - hints and validation 13px
+   (body copy and inputs are >= 16px; see the pointer: coarse input rule above).
+   Dense desktop-oriented tooling (.film-*, .color-*, .theme-*) is intentionally excluded.
+   ========================================================================== */
+@media (max-width: 640px) {
+  .appearance-panel-header span,
+  .appearance-source,
+  .liquid-slot-actions button,
+  .liquid-save-feedback button,
+  .gaussian-splat-format,
+  .gaussian-splat-toolbar > span,
+  .gaussian-splat-embed figcaption,
+  .album-hdr-badge,
+  .album-photo-range,
+  .album-photo-draft,
+  .album-pair-preview > span,
+  .album-detail-stats dt,
+  .album-photo-number,
+  .album-photo-caption > span,
+  .album-manual-hdr > header > span,
+  .album-rail-thumb > span,
+  .album-version-button small,
+  .album-lightbox figcaption small {
+    font-size: 11px;
+  }
+
+  .bg-control-title,
+  .bg-control-header label,
+  .bg-control-note,
+  .bg-control-reset,
+  .appearance-section-heading .bg-control-reset,
+  .liquid-swatch,
+  .liquid-save-feedback,
+  .hsv-number-grid label > span,
+  .hsv-hex-output > span,
+  .gaussian-splat-launch-copy small,
+  .gaussian-splat-toolbar button,
+  .gaussian-splat-loading small,
+  .gaussian-splat-error > small,
+  .gaussian-splat-config-error small,
+  .master-button small,
+  .tech-grid dt,
+  .capability-grid dt,
+  .orbit-eyebrow,
+  .album-frame-index,
+  .album-drop-zone > small,
+  .album-pairing > header > small,
+  .album-pair-copy small,
+  .album-photo-controls button,
+  .album-manual-hdr-actions > span,
+  .album-lightbox-toolbar {
+    font-size: 12px;
+  }
+
+  .eyebrow,
+  .meta-line,
+  .list-panel span,
+  .appearance-panel-tabs button,
+  .bg-control-modes button,
+  .bg-control-header span,
+  .liquid-color-heading,
+  .liquid-editor-toggle,
+  .hsv-hex-output output,
+  .article-toc p,
+  .gaussian-splat-head > strong,
+  .gaussian-splat-error button,
+  .gaussian-splat-error a,
+  .upload-source-file button,
+  .info-section h3,
+  .upload-form label,
+  .slug-preview,
+  .slug-rules,
+  .slug-error,
+  .collection-links strong,
+  .orbit-blog-upload,
+  .orbit-album-upload,
+  .orbit-post-upload,
+  .github-widget,
+  .bilibili-widget,
+  .orbit-upload,
+  .album-toolbar-status,
+  .album-card-placeholder,
+  .album-field > span,
+  .album-field small,
+  .album-inline-note,
+  .album-switch small,
+  .album-text-button,
+  .album-drop-zone > span,
+  .album-pair-copy strong,
+  .album-pair-row .album-field input,
+  .album-progress span,
+  .album-back-link,
+  .album-admin-order p,
+  .album-photo-caption p,
+  .album-manual-hdr > p,
+  .album-lightbox-toolbar > button,
+  .album-version-button > span:last-child,
+  .album-lightbox-navigation button {
+    font-size: 12.5px;
+  }
+
+  .slug-preview,
+  .slug-rules,
+  .slug-error,
+  .album-field small,
+  .album-inline-note,
+  .album-switch small,
+  .album-drop-zone > small,
+  .album-pairing > header > small,
+  .album-form-feedback,
+  .album-admin-feedback,
+  .bg-control-note,
+  .liquid-save-feedback,
+  .album-pair-copy small,
+  .album-progress span {
+    font-size: 13px;
+  }
+}
+
+/* iOS Safari zooms the page when a focused field is under 16px. !important because
+   field sizes are set by many component-scoped selectors of varying specificity. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="submit"], [type="button"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* Phones: the header scrolls away with the page to leave room for reading. */
+@media (max-width: 640px) {
+  .site-header {
+    position: relative;
+  }
+
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3,
+  .markdown-body h4,
+  .markdown-body h5,
+  .markdown-body h6 {
+    scroll-margin-top: 16px;
+  }
+}
+
+/* ---- Article TOC: collapsible on phones, always open elsewhere ---- */
+.article-toc-toggle {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .article-toc[data-collapsible="true"] > .article-toc-label {
+    display: none;
+  }
+
+  .article-toc-toggle {
+    display: flex;
+    width: 100%;
+    min-height: 44px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    padding: 0 8px;
+    color: var(--accent-2, var(--accent));
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 700;
+  }
+
+  .article-toc-toggle[aria-expanded="true"] {
+    margin-bottom: 4px;
+  }
+
+  .article-toc nav[data-collapsible="true"][data-open="false"] {
+    display: none;
+  }
+}
+
+/* ---- Home, 641-960px: one centered column (profile -> collection -> create actions -> social links).
+   Replaces the side-rail grid whose per-item vertical offsets looked unbalanced on tablets. ---- */
+@media (min-width: 641px) and (max-width: 960px) {
+  .orbital-home {
+    min-height: 100dvh;
+    padding:
+      clamp(32px, 5vh, 56px)
+      24px
+      calc(76px + env(safe-area-inset-bottom));
+    place-content: center;
+    place-items: center;
+  }
+
+  .orbital-stage {
+    display: flex;
+    width: min(620px, 100%);
+    min-height: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 20px;
+    margin: 0 auto;
+    transform: none;
+    transition: none;
+  }
+
+  .home-free-widget {
+    position: static;
+    left: auto;
+    top: auto;
+    width: 100%;
+    height: auto;
+    min-width: 0;
+    max-width: 100%;
+    --motion-x: 0px;
+    --motion-y: 0px;
+    --wy: 0px;
+  }
+
+  .profile-hub {
+    order: 1;
+    grid-column: auto;
+    grid-row: auto;
+    justify-self: auto;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .orbit-collection {
+    order: 2;
+    grid-column: auto;
+    grid-row: auto;
+    width: 100%;
+  }
+
+  .home-action-row {
+    display: flex;
+    order: 3;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .orbit-blog-upload,
+  .orbit-album-upload,
+  .orbit-post-upload,
+  .github-widget,
+  .bilibili-widget {
+    grid-column: auto;
+    grid-row: auto;
+    justify-self: auto;
+    align-self: auto;
+    width: auto;
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    padding: 0 16px;
+    justify-content: center;
+    --motion-x: 0px;
+    --motion-y: 0px;
+    --wy: 0px;
+  }
+
+  .orbit-blog-upload,
+  .orbit-album-upload,
+  .orbit-post-upload {
+    flex: 1 1 calc((100% - 24px) / 3);
+  }
+
+  .github-widget,
+  .bilibili-widget {
+    flex: 1 1 calc(50% - 6px);
+  }
 }

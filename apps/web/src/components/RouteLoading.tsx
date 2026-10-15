@@ -6,6 +6,7 @@ export function RouteLoading({ variant }: { variant: RouteLoadingVariant }) {
       className={`shell page-stack route-loading route-loading-${variant}`}
       aria-busy="true"
       aria-label="正在加载页面内容"
+      data-route-loading=""
     >
       <header className="page-header route-loading-header">
         <span className="skeleton skeleton-line skeleton-line-short" />

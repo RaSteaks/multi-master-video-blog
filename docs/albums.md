@@ -34,18 +34,26 @@
 | `published` / `sort_order` | 发布状态与相簿内顺序 |
 
 运行 `npm run setup:cms-schema` 会创建或补齐集合、字段、文件关系、
-一对多关系及两个命名资源预设：
+一对多关系及相簿命名资源预设：
 
 - `album-cover`：960×640、cover、WebP。
-- `album-thumb`：720×720、contain、WebP。
+- `album-thumb`：最长边 1200、inside（保持比例、不补边）、WebP。
+- `album-thumb-sm`：最长边 600、inside、WebP，与 `album-thumb` 一起组成相簿
+  缩略图的 `srcset`，并用 Directus 文件的 `width`／`height` 预留占位，避免
+  图片加载时版面跳动。
+
+预设参数统一维护在 `config/directus-asset-presets.json`，网页的 `srcset`、
+API 白名单及 schema setup/检查共同使用这份配置。照片按行排列，保留原始
+比例；编号、键盘访问和灯箱均沿用同一顺序。管理 API 也返回 SDR 宽高，
+启用管理模式或上传、排序、删除后仍保留尺寸占位与响应式缩略图。
 
 同一组受管资源预设还包含 `content-card`、`content-hero`、
 `site-background` 与 `site-background-thumb`，分别避免列表、详情页和站点
 背景下载超出其显示尺寸的原图。
 
-页面和 Node 资产代理只会请求 `?key=album-cover` 或
-`?key=album-thumb`；灯箱原图不带转换参数。Directus 的命名预设和
-`key` 访问方式见 [Directus 文件接口](https://docs.directus.io/reference/files)。
+相簿页面请求 `?key=album-cover`、`?key=album-thumb` 或
+`?key=album-thumb-sm`；灯箱原图不带转换参数。Directus 的命名预设和 `key`
+访问方式见 [Directus 文件接口](https://docs.directus.io/reference/files)。
 
 ## 新建相簿
 
@@ -154,6 +162,11 @@ AVIF 能承载 SDR、HDR 与 WCG，见
 `localStorage`、`sessionStorage` 或 IndexedDB 保存令牌。
 
 ## 上线验证
+
+升级已有实例时，必须先在目标 CMS 执行下面的 setup 与 schema 检查，
+再部署新的 API 和网页。旧 `album-thumb` 的 720×720 contain 预设需要更新，
+`album-thumb-sm` 也必须存在；仅重新构建网页不会更新这些设置。检查会拒绝
+缺失的 key 或参数仍旧的预设。
 
 ```powershell
 npm run setup:cms-schema

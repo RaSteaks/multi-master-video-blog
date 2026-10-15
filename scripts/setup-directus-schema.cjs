@@ -5,6 +5,7 @@ const {
   openDirectusDatabase,
   quoteIdent
 } = require("./directus-db-utils.cjs");
+const { managedAssetPresets, assetPresetMatches } = require("./directus-asset-presets.cjs");
 
 const cmsEnvPath = path.join(
   __dirname,
@@ -1261,63 +1262,6 @@ const analyticsPanels = [
   }
 ];
 
-const managedAssetPresets = [
-  {
-    key: "album-cover",
-    fit: "cover",
-    width: 960,
-    height: 640,
-    quality: 84,
-    withoutEnlargement: true,
-    format: "webp"
-  },
-  {
-    key: "album-thumb",
-    fit: "contain",
-    width: 720,
-    height: 720,
-    quality: 86,
-    withoutEnlargement: true,
-    format: "webp"
-  },
-  {
-    key: "content-card",
-    fit: "cover",
-    width: 960,
-    height: 540,
-    quality: 82,
-    withoutEnlargement: true,
-    format: "webp"
-  },
-  {
-    key: "content-hero",
-    fit: "cover",
-    width: 1600,
-    height: 900,
-    quality: 85,
-    withoutEnlargement: true,
-    format: "webp"
-  },
-  {
-    key: "site-background",
-    fit: "cover",
-    width: 1920,
-    height: 1080,
-    quality: 82,
-    withoutEnlargement: true,
-    format: "webp"
-  },
-  {
-    key: "site-background-thumb",
-    fit: "cover",
-    width: 320,
-    height: 180,
-    quality: 72,
-    withoutEnlargement: true,
-    format: "webp"
-  }
-];
-
 async function ensureAnalyticsDashboardInDatabase() {
   const db = await openDirectusDatabase(loadDirectusEnv());
 
@@ -1427,6 +1371,7 @@ async function ensureSiteSettingsAccentDefault(token) {
 }
 
 async function ensureAssetPresets(token) {
+  // Replace managed presets, including stale thumbnail geometry, and preserve custom presets.
   const response = await request(
     "/settings?fields=storage_asset_transform,storage_asset_presets",
     { token }
@@ -1482,12 +1427,6 @@ async function ensureAlbumFieldDefaults(token) {
     }
   });
   console.log("album field defaults ready");
-}
-
-function assetPresetMatches(current, expected) {
-  return Object.entries(expected).every(
-    ([key, value]) => current?.[key] === value
-  );
 }
 
 function permissionFields(value) {

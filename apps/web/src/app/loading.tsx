@@ -1,6 +1,6 @@
 export default function Loading() {
   return (
-    <main className="shell page-stack" aria-busy="true" aria-label="Loading content">
+    <main className="shell page-stack" aria-busy="true" aria-label="Loading content" data-route-loading="">
       <section className="intro">
         <div className="skeleton" style={{ width: 180, height: 14, marginBottom: 24 }} />
         <div className="skeleton" style={{ width: "70%", height: 52, marginBottom: 20 }} />

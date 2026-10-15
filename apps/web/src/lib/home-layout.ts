@@ -27,11 +27,14 @@ export type HomeWidgetLayout = {
 // Tablet/mobile ignore absolute coordinates and fall back to the flow layout in globals.css.
 export const homeLayout = {
   stage: {
-    // Desktop positioning canvas height. Increase this if lower widgets need more room.
-    minHeight: "clamp(640px, 78dvh, 760px)",
+    // Minimum height of the desktop canvas holding the profile and collection
+    // cards. The action dock sits below it in normal flow, and the canvas grows
+    // if the profile card needs more room, so widgets cannot overlap the dock.
+    minHeight: "clamp(520px, 66dvh, 640px)",
   },
   widgets: {
-    // Main profile card. dx/dy center the card around the configured x/y point.
+    // Main profile card. On desktop it is centred in the canvas and sized by its
+    // content, so x/y/dx/dy are only used by layouts that free-position it.
     profileHub: {
       x: "50%",
       y: "50%",

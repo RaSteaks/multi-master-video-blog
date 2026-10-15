@@ -1,15 +1,18 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { trackAnalyticsEvent } from "@/components/AnalyticsTracker";
 import type { VideoMaster } from "@/lib/directus";
 import { masterResolution, mediaUrl } from "@/lib/directus";
-import { getDefaultMaster, getSdrFallback, isPlayableMaster, playbackErrorMessage } from "@/lib/video-playback";
+import { getDefaultMaster, getSdrFallback, isPlayableMaster, isSdrMaster, playbackErrorMessage } from "@/lib/video-playback";
+import { isHdrVideo, selectAutomaticMaster } from "@/lib/video-capabilities";
 
 type MediaPlayerProps = {
   masters: VideoMaster[];
   poster?: string | null;
   videoProjectId?: number;
+  addMaster?: { href: string; label: string };
 };
 
 type PlaybackState = "idle" | "loading" | "ready" | "playing" | "paused" | "error";
@@ -46,10 +49,11 @@ type ShakaNamespace = {
   };
 };
 
-export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProps) {
+export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: MediaPlayerProps) {
   const playableMasters = useMemo(() => masters.filter(isPlayableMaster), [masters]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playerRef = useRef<ShakaPlayer | null>(null);
+  const playerVideoRef = useRef<HTMLVideoElement | null>(null);
   const currentMasterRef = useRef<VideoMaster | null>(null);
   const fallbackAttemptedRef = useRef(false);
   const mountedRef = useRef(true);
@@ -60,6 +64,8 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
   const loadingMasterRef = useRef(false);
   const trackedPlaysRef = useRef(new Set<number>());
   const playbackErrorHandlerRef = useRef<(error: unknown) => Promise<void>>(async () => {});
+  const manualSelectionRef = useRef(false);
+  const [selectionReady, setSelectionReady] = useState(false);
 
   const [activeMasterId, setActiveMasterId] = useState(() => getDefaultMaster(playableMasters)?.id);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
@@ -70,17 +76,48 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const activeMaster = useMemo(
-    () => playableMasters.find((m) => m.id === activeMasterId) ?? getDefaultMaster(playableMasters),
+    () => playableMasters.find((m) => m.id === activeMasterId),
     [activeMasterId, playableMasters],
   );
 
-  const defaultMaster = useMemo(() => getDefaultMaster(playableMasters), [playableMasters]);
+  useEffect(() => {
+    // Navigating to a different project starts a fresh automatic selection.
+    manualSelectionRef.current = false;
+    fallbackAttemptedRef.current = false;
+  }, [videoProjectId]);
 
   useEffect(() => {
-    if (!activeMaster && defaultMaster) {
-      setActiveMasterId(defaultMaster.id);
-    }
-  }, [activeMaster, defaultMaster]);
+    if (manualSelectionRef.current) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    const probe = document.createElement("video");
+    const device = detectCapabilities();
+    // A slow manifest must use the same SDR fallback as completed capability detection.
+    const fallback = getDefaultMaster(playableMasters.filter(isSdrMaster));
+    setSelectionReady(false);
+    setPlaybackState("loading");
+    const timer = setTimeout(() => {
+      controller.abort();
+      if (!cancelled && !manualSelectionRef.current) { setActiveMasterId(fallback?.id); setSelectionReady(true); }
+    }, 5000);
+    void selectAutomaticMaster(playableMasters, {
+      hdrDisplay: device.hdr, nativeHls: device.nativeHls,
+      canPlayType: type => probe.canPlayType(type),
+      mseSupports: type => typeof MediaSource !== "undefined" && MediaSource.isTypeSupported(type),
+      decodingInfo: navigator.mediaCapabilities?.decodingInfo?.bind(navigator.mediaCapabilities),
+      manifest: async (master, signal) => {
+        const response = await fetch(mediaUrl(master.hls_url), { signal });
+        if (!response.ok) throw new Error("Manifest unavailable");
+        const text = await response.text();
+        if (text.length > 131072) throw new Error("Manifest too large");
+        return text;
+      }
+    }, controller.signal).then(selected => {
+      if (cancelled || controller.signal.aborted || manualSelectionRef.current) return;
+      setActiveMasterId(selected?.id); setSelectionReady(true);
+    }).finally(() => clearTimeout(timer));
+    return () => { cancelled = true; controller.abort(); clearTimeout(timer); };
+  }, [playableMasters]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -128,7 +165,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
       video.removeEventListener("pause", onPause);
       video.removeEventListener("waiting", onWaiting);
     };
-  }, [videoProjectId]);
+  }, [videoProjectId, activeMaster?.id]);
 
   const capturePlaybackSnapshot = useCallback(
     (
@@ -157,6 +194,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
       if (!mountedRef.current) return;
 
       setPlaybackState("error");
+      manualSelectionRef.current = true;
 
       if (
         sdrFallback &&
@@ -191,7 +229,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
 
     async function loadMaster() {
       const video = videoRef.current;
-      if (!video || !activeMaster) return;
+      if (!video || !activeMaster || !selectionReady) return;
 
       const pendingSnapshot = pendingPlaybackRef.current;
       const snapshot =
@@ -229,6 +267,10 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
           throw new Error("This browser is not supported by Shaka Player.");
         }
 
+        if (playerRef.current && playerVideoRef.current !== video) {
+          await playerRef.current.destroy();
+          playerRef.current = null;
+        }
         if (!playerRef.current) {
           const player = new shaka.Player(video);
           player.configure({
@@ -243,13 +285,17 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
             },
           });
           player.addEventListener("error", (event) => {
+            if (playerRef.current !== player) return;
             const detail = "detail" in event ? event.detail : null;
             if (detail && typeof detail === "object" && "severity" in detail && detail.severity === 1) return;
             void playbackErrorHandlerRef.current(detail);
           });
           playerRef.current = player;
+          playerVideoRef.current = video;
         }
 
+        // Capability checks used native HLS when available; use that same path for HDR playback.
+        playerRef.current.configure({ streaming: { preferNativeHls: isHdrVideo(activeMaster) && detectCapabilities().nativeHls } });
         await playerRef.current.load(source, snapshot.time > 0 ? snapshot.time : null);
         if (
           cancelled ||
@@ -291,7 +337,7 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
 
     void loadMaster();
     return () => { cancelled = true; };
-  }, [activeMaster, capturePlaybackSnapshot, handleFatalPlaybackError, reloadNonce]);
+  }, [activeMaster, capturePlaybackSnapshot, handleFatalPlaybackError, reloadNonce, selectionReady]);
 
   useEffect(() => {
     return () => {
@@ -301,6 +347,9 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
   }, []);
 
   const switchMaster = useCallback((master: VideoMaster) => {
+    // A slow automatic probe must never override an explicit user choice.
+    manualSelectionRef.current = true;
+    setSelectionReady(true);
     if (master.id === activeMasterId) return;
 
     fallbackAttemptedRef.current = false;
@@ -322,10 +371,20 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
     return (
       <div className="player-shell empty-state" role="status">
         <p>
-          {masters.length
-            ? "No verified video masters are ready for playback."
-            : "No video masters have been configured for this project."}
+          {playableMasters.length
+            ? "No compatible master was confirmed. Select a version manually."
+            : masters.length ? "No verified video masters are ready for playback."
+              : "No video masters have been configured for this project."}
         </p>
+        {playableMasters.map(master => <button key={master.id} type="button" onClick={() => switchMaster(master)}>{master.label}</button>)}
+        {addMaster ? (
+    <Link className="master-add" href={addMaster.href}>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      {addMaster.label}
+    </Link>
+        ) : null}
       </div>
     );
   }
@@ -345,11 +404,14 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
     <section className="player-shell" aria-label="Video player">
       <div className="player-layout">
         <div className="player-main">
-          <div className="player-frame" data-state={playbackState}>
+          <div className="player-frame" data-state={playbackState} data-vt="cover">
+            {/* Hide common download UI only; these hints do not protect the media from capture. */}
             <video
               ref={videoRef}
               className="video-player"
               controls
+              controlsList="nodownload"
+              onContextMenu={(event) => event.preventDefault()}
               playsInline
               poster={poster || undefined}
               aria-label={`Video player - ${activeMaster.label}`}
@@ -383,6 +445,14 @@ export function MediaPlayer({ masters, poster, videoProjectId }: MediaPlayerProp
                   </span>
                 </button>
               ))}
+              {addMaster ? (
+    <Link className="master-add" href={addMaster.href}>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      {addMaster.label}
+    </Link>
+              ) : null}
             </div>
 
             <div className="info-toggle-row">
@@ -597,7 +667,8 @@ function detectCapabilities(): DeviceCapabilities {
   const video = document.createElement("video");
 
   return {
-    hdr: window.matchMedia?.("(dynamic-range: high)")?.matches ?? false,
+    hdr: Boolean(window.matchMedia?.("(video-dynamic-range: high)")?.matches ||
+      window.matchMedia?.("(dynamic-range: high)")?.matches),
     p3: window.matchMedia?.("(color-gamut: p3)")?.matches ?? false,
     rec2020: window.matchMedia?.("(color-gamut: rec2020)")?.matches ?? false,
     hevc:

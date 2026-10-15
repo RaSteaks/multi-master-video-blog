@@ -1,44 +1,42 @@
 const AUTO_SDR_CONVERSION = "dolby_vision_to_sdr";
 
 function buildDolbySdrConversion(contract, filters) {
-  const profile = Number.parseInt(contract.dolbyMetadata?.profile, 10);
-  const transfer = contract.colorTransfer;
-  const compatibleBase = profile !== 5 &&
-    ["arib-std-b67", "smpte2084"].includes(transfer);
-
-  if (!compatibleBase) {
-    if (!filters.has("libplacebo") || !contract.dolbyMetadata?.rpuPresent) {
-      throw new Error("This Dolby Vision source requires embedded RPU metadata and an FFmpeg build with libplacebo/Vulkan for SDR conversion. The original Dolby Vision master has been retained.");
-    }
-    return {
-      engine: "libplacebo",
-      usesDolbyMetadata: true,
-      inputOptions: ["-init_hw_device", "vulkan"],
-      filter: "libplacebo=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p:apply_dolbyvision=true,format=yuv420p,sidedata=mode=delete"
-    };
+  const dolby = contract.dolbyMetadata || {};
+  if (dolby.profile && (!dolby.rpuPresent || dolby.elPresent)) {
+    throw new Error("SDR conversion requires embedded RPU and a single-layer Dolby Vision source.");
   }
-
-  if (!filters.has("zscale") || !filters.has("tonemap")) {
-    throw new Error("Automatic SDR conversion requires FFmpeg with zscale and tonemap filters. The original Dolby Vision master has been retained.");
+  if (!dolby.profile && !["arib-std-b67", "smpte2084"].includes(contract.colorTransfer)) {
+    throw new Error("Automatic HDR conversion requires a tagged PQ/HLG or verified Dolby Vision source.");
   }
-
-  const maxCll = Number(contract.hdrStaticMetadata?.contentLightLevel?.max_content);
-  const peak = transfer === "smpte2084" && maxCll > 100 && maxCll <= 10000
-    ? maxCll / 100 : 10;
+  if (!filters.has("libplacebo")) {
+    throw new Error("Adaptive HDR to SDR conversion requires FFmpeg with libplacebo and working Vulkan. The original HDR master has been retained.");
+  }
   return {
-    engine: "zscale-tonemap",
-    usesDolbyMetadata: false,
-    inputOptions: [],
-    filter: [
-      `zscale=primariesin=${contract.colorPrimaries}:transferin=${transfer}:matrixin=${contract.matrixCoefficients}:rangein=${contract.colorRange}:transfer=linear:npl=100`,
-      "format=gbrpf32le",
-      "zscale=primaries=bt709",
-      `tonemap=tonemap=hable:desat=2:peak=${peak}`,
-      "zscale=transfer=bt709:matrix=bt709:range=limited:dither=error_diffusion",
-      "format=yuv420p",
-      "sidedata=mode=delete"
-    ].join(",")
+    engine: "libplacebo",
+    usesDolbyMetadata: Boolean(dolby.profile && dolby.rpuPresent),
+    inputOptions: ["-init_hw_device", "vulkan"],
+    // Dynamic peak analysis is smoothed across frames and reset at scene cuts.
+    // Perceptual gamut mapping compresses wide-gamut colors instead of RGB clipping.
+    filter: "libplacebo=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p:apply_dolbyvision=true:peak_detect=true:smoothing_period=20:scene_threshold_low=1:scene_threshold_high=3:tonemapping=bt.2390:gamut_mode=perceptual,format=yuv420p,sidedata=mode=delete"
   };
+}
+
+function buildSdrTranscodeFilter(contract) {
+  if (!["bt709", "smpte170m", "bt470bg", "bt470m", "iec61966-2-1"].includes(contract.colorTransfer) ||
+      contract.dolbyMetadata?.profile || contract.hdrStaticMetadata?.masteringDisplayPresent) {
+    throw new Error("SDR transcode requires tagged SDR input. Upload HDR as its HDR master type to create an adaptive SDR derivative.");
+  }
+  if (["bt2020", "smpte431", "smpte432"].includes(contract.colorPrimaries)) {
+    // Wide-gamut SDR also needs gamut compression; matrix conversion alone clips saturated colors.
+    return "libplacebo=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p:apply_dolbyvision=false:peak_detect=false:tonemapping=clip:gamut_mode=perceptual,format=yuv420p,sidedata=mode=delete";
+  }
+  // Decode range/matrix/transfer explicitly before converting primaries in floating point.
+  return [
+    `zscale=primariesin=${contract.colorPrimaries}:transferin=${contract.colorTransfer}:matrixin=${contract.matrixCoefficients}:rangein=${contract.colorRange}:transfer=linear`,
+    "format=gbrpf32le", "zscale=primaries=bt709",
+    "zscale=transfer=bt709:matrix=bt709:range=limited:dither=error_diffusion",
+    "format=yuv420p", "sidedata=mode=delete"
+  ].join(",");
 }
 
 function buildSdrEncodeArgs(sourcePath, outputPath, conversion) {
@@ -58,7 +56,7 @@ function buildSdrEncodeArgs(sourcePath, outputPath, conversion) {
   ];
 }
 
-function validateSdrDerivative(contract, sourceContract) {
+function validateSdrDerivative(contract, sourceContract, sourceProbe = {}) {
   const expected = {
     codecName: "h264", colorPrimaries: "bt709", colorTransfer: "bt709",
     matrixCoefficients: "bt709", colorRange: "limited",
@@ -67,8 +65,13 @@ function validateSdrDerivative(contract, sourceContract) {
   const errors = Object.entries(expected).flatMap(([field, value]) =>
     contract[field] === value ? [] : [`SDR derivative: ${field} must be ${value}.`]
   );
+  // FFmpeg bakes display rotation into the pixels; compare the resulting display dimensions.
+  const rotation = Number(sourceProbe.side_data_list?.find(item =>
+    /display matrix/i.test(item.side_data_type || ""))?.rotation ?? sourceProbe.tags?.rotate ?? 0);
+  const dimensions = Math.abs(rotation % 180) === 90
+    ? { width: sourceContract.height, height: sourceContract.width } : sourceContract;
   for (const field of ["width", "height"]) {
-    if (contract[field] !== sourceContract[field]) {
+    if (contract[field] !== dimensions[field]) {
       errors.push(`SDR derivative: ${field} changed during conversion.`);
     }
   }
@@ -81,6 +84,6 @@ function validateSdrDerivative(contract, sourceContract) {
 }
 
 module.exports = {
-  AUTO_SDR_CONVERSION, buildDolbySdrConversion, buildSdrEncodeArgs,
+  AUTO_SDR_CONVERSION, buildDolbySdrConversion, buildSdrEncodeArgs, buildSdrTranscodeFilter,
   validateSdrDerivative
 };

@@ -1,0 +1,65 @@
+[
+  {
+    "key": "album-cover",
+    "fit": "cover",
+    "width": 960,
+    "height": 640,
+    "quality": 84,
+    "withoutEnlargement": true,
+    "format": "webp"
+  },
+  {
+    "key": "album-thumb-sm",
+    "fit": "inside",
+    "width": 600,
+    "height": 600,
+    "quality": 80,
+    "withoutEnlargement": true,
+    "format": "webp"
+  },
+  {
+    "key": "album-thumb",
+    "fit": "inside",
+    "width": 1200,
+    "height": 1200,
+    "quality": 82,
+    "withoutEnlargement": true,
+    "format": "webp"
+  },
+  {
+    "key": "content-card",
+    "fit": "cover",
+    "width": 960,
+    "height": 540,
+    "quality": 82,
+    "withoutEnlargement": true,
+    "format": "webp"
+  },
+  {
+    "key": "content-hero",
+    "fit": "cover",
+    "width": 1600,
+    "height": 900,
+    "quality": 85,
+    "withoutEnlargement": true,
+    "format": "webp"
+  },
+  {
+    "key": "site-background",
+    "fit": "cover",
+    "width": 1920,
+    "height": 1080,
+    "quality": 82,
+    "withoutEnlargement": true,
+    "format": "webp"
+  },
+  {
+    "key": "site-background-thumb",
+    "fit": "cover",
+    "width": 320,
+    "height": 180,
+    "quality": 72,
+    "withoutEnlargement": true,
+    "format": "webp"
+  }
+]

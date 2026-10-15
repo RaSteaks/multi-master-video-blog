@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Application, Entity } from "@playcanvas/react";
 import { Camera, GSplat, Script } from "@playcanvas/react/components";
-import { useSplat } from "@playcanvas/react/hooks";
+import { useApp, useSplat } from "@playcanvas/react/hooks";
 import {
   DEVICETYPE_WEBGL2,
   DEVICETYPE_WEBGPU,
   Vec3,
+  type Entity as PlayCanvasEntity,
 } from "playcanvas";
 import { CameraControls } from "playcanvas/scripts/esm/camera-controls.mjs";
 import type { GaussianSplatConfig } from "@/lib/gaussian-splat";
+import { installSplatRenderScheduling } from "@/lib/splat-rendering";
 
 export type GaussianSplatRenderState =
   | { phase: "loading"; progress: number }
@@ -29,6 +31,7 @@ export function GaussianSplatCanvas({
   return (
     <Application
       className="gaussian-splat-canvas"
+      autoRender={false}
       deviceTypes={[DEVICETYPE_WEBGPU, DEVICETYPE_WEBGL2]}
       graphicsDeviceOptions={{ antialias: false }}
     >
@@ -41,11 +44,19 @@ function GaussianSplatScene({
   config,
   onRenderState,
 }: GaussianSplatCanvasProps) {
+  const app = useApp();
+  const cameraRef = useRef<PlayCanvasEntity>(null);
   const { asset, loading, error, subscribe } = useSplat(config.src);
   const focusPoint = useMemo(
     () => new Vec3(...config.target),
     [config.target],
   );
+
+  useEffect(() => {
+    if (!cameraRef.current) return;
+    // Re-invalidate on scene/asset changes without recreating the GPU application.
+    return installSplatRenderScheduling(app, cameraRef.current);
+  }, [app, asset, config]);
 
   useEffect(() => {
     return subscribe((metadata) => {
@@ -73,7 +84,7 @@ function GaussianSplatScene({
 
   return (
     <>
-      <Entity name="3DGS Camera" position={config.cameraPosition}>
+      <Entity ref={cameraRef} name="3DGS Camera" position={config.cameraPosition}>
         <Camera clearColor={config.background} farClip={10000} />
         <Script
           script={CameraControls}
