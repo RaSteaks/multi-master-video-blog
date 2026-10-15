@@ -405,10 +405,13 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
       <div className="player-layout">
         <div className="player-main">
           <div className="player-frame" data-state={playbackState} data-vt="cover">
+            {/* Hide common download UI only; these hints do not protect the media from capture. */}
             <video
               ref={videoRef}
               className="video-player"
               controls
+              controlsList="nodownload"
+              onContextMenu={(event) => event.preventDefault()}
               playsInline
               poster={poster || undefined}
               aria-label={`Video player - ${activeMaster.label}`}
