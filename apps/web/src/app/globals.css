@@ -8126,3 +8126,40 @@ html.vt-panel::view-transition-new(root) {
   .film-roll-actions .film-live-state { grid-column: auto; }
   .film-commit-bar { position: static; }
 }
+
+/* ---- Article TOC: collapsible on phones, always open elsewhere ---- */
+.article-toc-toggle {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .article-toc[data-collapsible="true"] > .article-toc-label {
+    display: none;
+  }
+
+  .article-toc-toggle {
+    display: flex;
+    width: 100%;
+    min-height: 44px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    padding: 0 8px;
+    color: var(--accent-2, var(--accent));
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 700;
+  }
+
+  .article-toc-toggle[aria-expanded="true"] {
+    margin-bottom: 4px;
+  }
+
+  .article-toc nav[data-collapsible="true"][data-open="false"] {
+    display: none;
+  }
+}

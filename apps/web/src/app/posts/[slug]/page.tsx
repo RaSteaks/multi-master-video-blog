@@ -9,6 +9,7 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownImageComponent } from "@/components/MarkdownImage";
+import { ArticleToc } from "@/components/ArticleToc";
 import { BackLink } from "@/components/BackLink";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
 import { GaussianSplatEmbed } from "@/components/GaussianSplatEmbed";
@@ -83,7 +84,11 @@ export default async function PostPage({ params }: PostPageProps) {
       {hasToc ? (
         <div className="article-content-grid">
           {/* TOC: standalone frosted glass card, sticky beside the article */}
-          <aside className="article-toc" aria-label="Article table of contents">
+          <aside
+            className="article-toc"
+            aria-label="Article table of contents"
+            data-collapsible={tocItems.length > 4}
+          >
             {coverImageUrl ? (
               <img
                 className="article-toc-cover"
@@ -96,18 +101,11 @@ export default async function PostPage({ params }: PostPageProps) {
                 fetchPriority="high"
               />
             ) : null}
-            <p>{siteConfig.articleTocLabel}</p>
-            <nav>
-              {tocItems.map((item) => (
-                <a
-                  className={`article-toc-level-${item.level}`}
-                  href={`#${item.id}`}
-                  key={item.id}
-                >
-                  {item.text}
-                </a>
-              ))}
-            </nav>
+            <ArticleToc
+              label={siteConfig.articleTocLabel}
+              items={tocItems}
+              collapsible={tocItems.length > 4}
+            />
           </aside>
 
           <div className="content-glass">
