@@ -1336,3 +1336,89 @@
     transition: none;
   }
 }
+
+@media (pointer: coarse) {
+  .toolButton {
+    min-height: 40px;
+    min-width: 40px;
+  }
+}
+
+/* Mobile type scale (<= 640px): decorative 11-12px, secondary 12-12.5px, hints 13px. */
+@media (max-width: 640px) {
+  .coverOverlay > span,
+  .paneLabel,
+  .paneLabel small,
+  .editorFoot,
+  .trayHeading span,
+  .attachment label span,
+  .attachmentActions span,
+  .attachmentActions button,
+  .submitActions kbd {
+    font-size: 11px;
+  }
+
+  .eyebrow,
+  .panelHeading p,
+  .editorHeading p,
+  .panelHeading > span,
+  .fieldHint,
+  .fieldError,
+  .tag,
+  .coverDrop > button small,
+  .coverOverlay button,
+  .documentStats,
+  .toolButton,
+  .viewSwitch button,
+  .linkPanel label,
+  .attachment input,
+  .saveStatus p,
+  .saveStatus a {
+    font-size: 12px;
+  }
+
+  .dirtyBadge,
+  .libraryLink,
+  .inputAction button,
+  .coverOverlay strong,
+  .linkActions button,
+  .previewImage > span,
+  .attachment > div > strong,
+  .saveStatus strong,
+  .submitActions button {
+    font-size: 12.5px;
+  }
+
+  .fieldHint,
+  .fieldError,
+  .coverDrop > button small,
+  .saveStatus p,
+  .saveStatus a {
+    font-size: 13px;
+  }
+}
+
+/* Phones: two-way switch (edit / preview); the split option is hidden because the panes would stack. */
+@media (max-width: 640px) {
+  .viewSwitch {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .viewSwitch::before {
+    width: calc((100% - 4px) / 2);
+  }
+
+  .viewSwitch[data-view="preview"]::before {
+    transform: translate3d(100%, 0, 0);
+  }
+
+  .viewSwitch button[data-mode="split"] {
+    display: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .viewSwitch button {
+    min-height: 44px;
+  }
+}
