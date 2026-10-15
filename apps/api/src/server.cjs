@@ -50,6 +50,7 @@ const {
   validateFilmScanUpload
 } = require("./film-scan-utils.cjs");
 const { createDirectusTokenCache } = require("./directus-auth.cjs");
+const { createTaskLimiter } = require("./task-limiter.cjs");
 const {
   AUTO_SDR_CONVERSION,
   buildDolbySdrConversion,
@@ -125,6 +126,13 @@ const FFPROBE_PATH =
 const VIDEO_SDR_PROCESS_TIMEOUT_MS = positiveInteger(
   env.VIDEO_SDR_PROCESS_TIMEOUT_MS, 60 * 60 * 1000
 );
+const VIDEO_PROCESS_TIMEOUT_MS = positiveInteger(env.VIDEO_PROCESS_TIMEOUT_MS, 60 * 60 * 1000);
+// The slot covers probing, HLS packaging and optional SDR conversion as one upload.
+const videoProcessingSlots = createTaskLimiter({
+  concurrency: positiveInteger(env.VIDEO_PROCESS_CONCURRENCY, 1),
+  maxPending: positiveInteger(env.VIDEO_PROCESS_MAX_PENDING, 4),
+  waitMs: positiveInteger(env.VIDEO_PROCESS_QUEUE_TIMEOUT_MS, 60000)
+});
 let videoSdrFiltersPromise = null;
 
 const MASTER_TYPES = new Set(["sdr", "hdr10", "hlg", "dolby_vision", "custom"]);
@@ -419,8 +427,10 @@ function runProcess(command, args, options = {}) {
       cleanup();
       reject(options.signal?.reason || httpError(499, "Processing was canceled."));
     };
+    // Apply a deadline to ordinary probes/packaging too; specialized jobs can override it.
+    const timeoutMs = options.timeoutMs ?? VIDEO_PROCESS_TIMEOUT_MS;
     const timeout =
-      Number(options.timeoutMs) > 0
+      Number(timeoutMs) > 0
         ? setTimeout(() => {
             if (settled) return;
             settled = true;
@@ -432,7 +442,7 @@ function runProcess(command, args, options = {}) {
                 `${path.basename(command)} exceeded the processing timeout.`
               )
             );
-          }, Number(options.timeoutMs))
+          }, Number(timeoutMs))
         : null;
     options.signal?.addEventListener("abort", abort, { once: true });
 
@@ -8053,10 +8063,14 @@ async function saveCompanionSdr(input, project) {
 
 async function handleUpload(req, res) {
   let parsed = null;
+  let releaseProcessingSlot;
 
   try {
     requireUploadAuth(req);
     parsed = await parseMultipart(req);
+    releaseProcessingSlot = await videoProcessingSlots.acquire();
+    // A caller that left while queued must not start a costly conversion.
+    if (res.destroyed) return;
     const { metadata, project: existingProject } = await resolveVideoUploadProject(parsed.fields);
     await identifyPairedSources(parsed, metadata);
     validateProcessingPolicy(metadata);
@@ -8173,6 +8187,7 @@ async function handleUpload(req, res) {
       verificationErrors: error.verificationErrors || null
     });
   } finally {
+    releaseProcessingSlot?.();
     if (parsed?.tempDir) {
       await fsp.rm(parsed.tempDir, { recursive: true, force: true }).catch(() => {});
     }

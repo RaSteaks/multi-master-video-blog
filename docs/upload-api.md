@@ -162,6 +162,17 @@ These string placeholders represent objects. When automatic conversion is not re
 
 `VIDEO_SDR_PROCESS_TIMEOUT_MS` controls the encoding timeout (default `3600000`). Allow enough reverse-proxy time for both upload and processing. The API registers SDR only after conversion and HLS verification succeed.
 
+### Processing capacity
+
+After multipart reception, video uploads share a bounded processing queue. By default,
+`VIDEO_PROCESS_CONCURRENCY=1` allows one pipeline (probe, packaging, verification and
+optional SDR conversion) at a time. `VIDEO_PROCESS_MAX_PENDING=4` bounds waiting
+uploads; `VIDEO_PROCESS_QUEUE_TIMEOUT_MS=60000` bounds their wait. A full or expired
+queue returns HTTP `503` and removes temporary uploads; retry the upload later.
+`VIDEO_PROCESS_TIMEOUT_MS=3600000` supplies a per-process deadline for ordinary
+FFmpeg/FFprobe work. Film-scan and SDR conversion retain their explicit deadlines.
+These limits apply to each API process, so account for worker count when deploying.
+
 ## Stored Output
 
 Source video:
