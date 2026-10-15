@@ -7673,16 +7673,19 @@ async function syncAnalyticsItem(token, event, providedItem = null) {
   const itemKey = `${event.itemType}:${event.itemId}`;
   const eventParams = new URLSearchParams({
     "filter[item_key][_eq]": itemKey,
-    fields: "event_type,visitor_hash,created_at",
-    limit: "-1"
+    // Return at most one aggregate row per event type, regardless of history size.
+    "aggregate[count]": "id",
+    "aggregate[countDistinct]": "visitor_hash",
+    "aggregate[max]": "created_at",
+    "groupBy[]": "event_type"
   });
-  const events = (
+  const groups = (
     await directusRequest(`/items/analytics_events?${eventParams.toString()}`, token)
   ).data || [];
-  const viewEvents = events.filter((itemEvent) => itemEvent.event_type === "view");
-  const playEvents = events.filter((itemEvent) => itemEvent.event_type === "play");
-  const lastEventAt = events
-    .map((itemEvent) => itemEvent.created_at)
+  const views = groups.find((group) => group.event_type === "view");
+  const plays = groups.find((group) => group.event_type === "play");
+  const lastEventAt = groups
+    .map((group) => group.max?.created_at)
     .filter(Boolean)
     .sort()
     .at(-1) || null;
@@ -7694,10 +7697,10 @@ async function syncAnalyticsItem(token, event, providedItem = null) {
     slug: item.slug,
     post_id: event.itemType === "post" ? item.id : null,
     video_project_id: event.itemType === "video" ? item.id : null,
-    view_count: viewEvents.length,
-    visitor_count: new Set(viewEvents.map((itemEvent) => itemEvent.visitor_hash)).size,
-    play_count: playEvents.length,
-    player_count: new Set(playEvents.map((itemEvent) => itemEvent.visitor_hash)).size,
+    view_count: Number(views?.count?.id || 0),
+    visitor_count: Number(views?.countDistinct?.visitor_hash || 0),
+    play_count: Number(plays?.count?.id || 0),
+    player_count: Number(plays?.countDistinct?.visitor_hash || 0),
     last_event_at: lastEventAt,
     updated_at: new Date().toISOString()
   };
@@ -7726,6 +7729,30 @@ async function syncAnalyticsItem(token, event, providedItem = null) {
       body: payload
     })
   ).data;
+}
+
+const analyticsRefreshes = new Map();
+
+function scheduleAnalyticsRefresh(token, event, item) {
+  const key = `${event.itemType}:${event.itemId}`;
+  const existing = analyticsRefreshes.get(key);
+  if (existing) {
+    existing.latest = { token, event, item };
+    return existing.promise;
+  }
+  const state = { latest: { token, event, item }, promise: null };
+  // Serialize each item's writes. Events received during a query require one trailing refresh.
+  state.promise = Promise.resolve().then(async () => {
+    while (state.latest) {
+      // Batch bursts even when the database answers faster than incoming beacon requests.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const next = state.latest;
+      state.latest = null;
+      await syncAnalyticsItem(next.token, next.event, next.item);
+    }
+  }).finally(() => analyticsRefreshes.delete(key));
+  analyticsRefreshes.set(key, state);
+  return state.promise;
 }
 
 async function handleAnalyticsEvent(req, res) {
@@ -7757,7 +7784,7 @@ async function handleAnalyticsEvent(req, res) {
       status: "ok",
       event: created.data.id
     });
-    void syncAnalyticsItem(token, event, item).catch((error) => {
+    void scheduleAnalyticsRefresh(token, event, item).catch((error) => {
       console.error(
         `[analytics] Aggregate refresh failed for ${itemKey}: ${error.message}`
       );
