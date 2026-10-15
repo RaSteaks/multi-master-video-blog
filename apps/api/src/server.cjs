@@ -3517,7 +3517,11 @@ async function directusUploadFile(token, file, title, options = {}) {
     return null;
   }
 
-  const buffer = await fsp.readFile(file.tempPath);
+  // A file-backed Blob streams multipart data without duplicating the entire image in RAM.
+  // Callers keep this immutable temporary file until the upload and any auth retry finish.
+  const blob = await fs.openAsBlob(file.tempPath, {
+    type: file.mimeType || "application/octet-stream"
+  });
   const reconciliationTag = String(options.reconciliationTag || "").trim();
 
   async function upload(accessToken, authRetried = false) {
@@ -3530,7 +3534,7 @@ async function directusUploadFile(token, file, title, options = {}) {
     }
     form.append(
       "file",
-      new Blob([buffer], { type: file.mimeType || "application/octet-stream" }),
+      blob,
       file.filename
     );
 
