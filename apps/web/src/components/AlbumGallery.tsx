@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -577,6 +579,8 @@ export function AlbumGallery({
           photo={selectedPhoto}
           index={lightboxIndex}
           total={photos.length}
+          photos={photos}
+          onSelect={setLightboxIndex}
           hdrFailed={failedHdr.has(selectedPhoto.id)}
           onHdrFailure={() =>
             setFailedHdr((current) => {
@@ -969,6 +973,8 @@ function PhotoLightbox({
   photo,
   index,
   total,
+  photos,
+  onSelect,
   hdrFailed,
   onHdrFailure,
   onPrevious,
@@ -978,6 +984,8 @@ function PhotoLightbox({
   photo: GalleryPhoto;
   index: number;
   total: number;
+  photos: GalleryPhoto[];
+  onSelect: (index: number) => void;
   hdrFailed: boolean;
   onHdrFailure: () => void;
   onPrevious: () => void;
@@ -985,6 +993,9 @@ function PhotoLightbox({
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const activeThumbRef = useRef<HTMLButtonElement>(null);
+  const railRef = useRef<HTMLElement>(null);
+  const trackRef = useRef<HTMLOListElement>(null);
   const [activeRange, setActiveRange] = useState<"PQ" | "HLG" | "SDR">("SDR");
   const [hlgFailed, setHlgFailed] = useState(false);
   const canUsePq = Boolean(photo.hdrUrl && !hdrFailed);
@@ -994,6 +1005,40 @@ function PhotoLightbox({
     const dialog = dialogRef.current;
     if (dialog && !dialog.open) dialog.showModal();
   }, []);
+
+  // Slide the whole strip so the active thumbnail sits at the rail's center (vertical on desktop,
+  // horizontal in the narrow-screen strip). The first placement is instant; later ones are animated by CSS.
+  const centerActiveThumb = useCallback(() => {
+    const rail = railRef.current;
+    const track = trackRef.current;
+    const item = activeThumbRef.current?.parentElement;
+    if (!rail || !track || !item) return;
+    const horizontal = window.matchMedia("(max-width: 900px)").matches;
+    const offset = horizontal
+      ? rail.clientWidth / 2 - (item.offsetLeft + item.offsetWidth / 2)
+      : rail.clientHeight / 2 - (item.offsetTop + item.offsetHeight / 2);
+    track.style.transform = horizontal
+      ? `translate3d(${offset}px, 0, 0)`
+      : `translate3d(0, ${offset}px, 0)`;
+  }, []);
+
+  useLayoutEffect(() => {
+    centerActiveThumb();
+    const track = trackRef.current;
+    if (!track || track.classList.contains("is-animated")) return;
+    const frame = requestAnimationFrame(() => track.classList.add("is-animated"));
+    return () => cancelAnimationFrame(frame);
+  }, [index, centerActiveThumb]);
+
+  useEffect(() => {
+    const rail = railRef.current;
+    const track = trackRef.current;
+    if (!rail || !track) return;
+    const observer = new ResizeObserver(centerActiveThumb);
+    observer.observe(rail);
+    observer.observe(track);
+    return () => observer.disconnect();
+  }, [centerActiveThumb]);
 
   useEffect(() => {
     const prefersHdr = window.matchMedia("(dynamic-range: high)").matches;
@@ -1010,10 +1055,10 @@ function PhotoLightbox({
       aria-label={`照片 ${index + 1} / ${total}`}
       onClose={onClose}
       onKeyDown={(event) => {
-        if (event.key === "ArrowLeft") {
+        if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
           event.preventDefault();
           onPrevious();
-        } else if (event.key === "ArrowRight") {
+        } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
           event.preventDefault();
           onNext();
         } else if (event.key === "Escape") {
@@ -1025,7 +1070,42 @@ function PhotoLightbox({
         if (event.target === event.currentTarget) dialogRef.current?.close();
       }}
     >
-      <div className="album-lightbox-stage">
+      <div className={`album-lightbox-stage${total > 1 ? " has-rail" : ""}`}>
+        {total > 1 ? (
+          <nav className="album-lightbox-rail" aria-label="相簿照片预览" ref={railRef}>
+            <ol ref={trackRef}>
+              {photos.map((item, itemIndex) => (
+                <li key={item.id}>
+                  <button
+                    ref={itemIndex === index ? activeThumbRef : undefined}
+                    className={`album-rail-thumb${itemIndex === index ? " active" : ""}${
+                      item.published ? "" : " is-draft"
+                    }`}
+                    type="button"
+                    aria-label={`查看第 ${itemIndex + 1} 张照片`}
+                    aria-current={itemIndex === index ? "true" : undefined}
+                    onClick={() => onSelect(itemIndex)}
+                  >
+                    <img
+                      src={item.thumbnailUrl}
+                      srcSet={item.thumbnailSrcSet ?? undefined}
+                      sizes="112px"
+                      alt=""
+                      width={item.width ?? undefined}
+                      height={item.height ?? undefined}
+                      loading="lazy"
+                      decoding="async"
+                    />
+                    <span aria-hidden="true">
+                      {String(itemIndex + 1).padStart(2, "0")}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          </nav>
+        ) : null}
+        <div className="album-lightbox-main">
         <header className="album-lightbox-toolbar">
           <span>
             {String(index + 1).padStart(2, "0")} /{" "}
@@ -1153,6 +1233,7 @@ function PhotoLightbox({
             </button>
           </div>
         ) : null}
+        </div>
       </div>
     </dialog>
   );
