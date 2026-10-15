@@ -539,6 +539,88 @@ html.route-transition-pending body::after {
   gap: 56px;
 }
 
+/* ---- Back link: detail page -> its list ---- */
+.back-link {
+  position: absolute;
+  top: 18px;
+  left: 0;
+  z-index: 2;
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(12, 14, 16, 0.5);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  padding: 0 14px 0 11px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.back-link svg {
+  transition: translate var(--transition-fast);
+}
+
+.back-link:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(12, 14, 16, 0.72);
+  color: var(--text);
+}
+
+.back-link:hover svg {
+  translate: -2px 0;
+}
+
+.back-link:active {
+  scale: 0.97;
+}
+
+.back-link:focus-visible {
+  outline: 2px solid var(--accent-readable, var(--accent));
+  outline-offset: 3px;
+}
+
+/* Wide screens: move the button into the empty left gutter beside the content. */
+@media (min-width: 1400px) {
+  .back-link {
+    left: auto;
+    right: calc(100% + 20px);
+  }
+}
+
+/* No gutter: reserve a row above the content so the button never overlaps the TOC or lists.
+   :has() outranks the later .shell padding overrides, so every breakpoint is restated here. */
+@media (max-width: 1399px) {
+  .shell:has(> .back-link) {
+    padding-top: 86px;
+  }
+}
+
+@media (max-width: 960px) {
+  .shell:has(> .back-link) {
+    padding-top: 74px;
+  }
+}
+
+@media (max-width: 640px) {
+  .shell:has(> .back-link) {
+    padding-top: 62px;
+  }
+
+  .back-link {
+    top: 12px;
+  }
+}
+
 /* ---- Page Header ---- */
 .intro,
 .page-header {

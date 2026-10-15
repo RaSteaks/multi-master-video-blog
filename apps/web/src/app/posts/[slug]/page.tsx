@@ -9,6 +9,7 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownImageComponent } from "@/components/MarkdownImage";
+import { BackLink } from "@/components/BackLink";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
 import { GaussianSplatEmbed } from "@/components/GaussianSplatEmbed";
 import {
@@ -78,6 +79,7 @@ export default async function PostPage({ params }: PostPageProps) {
         />
       ) : null}
     <main className={hasToc ? "shell article-shell article-shell-with-toc" : "shell article-shell"}>
+      <BackLink href="/posts" label="返回文章" />
       {hasToc ? (
         <div className="article-content-grid">
           {/* TOC: standalone frosted glass card, sticky beside the article */}
