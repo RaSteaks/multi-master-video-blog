@@ -26,6 +26,8 @@ const MANAGER_AUTH_USERNAME =
 const MANAGER_AUTH_PASSWORD =
   managerEnv("MANAGER_AUTH_PASSWORD", managerEnv("MANAGER_PASSWORD", ""));
 const MANAGER_AUTH_ENABLED = MANAGER_AUTH_PASSWORD.length > 0;
+// Only authenticated HTML exposes this nonce; a cross-site form cannot supply it.
+const MANAGER_CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const POSTGRES_SERVICE_NAME =
   managerEnv("POSTGRES_SERVICE_NAME", "postgresql-x64-17");
 const WEB_MODE_ENV_KEY = "MANAGER_WEB_MODE";
@@ -402,7 +404,8 @@ function stripManagerBasePath(pathname) {
 }
 
 function isAuthenticated(req) {
-  if (!MANAGER_AUTH_ENABLED) return true;
+  // A reverse proxy is also a loopback peer, so missing credentials must fail closed.
+  if (!MANAGER_AUTH_ENABLED) return false;
 
   const credentials = parseBasicAuth(req.headers.authorization);
   if (!credentials) return false;
@@ -411,6 +414,25 @@ function isAuthenticated(req) {
     timingSafeStringEqual(credentials.username, MANAGER_AUTH_USERNAME) &&
     timingSafeStringEqual(credentials.password, MANAGER_AUTH_PASSWORD)
   );
+}
+
+function requireManagerMutation(req) {
+  const origin = req.headers.origin;
+  let sameOrigin = !origin;
+  if (origin) {
+    try {
+      const parsed = new URL(origin);
+      // Host survives the HTTPS reverse proxy; do not compare against backend HTTP.
+      sameOrigin = ["http:", "https:"].includes(parsed.protocol) && parsed.host === req.headers.host;
+    } catch { sameOrigin = false; }
+  }
+  if (!sameOrigin || req.headers["sec-fetch-site"] === "cross-site" ||
+      !timingSafeStringEqual(req.headers["x-manager-csrf"] || "", MANAGER_CSRF_TOKEN)) {
+    throw Object.assign(new Error("Invalid management request origin or CSRF token."), { statusCode: 403 });
+  }
+  if (String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+    throw Object.assign(new Error("Content-Type must be application/json."), { statusCode: 415 });
+  }
 }
 
 function parseBasicAuth(header) {
@@ -1145,10 +1167,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (!MANAGER_AUTH_ENABLED) {
+      sendJson(res, 503, { ok: false, error: "Set MANAGER_AUTH_PASSWORD before using the management HTTP interface." });
+      return;
+    }
+
     if (!isAuthenticated(req)) {
       sendAuthRequired(res);
       return;
     }
+
+    // One guard covers every current and future POST before it can produce side effects.
+    if (req.method === "POST") requireManagerMutation(req);
 
     const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
     const pathname = stripManagerBasePath(url.pathname);
@@ -1226,7 +1256,7 @@ if (require.main === module) server.listen(PORT, HOST, () => {
     console.log(`Service Manager base path: ${MANAGER_BASE_PATH}`);
   }
   console.log(
-    `Service Manager auth: ${MANAGER_AUTH_ENABLED ? `enabled for ${MANAGER_AUTH_USERNAME}` : "disabled"}`
+    `Service Manager auth: ${MANAGER_AUTH_ENABLED ? `enabled for ${MANAGER_AUTH_USERNAME}` : "not configured; HTTP access disabled"}`
   );
 });
 
@@ -1897,6 +1927,10 @@ function html() {
 
   <script>
     const API_BASE = ${JSON.stringify(MANAGER_BASE_PATH)};
+    const MUTATION_HEADERS = {
+      "Content-Type": "application/json",
+      "X-Manager-CSRF": ${JSON.stringify(MANAGER_CSRF_TOKEN)}
+    };
     const AUTO_REFRESH_INTERVAL_MS = 2000;
     const LOG_SOURCE_LABELS = Object.freeze({
       web: "Web",
@@ -2283,7 +2317,7 @@ function html() {
       setActionReadout("Running " + action + " on " + id + "...");
       try {
         const response = await fetch(apiPath("/api/services/" + encodeURIComponent(id) + "/" + encodeURIComponent(action)), {
-          method: "POST"
+          method: "POST", headers: MUTATION_HEADERS
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || "Action failed");
@@ -2308,7 +2342,7 @@ function html() {
       setBusy(true);
       setActionReadout("Running " + action + "...");
       try {
-        const response = await fetch(apiPath("/api/stack/" + encodeURIComponent(action)), { method: "POST" });
+        const response = await fetch(apiPath("/api/stack/" + encodeURIComponent(action)), { method: "POST", headers: MUTATION_HEADERS });
         const data = await response.json();
         if (!response.ok || !data.ok) {
           throw new Error(data.error || "Stack action failed");
@@ -2345,7 +2379,7 @@ function html() {
       setActionReadout("Switching Frontend Web to " + nextLabel + " mode...");
       try {
         const response = await fetch(apiPath("/api/services/web/mode/" + encodeURIComponent(mode)), {
-          method: "POST"
+          method: "POST", headers: MUTATION_HEADERS
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || "Mode switch failed");
@@ -2390,7 +2424,7 @@ function html() {
       try {
         const response = await fetch(apiPath("/api/upload-tokens"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: MUTATION_HEADERS,
           body: JSON.stringify(payload)
         });
         const data = await response.json();

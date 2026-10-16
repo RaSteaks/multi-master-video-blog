@@ -135,7 +135,17 @@ the tag and SDR relation before rollback, then removes photo records first and
 files second. Photo deletion returns HTTP 202 with `cleanupRequired` and
 `orphanFileIds` if the record is gone but one or more file deletions fail.
 
-Original assets are available at `/api/assets/:id`. The proxy accepts only
+Original assets are available at `/api/assets/:id` only when referenced by
+published content, site backgrounds, or explicit operator `PUBLIC_ASSET_IDS`
+(for local About/branding files without a CMS owner). Authenticated article/video/album previews
+use their corresponding publishing token in a header and receive private,
+non-cacheable responses; unrelated CMS files remain inaccessible. Public asset
+requests recheck publication even when conditional cache headers are present.
+Inline article files require service-written provenance in addition to their
+Markdown reference; see `docs/deployment.md` for the one-time review of legacy
+inline images without provenance. Merely writing another file's ID into a draft
+does not grant access to it.
+The proxy accepts only
 the named presets in `config/directus-asset-presets.json`: `album-cover`,
 `album-thumb`, `album-thumb-sm`, `content-card`, `content-hero`,
 `site-background`, and `site-background-thumb`, requested with `?key=...`.

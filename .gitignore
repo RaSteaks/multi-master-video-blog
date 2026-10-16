@@ -54,6 +54,8 @@ apps/cms/directus/extensions/.cache/
 
 # Upload API local state
 apps/api/tmp/
+# Private originals, previews and rollback journals must never enter Git or public media.
+.private-media/
 
 # Local media storage
 media/*

@@ -6,7 +6,8 @@
 - `/admin/` proxies to Directus on `127.0.0.1:8055`.
 - `/api/` proxies to the Node media and article API on `127.0.0.1:8060`.
 - `/uploads/` proxies to Directus assets.
-- `/media/` maps to the local HLS media directory.
+- `/media/` proxies to the guarded Node media handler, including playlists and range requests.
+- `/manager/` is denied on the public virtual host; Manager requires its own password even on loopback.
 
 Only placeholders are allowed in this repository:
 
@@ -40,3 +41,9 @@ Protected write endpoints use separate tokens:
 - `POST /api/articles` requires `ARTICLE_API_TOKEN` (or falls back to `UPLOAD_API_TOKEN` when intentionally left unset).
 
 Keep both tokens in `apps/api/.env`; never expose them through `NEXT_PUBLIC_*`. The trailing slash in `proxy_pass http://127.0.0.1:8060/;` is required so external `/api/articles` reaches the internal `/articles` route.
+
+Do not add a static `/media/` alias or a separate `.m3u8` location: those would
+bypass the application's private-path and symlink checks. See
+[`docs/deployment.md`](../../docs/deployment.md#security-update-rollout) for private
+scan-file migration, Manager authentication, and removal of historical cached
+private responses. Update the actual server configuration when deploying this template.

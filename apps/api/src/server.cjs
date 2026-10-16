@@ -51,6 +51,10 @@ const {
 } = require("./film-scan-utils.cjs");
 const { createDirectusTokenCache } = require("./directus-auth.cjs");
 const { createTaskLimiter } = require("./task-limiter.cjs");
+const { createCachedProbe } = require("./cached-probe.cjs");
+const { canReadAsset } = require("./asset-access.cjs");
+const { filmScanPath, filmScanStoredPath, prepareFilmScanStorage,
+  publicMediaPath, assetSafetyHeaders } = require("./media-security.cjs");
 const {
   AUTO_SDR_CONVERSION,
   buildDolbySdrConversion,
@@ -119,7 +123,9 @@ const FILM_SCAN_PROCESS_TIMEOUT_MS = positiveInteger(
   env.FILM_SCAN_PROCESS_TIMEOUT_MS,
   30 * 60 * 1000
 );
-const FILM_SCAN_ROOT = path.join(MEDIA_ROOT, "film-scans");
+// Private work lives beside, never inside, the public media tree (same volume by default).
+const FILM_SCAN_ROOT = path.resolve(ROOT, env.FILM_SCAN_ROOT ||
+  path.join(MEDIA_ROOT, "..", ".private-media", "film-scans"));
 const FFMPEG_PATH = env.FFMPEG_PATH || resolveOptionalPackage("ffmpeg-static") || "ffmpeg";
 const FFPROBE_PATH =
   env.FFPROBE_PATH || resolveOptionalPackage("ffprobe-static", "path") || "ffprobe";
@@ -155,6 +161,8 @@ const ARTICLE_IMAGE_TARGET_PATTERN =
 const ASSET_PRESETS = new Set(
   require("../../../config/directus-asset-presets.json").map((preset) => preset.key)
 );
+const PUBLIC_ASSET_IDS = new Set(String(env.PUBLIC_ASSET_IDS || "")
+  .split(",").map(value => value.trim()).filter(Boolean));
 const JSON_COMPRESSION_MIN_BYTES = 1024;
 const COLOR_REQUIRED_FIELDS = [
   "colorPrimaries",
@@ -480,7 +488,7 @@ function runProcess(command, args, options = {}) {
 
 async function commandAvailable(command) {
   try {
-    await runProcess(command, ["-version"]);
+    await runProcess(command, ["-version"], { timeoutMs: 5000 });
     return true;
   } catch {
     return false;
@@ -495,6 +503,8 @@ async function parseMultipart(req) {
   return new Promise((resolve, reject) => {
     const fields = {};
     const pendingWrites = [];
+    const activeWrites = new Set();
+    const pendingCloses = [];
     let fileInfo = null;
     let uploadBytes = 0;
     let rejected = false;
@@ -516,18 +526,34 @@ async function parseMultipart(req) {
 
       rejected = true;
       req.unpipe(busboy);
-      busboy.removeAllListeners();
-      fsp.rm(tempDir, { recursive: true, force: true }).finally(() => reject(error));
+      // Busboy may still parse the current chunk. Keep its error listener and
+      // drain rejected parts; wait for file handles to close before deleting on Windows.
+      for (const stream of activeWrites) stream.destroy(error);
+      req.resume();
+      Promise.allSettled([...pendingWrites, ...pendingCloses])
+        .then(() => fsp.rm(tempDir, { recursive: true, force: true }))
+        .then(() => reject(error), cleanupError => {
+          error.cleanupError = cleanupError;
+          reject(error);
+        });
     }
 
     busboy.on("field", (name, value) => {
+      if (rejected) return;
       fields[name] = value;
     });
 
     busboy.on("file", (name, file, info) => {
+      if (rejected) { file.resume(); return; }
       if (!["video", "sdrVideo", "cover", "masterPackage"].includes(name)) {
         file.resume();
         return;
+      }
+
+      // Video covers share the same image-only contract as article attachments.
+      if (name === "cover") {
+        try { validateArticleImageMetadata(info); }
+        catch (error) { file.resume(); rejectOnce(error); return; }
       }
 
       const filename = name === "masterPackage" ? safeRelativePath(info.filename) : safeFileName(info.filename);
@@ -542,10 +568,15 @@ async function parseMultipart(req) {
       assertInside(tempDir, tempPath);
       fs.mkdirSync(path.dirname(tempPath), { recursive: true });
       const writeStream = fs.createWriteStream(tempPath);
+      activeWrites.add(writeStream);
+      writeStream.once("close", () => activeWrites.delete(writeStream));
+      pendingCloses.push(new Promise(resolveClose => writeStream.once("close", resolveClose)));
 
       const currentFile = {
         field: name,
         filename,
+        originalName: info.filename,
+        size: 0,
         mimeType: info.mimeType,
         tempPath,
         tempDir
@@ -568,6 +599,10 @@ async function parseMultipart(req) {
 
       file.on("data", (chunk) => {
         uploadBytes += chunk.length;
+        currentFile.size += chunk.length;
+        if (name === "cover" && currentFile.size > MAX_ARTICLE_IMAGE_BYTES) {
+          rejectOnce(httpError(413, "Video cover exceeds the image size limit."));
+        }
       });
 
       file.on("limit", () => {
@@ -595,6 +630,8 @@ async function parseMultipart(req) {
 
       try {
         await Promise.all(pendingWrites);
+
+        if (files.cover) await assertArticleImageContents(files.cover);
 
         resolve({
           fields,
@@ -3839,7 +3876,9 @@ async function handleArticleCreate(req, res) {
       coverImageId = await directusUploadFile(
         directusToken,
         article.cover,
-        `${article.title} cover`
+        `${article.title} cover`,
+        // Covers remain article-owned when replaced or removed but still referenced in Markdown.
+        { reconciliationTag: `article-image:${crypto.randomUUID()}` }
       );
       uploadedFileIds.push(coverImageId);
     } else if (article.removeCover) {
@@ -3851,7 +3890,9 @@ async function handleArticleCreate(req, res) {
       const fileId = await directusUploadFile(
         directusToken,
         inlineImage.file,
-        inlineImage.alt || inlineImage.name || `${article.title} image`
+        inlineImage.alt || inlineImage.name || `${article.title} image`,
+        // Provenance is service-written metadata, never a grant inferred from Markdown text.
+        { reconciliationTag: `article-image:${crypto.randomUUID()}` }
       );
       uploadedFileIds.push(fileId);
       uploadedImages.push({
@@ -5636,9 +5677,7 @@ async function handleFilmStockPresets(req, res) {
 }
 
 function filmScanSourcePath(relativePath) {
-  const filePath = path.resolve(MEDIA_ROOT, String(relativePath || ""));
-  assertInside(FILM_SCAN_ROOT, filePath);
-  return filePath;
+  return filmScanPath(FILM_SCAN_ROOT, relativePath);
 }
 
 function filmScanJobDirectory(jobId) {
@@ -5968,7 +6007,7 @@ async function analyzeFilmScanJob(jobId, signal) {
         await renderReviewedFilmFrame(previewOptions);
         previewRenders.push(previewOptions);
         throwIfFilmScanAborted(signal);
-        const previewRelative = path.relative(MEDIA_ROOT, previewPath);
+        const previewRelative = filmScanStoredPath(FILM_SCAN_ROOT, previewPath);
         await directusRequest(`/items/film_scan_frames/${frameCreated.id}`, token, {
           method: "PATCH",
           body: {
@@ -6147,7 +6186,7 @@ async function handleFilmScanCreate(req, res, albumId) {
       const targetPath = path.join(sourceDir, file.filename);
       assertInside(finalDir, targetPath);
       await fsp.rename(file.tempPath, targetPath);
-      const relativePath = path.relative(MEDIA_ROOT, targetPath);
+      const relativePath = filmScanStoredPath(FILM_SCAN_ROOT, targetPath);
       const source = (
         await directusRequest("/items/film_scan_sources", token, {
           method: "POST",
@@ -6596,10 +6635,10 @@ async function handleFilmScanFramePatch(req, res, albumId, jobId, frameId) {
         }
       })
     ).data;
-    const previewRelative = path.join(
-      path.dirname(String(frame.preview_path)),
-      `${created.id}.jpg`
-    );
+    // Resolve old Windows separators before deriving a newly persisted frame path.
+    const previewRelative = filmScanStoredPath(FILM_SCAN_ROOT, path.join(
+      path.dirname(filmScanSourcePath(frame.preview_path)), `${created.id}.jpg`
+    ));
     const createdWithPreview = (
       await directusRequest(`/items/film_scan_frames/${created.id}`, token, {
         method: "PATCH",
@@ -8225,11 +8264,13 @@ async function handleUpload(req, res) {
   }
 }
 
-async function handleHealth(res) {
-  const [ffmpegAvailable, ffprobeAvailable] = await Promise.all([
+const getMediaHealth = createCachedProbe(() => Promise.all([
     commandAvailable(FFMPEG_PATH),
     commandAvailable(FFPROBE_PATH)
-  ]);
+  ]));
+
+async function handleHealth(res) {
+  const [ffmpegAvailable, ffprobeAvailable] = await getMediaHealth();
 
   sendJson(res, 200, {
     status: "ok",
@@ -8324,16 +8365,21 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Upload API listening on http://${HOST}:${PORT}`);
-  void recoverFilmScanQueue();
+// Migrate every legacy task, including completed/review tasks, before any public listener starts.
+prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT).then(() => {
+  server.listen(PORT, HOST, () => {
+    console.log(`Upload API listening on http://${HOST}:${PORT}`);
+    void recoverFilmScanQueue();
+  });
+}).catch(error => {
+  console.error(`Private film-scan storage is not ready: ${error.message}`);
+  process.exitCode = 1;
 });
 
 async function handleMedia(req, pathname, res) {
   try {
-    const relativePath = decodeURIComponent(pathname.replace(/^\/media\//, ""));
-    const filePath = path.resolve(MEDIA_ROOT, relativePath);
-    assertInside(MEDIA_ROOT, filePath);
+    const filePath = await publicMediaPath(MEDIA_ROOT, FILM_SCAN_ROOT,
+      pathname.replace(/^\/media\//, ""));
 
     const stat = await fsp.stat(filePath);
     if (!stat.isFile()) {
@@ -8434,7 +8480,20 @@ async function fetchDirectusAsset(
   return response;
 }
 
+function assetAccess(req) {
+  const bearer = String(req.headers.authorization || "").match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  const credentials = [bearer, req.headers["x-upload-token"], req.headers["x-article-token"]].filter(Boolean);
+  const media = credentials.some(value => tokenMatches(value, UPLOAD_API_TOKEN));
+  const article = credentials.some(value => tokenMatches(value, ARTICLE_API_TOKEN));
+  if ((req.headers.authorization || credentials.length) && !media && !article) {
+    throw httpError(401, "Invalid asset preview token.");
+  }
+  return { media, article };
+}
+
 async function handleAsset(req, url, res) {
+  // Denials and authenticated previews must never be cached as public media.
+  res.setHeader("Cache-Control", "private, no-store");
   try {
     const pathname = url.pathname;
     const fileId = decodeURIComponent(pathname.replace(/^\/assets\//, "")).split("/")[0];
@@ -8456,7 +8515,11 @@ async function handleAsset(req, url, res) {
       }
     }
 
+    const access = assetAccess(req);
     const token = await directusLogin();
+    if (!await canReadAsset(fileId, access, route => directusRequest(route, token), PUBLIC_ASSET_IDS)) {
+      throw httpError(404, "Asset not found.");
+    }
     const assetUrl = new URL(
       `${DIRECTUS_URL}/assets/${encodeURIComponent(fileId)}`
     );
@@ -8470,10 +8533,13 @@ async function handleAsset(req, url, res) {
       req.method
     );
 
-    const cacheHeader =
-      "public, max-age=86400, stale-while-revalidate=604800";
+    // Even a conditional request must recheck publication before emitting 304.
+    const cacheHeader = access.media || access.article
+      ? "private, no-store" : "public, no-cache, must-revalidate";
     const validatorHeaders = {
       "Cache-Control": cacheHeader,
+      Vary: "Authorization, X-Upload-Token, X-Article-Token",
+      ...assetSafetyHeaders(response.headers.get("content-type")),
       ...(response.headers.get("etag")
         ? { ETag: response.headers.get("etag") }
         : {}),

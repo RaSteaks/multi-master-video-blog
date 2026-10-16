@@ -19,7 +19,7 @@ D:\path\to\project\
 - Frontend: Next.js on `127.0.0.1:3000`
 - CMS: Directus on `127.0.0.1:8055`
 - Upload API: Node.js service on `127.0.0.1:8060`
-- Media: local files served by Nginx under `/media/`
+- Media: Nginx forwards `/media/` to the Node API's guarded file handler
 - HTTPS: configured manually in Windows Nginx
 
 ## Security Checklist
@@ -101,9 +101,62 @@ changes asset transforms to preset-only unless the instance was already
 intentionally configured as `all`. The Node asset proxy independently rejects
 arbitrary transform parameters and only accepts these managed preset keys.
 
-The example Nginx config enables gzip for text/JSON responses, streams large
-multipart requests directly to Node, keeps file metadata hot, and caches HLS
-segments for seven days. HLS manifests continue to revalidate so overwritten
-playlists are observed promptly.
+The example Nginx config enables gzip for text/JSON responses and streams large
+multipart requests directly to Node. Media requests also pass through Node's
+canonical-path checks, preserving byte ranges and HLS cache headers. Do not add
+a separate static media alias or playlist location that bypasses these checks.
 
 For production, replace the Directus admin credentials in API and frontend `.env` files with limited service accounts.
+
+## Security update rollout
+
+- Set `MANAGER_AUTH_PASSWORD` to a strong password in the repository-root `.env`
+  or the Manager process environment; `MANAGER_AUTH_USERNAME` defaults to `admin`.
+  Without a password, its HTTP interface returns 503. Local CLI service-control
+  commands remain available. The public Nginx example denies `/manager/`; use a
+  private administration endpoint if remote access is needed. If proxying it,
+  preserve `Host` and retain Manager authentication. Reload the page after a
+  Manager restart because its CSRF nonce changes. Every POST requires the page's
+  `X-Manager-CSRF` header and `Content-Type: application/json`.
+- Film-scan originals, review previews and rollback journals now live in
+  `MEDIA_ROOT/../.private-media/film-scans` by default. `FILM_SCAN_ROOT` can override
+  this location but must resolve outside the public media tree. Back up the old
+  directory before upgrading. At API startup, all numeric job directories under
+  legacy `MEDIA_ROOT/film-scans` are moved without overwriting existing destinations,
+  before listening. Existing videos using the `film-scans` slug retain their
+  `source`/`sdr`/HDR directories and public URLs.
+  Database paths keep the logical `film-scans/...` format, including old Windows
+  separators. A collision or cross-volume rename stops startup with an error;
+  reconcile/move the remaining files to the private root before restarting.
+- Update the actual Nginx media routing together with the API. The new template
+  has no raw filesystem alias, so private files cannot bypass Node through an
+  alternate Windows path or symlink. Remove old private-file copies from all
+  public roots after verifying backups/migration, and purge previously cached
+  `/media/film-scans/*`, `/api/media/film-scans/*` and private asset responses from
+  any reverse-proxy/CDN caches. New code cannot recall bytes already downloaded.
+- Public `/api/assets/:id` reads require a published owner or a site background
+  reference. The API service account needs read access to the relevant content
+  collections as well as files. Denied collections grant no access; CMS outages
+  fail closed. Article and upload tokens allow previews only for their respective
+  article or video/album content. The editor/gallery fetch draft images into
+  memory using authorization headers. Public responses revalidate authorization;
+  authenticated responses use `private, no-store`.
+  For CMS files used only in local `content/about.md` or `SITE_HOME_AVATAR_URL`,
+  explicitly list their IDs in the API's comma-separated `PUBLIC_ASSET_IDS`;
+  these are intentional public exceptions and must be removed there to revoke
+  access. New article cover and inline uploads have a service-written
+  `description=article-image:<UUID>` provenance marker; a Markdown link alone
+  cannot grant access to an unrelated file. Older inline images lack this proof:
+  an administrator must verify their article ownership and set that marker in
+  Directus before they can be reused privately. Do not automatically adopt IDs
+  from untrusted Markdown or add private draft images to `PUBLIC_ASSET_IDS`.
+  `DIRECTUS_SHOW_DRAFTS=true` continues to serve referenced draft post/video
+  images through a separate, non-cacheable Next preview route. This explicitly
+  exposes draft content as before; keep the flag false on the public site.
+- Video covers now use the article image type/signature and size limits. Existing
+  non-image assets are forced to download with a sandbox CSP and `nosniff`.
+  Health checks share cached FFmpeg/FFprobe availability for 60 seconds, with a
+  five-second deadline per probe; they are not a real-time codec diagnostic.
+
+The offline security regression checks are `npm run test:security`. They use
+temporary files and mocked CMS/service effects; they do not alter live services.
