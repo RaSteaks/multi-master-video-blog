@@ -64,6 +64,7 @@ const {
 } = require("./video-sdr.cjs");
 const { hashDolbyRpu, compareHdrMetadata } = require("./video-integrity.cjs");
 const { audioCodecFromProbe, hlsAttributesFromProbe, videoCodecFromProbe } = require("./hls-metadata.cjs");
+const { inspectImfPackage, imfPackageRelativePath, hashImfPackage, applyImfColor, buildImfEncode, validateImfOutput } = require("./imf.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(ROOT, "..", "..");
@@ -512,6 +513,9 @@ async function parseMultipart(req) {
     const files = {};
     const busboy = createMultipartParser({
       headers: req.headers,
+      // Folder-upload references must survive multipart parsing for IMF/HLS.
+      // Paths are validated/sanitized separately before touching the filesystem.
+      preservePath: true,
       limits: {
         files: 500,
         fields: 64,
@@ -564,7 +568,10 @@ async function parseMultipart(req) {
         rejectOnce(httpError(400, name === "video" ? "Select at most two source videos." : `Only one ${name} file is allowed.`));
         return;
       }
-      const tempPath = path.join(tempDir, name, name === "video" ? `${crypto.randomUUID()}-${filename}` : filename);
+      // Package paths may normalize to the same name; keep each multipart part
+      // isolated until CPL/ASSETMAP validation resolves its original relative path.
+      const tempPath = path.join(tempDir, name, ["video", "masterPackage"].includes(name)
+        ? `${crypto.randomUUID()}-${path.basename(filename)}` : filename);
       assertInside(tempDir, tempPath);
       fs.mkdirSync(path.dirname(tempPath), { recursive: true });
       const writeStream = fs.createWriteStream(tempPath);
@@ -1806,30 +1813,36 @@ async function moveMasterPackageFiles(files, metadata) {
     throw httpError(400, "Missing Dolby Vision master package files.");
   }
 
-  const packageDir = path.join(MEDIA_ROOT, metadata.slug, "source-package");
+  const sourceImf = metadata.sourceKind === "master_package"
+    ? await inspectImfPackage(files.map(file => ({ ...file, filename: file.originalName || file.filename, packagePath: file.tempPath }))) : null;
+  // Each source archive is immutable, including when replacing its playback rendition.
+  const packageDir = path.join(MEDIA_ROOT, metadata.slug, "source-package", crypto.randomUUID());
   assertInside(MEDIA_ROOT, packageDir);
-
-  if (fs.existsSync(packageDir) && metadata.overwrite) {
-    await fsp.rm(packageDir, { recursive: true, force: true });
-  }
 
   await fsp.mkdir(packageDir, { recursive: true });
 
   const movedFiles = [];
+  const destinations = new Set();
   for (const file of files) {
-    const relative = safeRelativePath(file.filename);
+    const relative = sourceImf ? imfPackageRelativePath(file.originalName || file.filename) : safeRelativePath(file.filename);
+    // Reject case aliases too: deployments may use a case-insensitive filesystem.
+    const collisionKey = relative.normalize("NFC").toLowerCase();
+    if (destinations.has(collisionKey)) throw httpError(422, "Package filenames collide after normalization.");
+    destinations.add(collisionKey);
     const targetPath = path.join(packageDir, relative);
     assertInside(packageDir, targetPath);
     await fsp.mkdir(path.dirname(targetPath), { recursive: true });
     await fsp.rename(file.tempPath, targetPath);
     movedFiles.push({
       ...file,
+      filename: sourceImf ? file.originalName || file.filename : file.filename,
       packagePath: targetPath,
       packageRelativePath: relative
     });
   }
 
-  const primary =
+  const imf = sourceImf ? await inspectImfPackage(movedFiles) : null;
+  const primary = imf ? movedFiles.find(file => file.packagePath === imf.video.path) :
     metadata.sourceKind === "hls_package"
       ? selectHlsPackagePrimary(movedFiles)
       : selectMasterPackagePrimary(movedFiles);
@@ -1846,6 +1859,7 @@ async function moveMasterPackageFiles(files, metadata) {
     sourcePath: primary.packagePath,
     packageDir,
     files: movedFiles,
+    imf,
     sidecars: movedFiles.filter((file) => isDolbySidecar(file.packagePath))
   };
 }
@@ -3051,6 +3065,9 @@ function validateColorContract(metadata, contract, context = "source") {
   const errors = [];
 
   for (const field of COLOR_REQUIRED_FIELDS) {
+    // RGB has no subsampled Cb/Cr location. Range must still be explicit; an RGB
+    // matrix is supplied only by the verified CPL path, never guessed for YUV.
+    if (field === "chromaLocation" && /^(rgb|gbr)/.test(contract.pixelFormat || "")) continue;
     if (contract[field] === undefined || contract[field] === null || contract[field] === "") {
       errors.push(`${context}: missing ${field}.`);
     }
@@ -8131,6 +8148,42 @@ async function saveCompanionSdr(input, project) {
   return { status: "ready", master: records.master, hlsUrl: mediaUrlFromPath(finalized.playlistPath) };
 }
 
+async function prepareImfPlayback(imf, metadata, sourceProbe, outputDir) {
+  if (!(await availableVideoSdrFilters()).has("zscale")) {
+    throw httpError(422, "RGB IMF conversion requires FFmpeg with zscale and libx265. The source package has been retained.");
+  }
+  const playbackPath = path.join(outputDir, "hdr10.mp4");
+  const conversion = buildImfEncode(imf, playbackPath);
+  try {
+    await runProcess(FFMPEG_PATH, conversion.args);
+    const probe = await probeVideo(playbackPath);
+    const contract = buildColorContract(probe, metadata);
+    const sourceContract = buildColorContract(sourceProbe, metadata);
+    const errors = [...validateColorContract(metadata, contract, "IMF conversion"),
+      ...validateImfOutput(imf, probe, contract), ...compareHdrMetadata(sourceContract, contract)];
+    if (errors.length) throwColorContractError(errors);
+    const output = await generateHls(playbackPath, outputDir, { ...metadata, mode: "copy" }, probe);
+    output.conversion = {
+      intent: conversion.intent, engine: conversion.engine, filter: conversion.filter,
+      cplId: imf.cplId, displayWindow: imf.crop, usesDolbyMetadata: false,
+      dolbyMetadataPreservedInSource: imf.hasDolbyMetadata,
+      notice: "RGB IMF was converted to HDR10. Dolby Vision dynamic metadata remains in the source package and is not applied to playback."
+    };
+    // HLS must preserve the encoded delivery contract, not match the RGB archive.
+    const finalized = await finalizeHlsOutput(output, { ...metadata, mode: "copy" }, contract, {}, probe);
+    finalized.verification.sourceProbeSummary = summarizeProbe(sourceProbe);
+    await writeVerificationReport(outputDir, {
+      verification: finalized.verification, sourceContract, convertedContract: contract,
+      outputContract: finalized.outputContract
+    });
+    return { finalized, playbackPath, probe, contract };
+  } catch (error) {
+    // Partial encodes are never registered, while the original package stays intact.
+    await fsp.rm(outputDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 async function handleUpload(req, res) {
   let parsed = null;
   let releaseProcessingSlot;
@@ -8143,16 +8196,31 @@ async function handleUpload(req, res) {
     if (res.destroyed) return;
     const { metadata, project: existingProject } = await resolveVideoUploadProject(parsed.fields);
     await identifyPairedSources(parsed, metadata);
-    validateProcessingPolicy(metadata);
-    const companionInput = await inspectCompanionSdr(parsed.files.sdrVideo, metadata);
+    if (metadata.sourceKind !== "master_package") validateProcessingPolicy(metadata);
     const packageInfo =
       metadata.sourceKind === "master_package" || metadata.sourceKind === "hls_package"
         ? await moveMasterPackageFiles(parsed.files.masterPackage, metadata)
         : null;
+    const imf = packageInfo?.imf;
+    if (imf) {
+      // IMF is an archival source, not an embedded browser Dolby Vision stream.
+      // The server owns the delivery type regardless of the form's selected type.
+      metadata.masterType = "hdr10";
+      metadata.label = /^(?:SDR|HDR10|HLG|Dolby Vision|Custom)(?: Master)?$/i.test(metadata.label)
+        ? "HDR10 (IMF)" : `${metadata.label} · HDR10 (IMF)`;
+      metadata.mode = "copy";
+      metadata.processingMode = "transcode";
+      metadata.resolutionWidth = null;
+      metadata.resolutionHeight = null;
+      metadata.bitrateMbps = null;
+      metadata.notes = [metadata.notes, "IMF RGB → HDR10 playback; Dolby Vision dynamic metadata is retained only in the source package."].filter(Boolean).join("\n");
+    }
+    validateProcessingPolicy(metadata);
+    const companionInput = await inspectCompanionSdr(parsed.files.sdrVideo, metadata);
     const sourcePath = packageInfo
       ? packageInfo.sourcePath
       : await moveSourceFile(parsed.file, metadata);
-    const dolbySidecar = await parseDolbyProfileFiles(
+    const dolbySidecar = imf ? {} : await parseDolbyProfileFiles(
       packageInfo?.sidecars || [],
       parsed.fields.dolbyXmlClipName || parsed.fields.dolby_xml_clip_name || ""
     );
@@ -8160,7 +8228,9 @@ async function handleUpload(req, res) {
       metadata.sourceKind === "hls_package"
         ? await inspectHlsPackage(packageInfo, metadata, dolbySidecar)
         : null;
-    const probe = hlsInspection?.probe || await probeVideo(sourcePath);
+    const rawProbe = hlsInspection?.probe || await probeVideo(sourcePath);
+    const audioProbe = imf?.audio ? (await probeMediaStreams(imf.audio.path)).find(stream => stream.codec_type === "audio") : null;
+    const probe = imf ? applyImfColor(imf, rawProbe, audioProbe) : rawProbe;
     validateDolbyVisionUpload(metadata, probe, dolbySidecar);
     const sourceContract =
       hlsInspection?.contract ||
@@ -8173,11 +8243,12 @@ async function handleUpload(req, res) {
     }
 
     const outputDir = await prepareOutputDir(metadata);
-    const hlsOutput =
+    const imfPlayback = imf ? await prepareImfPlayback(imf, metadata, probe, outputDir) : null;
+    const hlsOutput = imfPlayback ? null :
       metadata.sourceKind === "hls_package"
         ? await prepareHlsPackageOutput(packageInfo, outputDir)
         : await generateHls(sourcePath, outputDir, metadata, probe);
-    const finalized = await finalizeHlsOutput(
+    const finalized = imfPlayback?.finalized || await finalizeHlsOutput(
       hlsOutput,
       metadata,
       sourceContract,
@@ -8193,9 +8264,10 @@ async function handleUpload(req, res) {
       dolbySidecar,
       {
         project: existingProject || undefined,
+        sourceHash: imf ? await hashImfPackage(packageInfo.files) : undefined,
         sourceContract,
         outputContract: finalized.outputContract,
-        sourceProbe: probe,
+        sourceProbe: imf ? { ...probe, rawProbe } : probe,
         outputProbe: finalized.outputProbe,
         verification: finalized.verification
       }
@@ -8214,8 +8286,8 @@ async function handleUpload(req, res) {
     if (!existingProject && !companionInput && HDR_MASTER_TYPES.has(metadata.masterType)) {
       try {
         sdrDerivative = await createDolbySdrMaster(
-          metadata, hlsInspection?.playlistPath || sourcePath,
-          probe, sourceContract, records
+          metadata, imfPlayback?.playbackPath || hlsInspection?.playlistPath || sourcePath,
+          imfPlayback?.probe || probe, imfPlayback?.contract || sourceContract, records
         );
         if (sdrDerivative.master.is_default) records.master.is_default = false;
       } catch (error) {

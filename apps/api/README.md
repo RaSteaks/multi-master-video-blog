@@ -50,6 +50,15 @@ Common form fields:
 
 Use `mode=copy` by default. HDR10, HLG, and Dolby Vision masters must use `mode=copy`; transcode requests for HDR masters are rejected. HDR primaries are preserved and normalized as `BT.2020`, `P3-D65(smpte432)`, or `DCI-P3(smpte431)`.
 
+Exception: complete RGB/PQ IMF folders with CPL and ASSETMAP use a dedicated
+JPEG 2000 → HDR10 HEVC/AAC conversion (`zscale` + `libx265`). The API reads CPL
+color/range, mastering/CLL/FALL, timing and display-window metadata, joins the
+independent audio, and validates the delivery before publishing. Original package
+files remain archived. Dolby ISXD metadata is not applied or turned into RPU;
+playback is labeled HDR10. New-project uploads can also generate SDR through the
+existing libplacebo/Vulkan pipeline. See `docs/upload-api.md` for supported IMF
+composition limits and verification/provenance fields.
+
 For Dolby Vision, use `mode=copy` so FFmpeg repackages the existing HEVC/Dolby Vision bitstream into fMP4 HLS instead of re-encoding it. The API rejects Dolby Vision uploads without embedded configuration, decodable RPU and a verified RPU bitstream. Sidecars alone are not accepted.
 
 New-project HDR uploads without a supplied `sdrVideo` automatically generate a separate SDR MP4/HLS master. All HDR derivatives use adaptive `libplacebo`/Vulkan tone and gamut mapping; verified Dolby streams apply embedded RPU. Copy checks retain static metadata and full-stream RPU hashes. Paired uploads report `companionSdr` for the manual SDR; automatic conversion reports `sdrDerivative`. Later uploads use `projectId` to preserve existing project information and do not trigger automatic conversion. See `docs/upload-api.md` for pairing, authenticated project discovery, defaults and partial-failure recovery.

@@ -85,6 +85,47 @@ Use one of:
 
 `sourceKind=hls_package` must include a multivariant `master.m3u8` with `VIDEO-RANGE=SDR|PQ|HLG`. All variants must share the same verified color contract.
 
+### RGB IMF packages
+
+Upload the complete folder as repeated `masterPackage` files with
+`sourceKind=master_package`. The API recognizes CPL/ASSETMAP contents and resolves
+track files by UUID, including relative paths. Supported compositions have one
+segment, one JPEG 2000 RGB image resource, at most one audio resource, no repeats,
+and full-range 10/12/16-bit PQ with P3-D65 or BT.2020 primaries. A CPL must declare
+component reference levels, display aspect/window, mastering display metadata,
+MaxCLL and MaxFALL. Non-square display pixels, missing/ambiguous references,
+conflicting stream/CPL metadata, multiple CPLs/segments/resources, split assets,
+and unsupported color layouts fail with an actionable `IMF:` error. Export a
+flattened composition when those editing features are needed. This is not a full
+IMF/PKL compliance or cryptographic asset-hash validator.
+
+For a recognized RGB IMF, the server selects `HDR10 (IMF)` delivery regardless of
+the form's master type or copy/transcode selection. It retains the entire source
+package in a unique `media/<slug>/source-package/<id>/` directory, including on
+overwrite. `file_url` continues to identify the original image MXF; the package
+files remain alongside it. The source SHA-256 covers the whole package, so audio
+and CPL changes also invalidate stale automatic SDR versions.
+
+The source contract uses CPL-derived RGB matrix/full range and no chroma siting;
+YUV validation stays strict. Encoding applies resource entry points/durations,
+crops the CPL display window, restores square display pixels, converts P3 to
+BT.2020 in linear light, and produces 10-bit limited-range HEVC/AAC MP4 and fMP4
+HLS (`VIDEO-RANGE=PQ`). FFmpeg must provide `zscale` and `libx265`. HDR10 output
+must preserve the mastering/CLL/FALL values, match the composition's duration,
+frame rate and display dimensions, and retain audio before registration. HLS is
+then checked against the converted MP4 contract. Partial encodes are removed on
+failure; the source package is retained.
+
+Independent Dolby ISXD metadata is **archived, not applied or converted to RPU**.
+The result is labeled HDR10, never playable Dolby Vision. The API's
+`verification.conversion` reports `intent=imf_rgb_to_hdr10`, the actual filter,
+CPL ID, display window and `usesDolbyMetadata=false`. `color-verification.json`
+records separate source, converted and output contracts. The normal new-project
+SDR workflow runs from the converted, audio-inclusive HDR10 MP4; it requires
+libplacebo/Vulkan and does not apply the archived Dolby trims. A supplied SDR
+suppresses automatic generation, and existing projects retain the usual append
+behavior. SDR failure is reported separately without discarding verified HDR10.
+
 ### Paired HDR / SDR and later additions
 
 - The source-video picker accepts one file or two files together. Two embedded sources are sent as two `video` fields; the server identifies exactly one HDR and one SDR from their probed metadata, regardless of order or filename, and infers the HDR master type. Two HDR files, two SDR files, more than two files, or mixing this mode with `sdrVideo`/a package are rejected. Both sources must use copy mode.
@@ -120,7 +161,7 @@ masterType=dolby_vision
 mode=copy
 ```
 
-HDR10, HLG, and Dolby Vision masters must use `mode=copy`. The API rejects HDR transcode requests because they can strip HDR metadata, alter primaries, or remove Dolby Vision RPU data.
+Embedded HDR10, HLG, and Dolby Vision masters must use `mode=copy`. The API rejects arbitrary HDR transcode requests because they can strip HDR metadata, alter primaries, or remove Dolby Vision RPU data. Recognized RGB IMF packages use the dedicated conversion path described above.
 
 The API will package copy-mode uploads as fMP4 HLS under:
 
