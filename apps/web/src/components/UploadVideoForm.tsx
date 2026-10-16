@@ -653,9 +653,10 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
           ))}
         </div>
 
-        <div className="upload-grid">
+        {/* Source files and cover share two balanced columns, independent of metadata fields. */}
+        <div className="upload-assets-grid">
           {sourceKind === "embedded" ? (
-            <div className="upload-span-2">
+            <div className={appendProject ? "upload-wide" : undefined}>
             <label>
               {t.sourceVideo}
               <FileDropZone
@@ -720,23 +721,48 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
           </label> : null}
 
           {sourceKind !== "embedded" && selectedSourceMode ? (
-            <div className="upload-source-note">
+            <div className={`upload-source-note${appendProject ? " upload-wide" : ""}`}>
               <strong>{selectedSourceMode.title}</strong>
               <span>{packageSummary}</span>
             </div>
           ) : null}
         </div>
-      {isHdr && sourceKind !== "embedded" ? <div className="upload-grid">
-        <h2>{t.pairedSdr}</h2>
-        <label className="upload-checks"><input type="checkbox" checked={pairedSdr}
-          onChange={event => { setPairedSdr(event.target.checked); if (!event.target.checked) setSdrVideo(null); }} />{t.pairedSdr}</label>
-        {pairedSdr ? <div className="upload-grid">
-          <p className="field-note upload-wide">{t.pairedNote}</p>
-          <label className="upload-wide">{t.pairedFile}<input type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v"
-            onChange={event => setSdrVideo(event.target.files?.[0] || null)} /></label>
-          {sdrVideo ? <p>{sdrVideo.name} · {(sdrVideo.size / 1024 / 1024).toFixed(1)} MiB</p> : null}
-        </div> : null}
-      </div> : null}
+        {/* Keep the optional SDR controls together instead of distributing them across the field grid. */}
+        {isHdr && sourceKind !== "embedded" ? (
+          <div className="upload-companion">
+            <div className="upload-checks">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={pairedSdr}
+                  aria-controls="paired-sdr-fields"
+                  aria-describedby="paired-sdr-note"
+                  onChange={event => {
+                    setPairedSdr(event.target.checked);
+                    if (!event.target.checked) setSdrVideo(null);
+                  }}
+                />
+                {t.pairedSdr}
+              </label>
+            </div>
+            <p id="paired-sdr-note" className="field-note">{t.pairedNote}</p>
+            <div id="paired-sdr-fields" hidden={!pairedSdr}>
+              {pairedSdr ? <>
+                <label>
+                  {t.pairedFile}
+                  <input
+                    type="file"
+                    accept="video/mp4,video/quicktime,.mp4,.mov,.m4v"
+                    onChange={event => setSdrVideo(event.target.files?.[0] || null)}
+                  />
+                </label>
+                {sdrVideo ? <p className="field-note upload-companion-file">
+                  {sdrVideo.name} · {(sdrVideo.size / 1024 / 1024).toFixed(1)} MiB
+                </p> : null}
+              </> : null}
+            </div>
+          </div>
+        ) : null}
 
       </section>
 
