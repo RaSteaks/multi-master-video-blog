@@ -444,7 +444,11 @@ async function managerFixture(t, password) {
     __dirname: path.join(dir, "scripts"), process: { env: password ? { MANAGER_AUTH_PASSWORD: password } : {}, pid: process.pid },
     console, Buffer, URL, AbortSignal, fetch, setTimeout, clearTimeout });
   vm.runInContext(fs.readFileSync(filename, "utf8"), context);
-  vm.runInContext(`var effects = []; withOperation = async (id, fn) => fn();
+  // Match asynchronous operation admission while keeping OS effects mocked.
+  vm.runInContext(`var effects = []; withOperation = async (id, fn, accepted) => {
+      accepted?.({ id: "00000000-0000-0000-0000-000000000001", label: id, state: "running", steps: [] });
+      return fn();
+    };
     handleStackAction = async action => effects.push(action);
     handleAction = async (service, action) => effects.push(service + ':' + action);
     handleWebModeChange = async mode => effects.push(mode);
@@ -477,7 +481,7 @@ test("Manager fails closed without credentials and every POST requires same-orig
   assert.equal((await mgr.post("/api/stack/stop-all", { ...good, authorization: "Basic invalid" })).status, 401);
   assert.equal((await mgr.post("/api/stack/stop-all", { ...good, "content-type": "text/plain" })).status, 415);
   for (const route of ["/api/stack/stop-all", "/api/services/api/restart", "/api/services/web/mode/production", "/api/upload-tokens"]) {
-    assert.equal((await mgr.post(route, good)).status, 200);
+    assert.equal((await mgr.post(route, good)).status, route === "/api/upload-tokens" ? 200 : 202);
   }
   assert.equal(mgr.effects.length, 4);
 });

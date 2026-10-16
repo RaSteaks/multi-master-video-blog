@@ -4,12 +4,16 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { Lang } from "@/components/UploadPageClient";
 import { SLUG_MAX_LENGTH, SLUG_PATTERN, sanitizeSlugInput, slugify, slugifyFileName, timestampSlug } from "@/lib/slug";
 import { VideoProjectPicker, type UploadProject } from "./VideoProjectPicker";
+import { VideoFormatInfo } from "./VideoFormatInfo";
+import type { SourceFormat } from "@/lib/video-format";
 
 type UploadState = "idle" | "uploading" | "success" | "error";
 type SourceKind = "embedded" | "master_package" | "hls_package";
 
 type UploadResponse = {
   status: string;
+  sourceFormat?: SourceFormat | null;
+  master?: { type: string };
   hlsUrl?: string;
   colorContract?: {
     displayGamutLabel?: string | null;
@@ -556,6 +560,8 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
       }
 
       setState("error");
+      // Unsupported conversions still return useful source identification.
+      setResult(payload);
       setMessage(payload?.error || t.httpError(request.status));
     };
 
@@ -906,6 +912,8 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
           role="status"
         >
           <p>{message}</p>
+          {result?.sourceFormat ? <VideoFormatInfo source={result.sourceFormat} lang={lang}
+            playback={state === "success" ? ({ hdr10: "HDR10", sdr: "SDR", hlg: "HLG", dolby_vision: "Dolby Vision" } as Record<string, string>)[result.master?.type || ""] || result.colorContract?.hlsVideoRange : null} /> : null}
           {/* Name the actual delivery format even when the uploaded archive contains Dolby metadata. */}
           {result?.verification?.conversion?.intent === "imf_rgb_to_hdr10" ? <p>{t.imfConverted}</p> : null}
           {result?.companionSdr?.error ? <p>{result.companionSdr.error}</p> : null}

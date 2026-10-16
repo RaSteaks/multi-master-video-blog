@@ -65,6 +65,7 @@ const {
 const { hashDolbyRpu, compareHdrMetadata } = require("./video-integrity.cjs");
 const { audioCodecFromProbe, hlsAttributesFromProbe, videoCodecFromProbe } = require("./hls-metadata.cjs");
 const { inspectImfPackage, imfPackageRelativePath, hashImfPackage, applyImfColor, buildImfEncode, validateImfOutput } = require("./imf.cjs");
+const { sanitizeSourceFormat, sourceFormatFromProbe, sourceFormatForPlayback } = require("../../../shared/video-source-format.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(ROOT, "..", "..");
@@ -2274,6 +2275,8 @@ async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract,
     const sdrRecords = await createOrUpdateDirectusRecords(
       sdrMetadata, sdrPath, finalized.playlistPath, sdrProbe, {}, {}, {
         project: records.project,
+        // Keep the archival source identity when SDR is generated from an IMF's HDR10 intermediate.
+        sourceFormat: records.master.source_format,
         sourceHash: records.master.source_sha256,
         sourceContract,
         outputContract: finalized.outputContract,
@@ -7958,6 +7961,10 @@ async function createOrUpdateDirectusRecords(
     hdr_static_metadata: outputContract.hdrStaticMetadata,
     dolby_metadata: outputContract.dolbyMetadata,
     source_probe_json: verificationResult.sourceProbe || probe,
+    source_format: sourceFormatForPlayback(
+      verificationResult.sourceFormat || sourceFormatFromProbe(verificationResult.sourceProbe || probe),
+      outputContract, verification.conversion
+    ),
     output_probe_json: verificationResult.outputProbe || probe,
     verification_status: verification.status,
     verification_errors: verification.errors,
@@ -8187,6 +8194,7 @@ async function prepareImfPlayback(imf, metadata, sourceProbe, outputDir) {
 async function handleUpload(req, res) {
   let parsed = null;
   let releaseProcessingSlot;
+  let uploadSourceFormat = null;
 
   try {
     requireUploadAuth(req);
@@ -8202,6 +8210,7 @@ async function handleUpload(req, res) {
         ? await moveMasterPackageFiles(parsed.files.masterPackage, metadata)
         : null;
     const imf = packageInfo?.imf;
+    uploadSourceFormat = sanitizeSourceFormat(imf?.sourceFormat);
     if (imf) {
       // IMF is an archival source, not an embedded browser Dolby Vision stream.
       // The server owns the delivery type regardless of the form's selected type.
@@ -8319,6 +8328,7 @@ async function handleUpload(req, res) {
       hlsUrl: mediaUrlFromPath(finalized.playlistPath),
       probe,
       colorContract: finalized.outputContract,
+      sourceFormat: records.master.source_format,
       verification: finalized.verification,
       derivativeOf: metadata.isDerivative ? metadata.derivedFromMasterId : null
     });
@@ -8326,6 +8336,7 @@ async function handleUpload(req, res) {
     sendJson(res, error.statusCode || 500, {
       status: "error",
       error: error.message,
+      sourceFormat: sanitizeSourceFormat(error.sourceFormat) || uploadSourceFormat,
       verificationErrors: error.verificationErrors || null
     });
   } finally {

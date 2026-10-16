@@ -3,7 +3,7 @@ param(
   [string]$Action = "status",
   [string]$ProjectRoot = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent),
   [int]$Port = 3000,
-  [int]$WaitSeconds = 30,
+  [int]$WaitSeconds = 90,
   [ValidateSet("", "dev:web", "start:web")]
   [string]$NpmScript = ""
 )

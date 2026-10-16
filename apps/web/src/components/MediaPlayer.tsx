@@ -7,6 +7,9 @@ import type { VideoMaster } from "@/lib/directus";
 import { masterResolution, mediaUrl } from "@/lib/directus";
 import { getDefaultMaster, getSdrFallback, isPlayableMaster, isSdrMaster, playbackErrorMessage } from "@/lib/video-playback";
 import { isHdrVideo, selectAutomaticMaster } from "@/lib/video-capabilities";
+import { playbackFormat, resolveSourceFormat, sourceFormatLabel, dolbyPlaybackLabel } from "@/lib/video-format";
+import { VideoFormatInfo } from "./VideoFormatInfo";
+import formatStyles from "./VideoFormatInfo.module.css";
 
 type MediaPlayerProps = {
   masters: VideoMaster[];
@@ -395,6 +398,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
       : null;
 
   const resolutionLabel = masterResolution(activeMaster);
+  const sourceFormat = resolveSourceFormat(activeMaster);
   const dolbyProfileVersion = formatDolbyProfileVersion(
     activeMaster.dolby_profile,
     activeMaster.dolby_compatibility_id,
@@ -441,7 +445,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
                   />
                   <span className="master-button-label">
                     <span>{master.label}</span>
-                    <small>{master.type.replace(/_/g, " ")}</small>
+                    <small>播放：{playbackFormat(master)}</small>
                   </span>
                 </button>
               ))}
@@ -471,6 +475,13 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
             </div>
           </div>
 
+          {/* Source identity never changes the codec/range used for capability checks. */}
+          <div className={formatStyles.summary} aria-live="polite" aria-label="源母版与当前播放版本">
+            <p><strong>源母版：</strong>{sourceFormatLabel(sourceFormat)}{sourceFormat?.dolbyVision.status === "declared" ? " · 含 Dolby Vision 元数据声明" : ""}</p>
+            <p><strong>当前播放版本：</strong>{playbackFormat(activeMaster)} · {activeMaster.codec || "编码未记录"}</p>
+            {sourceFormat?.container === "imf" ? <p>{dolbyPlaybackLabel(sourceFormat)}</p> : null}
+          </div>
+
           <aside
             className={infoOpen ? "player-info-panel open" : "player-info-panel"}
             id="player-info-panel"
@@ -492,10 +503,11 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
             </div>
 
             <div className="info-panel-body">
+              <VideoFormatInfo source={sourceFormat} playback={playbackFormat(activeMaster)} />
               <div className="info-section info-section-master">
-                <h3>Current Master</h3>
+                <h3>Playback Version</h3>
                 <dl className="tech-grid" aria-label="Current master technical details">
-                  <div><dt>Type</dt><dd>{activeMaster.type.replace(/_/g, " ")}</dd></div>
+                  <div><dt>Type</dt><dd>{playbackFormat(activeMaster)}</dd></div>
                   <div><dt>Codec</dt><dd>{activeMaster.codec || "N/A"}</dd></div>
                   <div><dt>Resolution</dt><dd>{resolutionLabel || "N/A"}</dd></div>
                   <div><dt>Gamut</dt><dd>{formatDisplayGamut(activeMaster)}</dd></div>

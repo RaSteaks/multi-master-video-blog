@@ -782,6 +782,8 @@ const fields = {
     jsonObjectField("hdr_static_metadata"),
     jsonObjectField("dolby_metadata"),
     jsonObjectField("source_probe_json"),
+    // Bounded public source identification; raw probes remain administrative data.
+    jsonObjectField("source_format"),
     jsonObjectField("output_probe_json"),
     selectField("verification_status", verificationStatusTypes, false),
     jsonObjectField("verification_errors"),

@@ -68,6 +68,66 @@ Run health checks:
 npm run health
 ```
 
+## Manager service controls
+
+Manager controls PostgreSQL, Directus CMS, Upload API and Frontend Web. Its page
+and CLI share the same lifecycle functions and cross-process operation lock.
+The Manager itself is separate: update its code with `npm run manager:restart`,
+then reload the page to obtain the new CSRF nonce. Do this after any active
+service operation finishes. These controls target the Windows deployment.
+
+| Service | Start | Stop | Restart | Inspect |
+| --- | --- | --- | --- | --- |
+| PostgreSQL | `npm run postgres:start` | `npm run postgres:stop` | `npm run postgres:restart` | `postgres:status`, `postgres:health` |
+| Directus CMS | `npm run cms:start` | `npm run cms:stop` | `npm run cms:restart` | `cms:status`, `cms:health` |
+| Upload API | `npm run api:start` | `npm run api:stop` | `npm run api:restart` | `api:status`, `api:health` |
+| Frontend Web | `npm run web:start` | `npm run web:stop` | `npm run web:restart` | `web:status`, `web:health` |
+
+Run the inspect aliases with `npm run` as well. All aliases invoke
+`node scripts/service-control.cjs <service> <action>`; existing PowerShell
+wrappers remain available, with a 90-second default startup-health deadline.
+PostgreSQL control may require an Administrator terminal/Manager process.
+
+- **Start** is idempotent and waits for process HTTP health. An occupied but
+  unhealthy port fails rather than being reported as a successful start.
+- **Stop** waits for the service/port to stop. The UI disables it for a stopped
+  service, while the CLI still accepts an idempotent stop.
+- **Restart** stops then starts the selected service. Production Web reuses its
+  existing `.next/BUILD_ID` build; ordinary Start/Restart never build implicitly.
+  A missing production build reports the corrective command.
+- **Build + Restart** / `npm run web:rebuild-restart` stops Web, runs `build:web`,
+  starts it and waits for health. It is available only in Production mode; use
+  Restart in Development or switch to Production. A build failure leaves Web
+  stopped and does not start an incomplete bundle. Inspect the **Build** log,
+  fix the build and run Build + Restart again.
+- **Update API + Web** / `npm run services:update` restarts API, then builds and
+  restarts production Web (restarts only in Development). PostgreSQL and CMS are
+  untouched. A failed API step prevents the Web step. Install changed dependencies
+  separately first, for example `npm install`; Manager does not fetch packages.
+- `npm run services:start` starts PostgreSQL → CMS → API → Web, stopping on the
+  first failed startup. `services:stop` attempts Web → API → CMS → PostgreSQL,
+  retaining every failure. `services:restart` performs both phases and tries to
+  restore service availability even if a stop failed; the overall result still
+  reports that failure. `services:status` / `services:health` inspect the stack.
+- Single-service actions do not silently restart dependent services. Stop/restart
+  confirmation explains the interruption; finish uploads/conversions first.
+
+Service, stack and Web-mode POST endpoints return **202** once the operation lock
+is acquired, with `{ok:true, operation:{id,...}}`. This is acceptance, not success.
+Poll authenticated `GET /api/operations/<id>` for `running`, `succeeded`, `failed`
+or `interrupted`; `/api/status` also includes the latest operation. Conflicting
+commands return 409. The CLI continues to wait and returns a nonzero exit code
+on failure, including partial stack results.
+
+The UI shows named per-service phases, keeps refresh/log viewing available, and
+disables duplicate mutations. Refreshing or closing the page does not cancel
+work. The latest bounded record is saved to `logs/service-operation.json`, so CLI
+operations and page reloads share progress. The current process also retains up
+to 12 recent records. A controller crash without a recorded result is shown as
+interrupted once its lock is released/stale. An interrupted or unreachable
+operation is not automatically retried: refresh actual service state first.
+The journal excludes credential request/result fields and is not an audit log.
+
 ## Upload API Security
 
 Set a strong `UPLOAD_API_TOKEN` in `apps/api/.env`. Keep `8060` bound to `127.0.0.1` and expose uploads through Nginx `/api/` only.

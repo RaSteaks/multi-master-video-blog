@@ -4,6 +4,7 @@ import {
   type DirectusFileId,
   type ImageDimensions,
 } from "./asset-url";
+import { sanitizeSourceFormat, type SourceFormat } from "../../../../shared/video-source-format.cjs";
 
 // Re-exported so existing importers keep one entry point for asset helpers.
 export {
@@ -41,6 +42,7 @@ export type Post = {
 
 // Public playback projection; raw probe/verification documents stay in the CMS.
 export type VideoMaster = {
+  source_format?: SourceFormat | null;
   id: number;
   project_id: number;
   label: string;
@@ -167,7 +169,7 @@ const VIDEO_MASTER_FIELDS = [
   "status", "processing_mode", "is_derivative", "derived_from_master_id", "display_gamut",
   "color_primaries", "color_transfer", "matrix_coefficients", "color_range", "pixel_format",
   "chroma_location", "hls_video_range", "verification_status", "verified_at",
-  "conversion_intent", "uploaded_at",
+  "conversion_intent", "uploaded_at", "source_format",
 ] as const satisfies readonly (keyof VideoMaster)[];
 const VIDEO_DETAIL_FIELDS =
   "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at," +
@@ -425,7 +427,13 @@ export async function getVideoProject(slug: string) {
     ["videos:list", `videos:slug:${slug}`],
   );
   const project = response.data[0] ?? null;
-  return project ? sortMasters(project) : null;
+  if (!project) return null;
+  // Serialize only the public projection, even if a CMS adapter returns extra
+  // properties. The player never receives raw probes or local archive paths.
+  return sortMasters({ ...project, masters: project.masters?.map(master => ({
+    ...Object.fromEntries(VIDEO_MASTER_FIELDS.map(field => [field, master[field]])) as VideoMaster,
+    source_format: sanitizeSourceFormat(master.source_format)
+  })) });
 }
 
 export function filterPublishedAlbums(albums: Album[]) {

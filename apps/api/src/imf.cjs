@@ -19,7 +19,7 @@ function parseXml(text) {
   parser.on("error", () => fail("Malformed XML."));
   parser.on("opentag", tag => {
     if (++count > 30000 || stack.length >= 64) fail("XML structure exceeds limits.");
-    const node = { name: tag.local, children: [], text: "" };
+    const node = { name: tag.local, namespace: tag.uri, children: [], text: "" };
     if (stack.length) stack.at(-1).children.push(node);
     else root = node;
     stack.push(node);
@@ -67,7 +67,7 @@ function relativePath(text, uri = true) {
   return path.posix.normalize(decoded);
 }
 
-async function xmlRootName(filePath) {
+async function xmlRootInfo(filePath) {
   // Inspect only a bounded prefix of unrelated Dolby XML sidecars; they can be
   // much larger than a CPL and must retain the pre-existing non-IMF upload path.
   const file = await fs.open(filePath, "r");
@@ -77,23 +77,28 @@ async function xmlRootName(filePath) {
     const parser = new SaxesParser({ xmlns: true });
     let name = null;
     const stop = new Error("root found");
-    parser.on("opentag", tag => { name = tag.local; throw stop; });
+    parser.on("doctype", () => { throw stop; });
+    parser.on("opentag", tag => { name = { name: tag.local, namespace: tag.uri }; throw stop; });
     parser.on("error", () => { throw stop; });
     try { parser.write(buffer.subarray(0, bytesRead).toString("utf8")); } catch (error) { if (error !== stop) throw error; }
     return name;
   } finally { await file.close(); }
 }
+async function xmlRootName(filePath) {
+  return (await xmlRootInfo(filePath))?.name || null;
+}
 function colorUl(text, kind) {
   const hex = text.toLowerCase().replace(/^urn:smpte:ul:/, "").replace(/\./g, "");
   if (!/^060e2b34040101[\da-f]{2}04010101[\da-f]{8}$/.test(hex)) fail(`Unsupported ${kind} UL.`);
-  // SMPTE registry version byte is independent of the color identifier.
+  // SMPTE registry version is independent of the identifier. Use the mappings
+  // in FFmpeg libavformat/mxf.c, not display labels or Resolve preset names.
   const map = kind === "primaries"
-    ? { "03010000": "bt709", "03040000": "bt2020", "03050000": "smpte431", "03060000": "smpte432" }
-    : { "01010000": "bt709", "010a0000": "smpte2084", "010b0000": "arib-std-b67" };
+    ? { "03010000": "smpte170m", "03020000": "bt470bg", "03030000": "bt709", "03040000": "bt2020", "03050000": "smpte428", "03060000": "smpte432", "030a0000": "smpte431" }
+    : { "01010000": "gamma22", "01020000": "bt709", "01030000": "smpte240m", "01040000": "bt709", "01060000": "linear", "01070000": "smpte428", "01090000": "bt2020-10", "010a0000": "smpte2084", "010b0000": "arib-std-b67" };
   return map[hex.slice(24)] || fail(`Unsupported ${kind} UL.`);
 }
 
-async function inspectImfPackage(files) {
+async function inspectRgbImfPackage(files) {
   const xml = [];
   const originals = new Map();
   for (const file of files) {
@@ -258,7 +263,7 @@ function applyImfColor(imf, probe, audioProbe) {
   return { ...probe, color_primaries: imf.primaries, color_transfer: imf.transfer,
     color_space: "gbr", color_range: "pc", bits_per_raw_sample: String(imf.depth),
     // Chroma siting is inapplicable to RGB. Keep null instead of inventing a YUV tag.
-    chroma_location: null, imf: { cplId: imf.cplId, crop: imf.crop, hasDolbyMetadata: imf.hasDolbyMetadata },
+    chroma_location: null, imf: { cplId: imf.cplId, crop: imf.crop, hasDolbyMetadata: imf.hasDolbyMetadata, sourceFormat: imf.sourceFormat },
     audio_streams: audioProbe ? [audioProbe] : [],
     side_data_list: [...existing.filter(item => ![mastering.side_data_type, light.side_data_type].includes(item.side_data_type)), mastering, light] };
 }
@@ -305,7 +310,190 @@ function validateImfOutput(imf, probe, contract) {
   return errors;
 }
 
+function descendants(node, name) {
+  return (node?.children || []).flatMap(child => [...(child.name === name ? [child] : []), ...descendants(child, name)]);
+}
+function optionalText(node, name) {
+  const values = children(node, name);
+  return values.length === 1 ? values[0].text.trim() : null;
+}
+function optionalNumber(node, name) {
+  const text = optionalText(node, name);
+  return text !== null && /^\d+$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : null;
+}
+function knownColor(node, name, kind) {
+  try { return colorUl(optionalText(node, name) || "", kind); } catch { return null; }
+}
+const sharedValue = values => values.length && values.every(value => value === values[0]) ? values[0] : null;
+const dolbyNamespace = text => /^https?:\/\/www\.dolby\.com\/schemas\/dvmd-fw\//.test(text || "");
+
+async function isDolbySidecar(filePath, header) {
+  if (dolbyNamespace(header?.namespace)) return true;
+  // Resolve CM4 uses dvmd/...; legacy CM2.9 has no default namespace. Require
+  // an MDF root, a version and Outputs/Output/Video structure rather than a name
+  // on disk. This recognizes an unlinked declaration, not a validated payload.
+  if (header?.name !== "DolbyLabsMDF" || (header.namespace &&
+      !/^https?:\/\/www\.dolby\.com\/schemas\/dvmd\/\d+(?:_\d+)+$/.test(header.namespace))) return false;
+  const file = await fs.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    const parser = new SaxesParser({ xmlns: true });
+    const stack = [];
+    let version = "", attributeVersion = false, hasVideo = false, recognized = false, nodes = 0;
+    const stop = new Error("bounded MDF inspection finished");
+    const recognize = () => {
+      if (hasVideo && /^\d+\.\d+\.\d+$/.test(version.trim())) { recognized = true; throw stop; }
+    };
+    parser.on("doctype", () => { throw stop; });
+    parser.on("error", () => { throw stop; });
+    parser.on("opentag", tag => {
+      if (++nodes > 4096 || stack.length >= 32) throw stop;
+      stack.push(tag.local);
+      if (stack.length === 1) {
+        version = tag.attributes.version?.value || "";
+        attributeVersion = Boolean(version);
+      }
+      if (tag.uri === header.namespace && stack.join("/") === "DolbyLabsMDF/Outputs/Output/Video") hasVideo = true;
+      recognize();
+    });
+    parser.on("text", text => {
+      if (!attributeVersion && stack.join("/") === "DolbyLabsMDF/Version") version += text;
+    });
+    parser.on("closetag", () => { stack.pop(); recognize(); });
+    try { parser.write(buffer.subarray(0, bytesRead).toString("utf8")); }
+    catch (error) { if (error !== stop) throw error; }
+    return recognized;
+  } finally { await file.close(); }
+}
+
+async function hasPhdrHeader(filePath) {
+  // RDD 56 PHDRMetadataTrackSubDescriptor, read only at MXF KLV boundaries.
+  // Bounded header inspection is evidence of a declaration, not per-frame validation.
+  // https://pub.smpte.org/latest/rdd56/rdd56-2021.pdf
+  const file = await fs.open(filePath, "r");
+  try {
+    const { size } = await file.stat();
+    const bytes = Buffer.alloc(Math.min(size, 8 * 1024 * 1024));
+    const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+    let offset = 0;
+    while (offset + 17 <= bytesRead) {
+      const key = Buffer.from(bytes.subarray(offset, offset + 16));
+      if (key.readUInt32BE(0) !== 0x060e2b34) return false;
+      key[5] = 0x7f; // Normalize MXF local-set coding designator to the registry group UL.
+      if (key.toString("hex") === "060e2b34027f01050e09060701010103") return true;
+      const first = bytes[offset + 16];
+      let length = first, lengthBytes = 1;
+      if (first >= 0x80) {
+        const count = first & 0x7f;
+        if (!count || count > 6 || offset + 17 + count > bytesRead) return false;
+        length = bytes.readUIntBE(offset + 17, count);
+        lengthBytes += count;
+      }
+      offset += 16 + lengthBytes + length;
+    }
+    return false;
+  } finally { await file.close(); }
+}
+
+async function identifyImfPackage(files) {
+  const cpls = [], maps = [], sidecars = [];
+  const uploaded = new Map();
+  let metadataBytes = 0;
+  for (const file of files) {
+    const original = imfPackageRelativePath(file.filename);
+    if (uploaded.has(original)) fail("Duplicate uploaded package path.");
+    uploaded.set(original, file.packagePath);
+    if (!/\.xml$|(?:^|\/)ASSETMAP$/i.test(original)) continue;
+    const header = await xmlRootInfo(file.packagePath);
+    if (await isDolbySidecar(file.packagePath, header)) sidecars.push("xml");
+    if (!["CompositionPlaylist", "AssetMap"].includes(header?.name)) continue;
+    const size = (await fs.stat(file.packagePath)).size;
+    metadataBytes += size;
+    if (size > 2 * 1024 * 1024 || metadataBytes > 16 * 1024 * 1024) fail("CPL/ASSETMAP exceeds the XML scan limits (2 MiB per file, 16 MiB total).");
+    const root = parseXml(await fs.readFile(file.packagePath, "utf8"));
+    (root.name === "CompositionPlaylist" ? cpls : maps).push({ root, original });
+  }
+  if (!cpls.length && !maps.length) return null;
+  const assets = new Map();
+  for (const map of maps) for (const asset of descendants(map.root, "Asset")) {
+    const chunks = descendants(asset, "Chunk");
+    const uri = chunks.length === 1 ? optionalText(chunks[0], "Path") : null;
+    const id = optionalText(asset, "Id")?.toLowerCase();
+    if (id && uri) assets.set(id, uploaded.get(path.posix.join(path.posix.dirname(map.original), relativePath(uri))) || null);
+  }
+  const images = [], imagePaths = new Set(), storage = new Set(sidecars), applications = new Set();
+  let missingResources = 0, resourceCount = 0, segmentCount = 0;
+  for (const { root: cpl } of cpls) {
+    for (const item of descendants(cpl, "ApplicationIdentification")) {
+      for (const uri of item.text.trim().split(/\s+/)) if (uri && applications.size < 8) applications.add(uri.slice(0, 240));
+    }
+    segmentCount += descendants(cpl, "Segment").length;
+    const descriptors = new Map(descendants(cpl, "EssenceDescriptor").map(node => [optionalText(node, "Id")?.toLowerCase(), node]));
+    for (const resource of descendants(cpl, "Resource")) {
+      const trackId = optionalText(resource, "TrackFileId")?.toLowerCase();
+      if (trackId) { resourceCount++; if (!assets.get(trackId)) missingResources++; }
+    }
+    for (const sequence of descendants(cpl, "MainImageSequence")) for (const resource of descendants(sequence, "Resource")) {
+      const descriptor = descriptors.get(optionalText(resource, "SourceEncoding")?.toLowerCase());
+      const rgb = children(descriptor, "RGBADescriptor")[0], yuv = children(descriptor, "CDCIDescriptor")[0];
+      const image = rgb || yuv;
+      const file = assets.get(optionalText(resource, "TrackFileId")?.toLowerCase());
+      if (file) imagePaths.add(file);
+      if (descendants(descriptor, "PHDRMetadataTrackSubDescriptor").length || descendants(descriptor, "PHDRMetaDataTrackSubDescriptor").length) storage.add("phdr");
+      const depths = rgb ? descendants(rgb, "RGBAComponent").filter(node => ["CompRed", "CompGreen", "CompBlue"].includes(optionalText(node, "Code"))).map(node => optionalNumber(node, "ComponentSize")) : [];
+      const depth = rgb ? sharedValue(depths) : optionalNumber(yuv, "ComponentDepth");
+      const min = optionalNumber(image, rgb ? "ComponentMinRef" : "BlackRefLevel");
+      const max = optionalNumber(image, rgb ? "ComponentMaxRef" : "WhiteRefLevel");
+      const range = depth && min !== null && max !== null
+        ? min === 0 && max === 2 ** depth - 1 ? "full"
+          : min === 16 * 2 ** (depth - 8) && max === 235 * 2 ** (depth - 8) ? "limited" : "custom"
+        : "unknown";
+      const compression = (optionalText(image, "PictureCompression") || "").replace(/^urn:smpte:ul:/i, "").replaceAll(".", "");
+      images.push({ colorModel: rgb ? "rgb" : yuv ? "ycbcr" : "unknown", bitDepth: depth,
+        codec: /^060e2b34040101[\da-f]{2}04010202030101[\da-f]{2}$/i.test(compression) ? "jpeg2000" : null,
+        primaries: knownColor(image, "ColorPrimaries", "primaries"), transfer: knownColor(image, "TransferCharacteristic", "transfer"), range });
+    }
+    for (const sequence of descendants(cpl, "ISXDSequence")) for (const resource of descendants(sequence, "Resource")) {
+      const descriptor = descriptors.get(optionalText(resource, "SourceEncoding")?.toLowerCase());
+      if (descendants(descriptor, "NamespaceURI").some(node => dolbyNamespace(node.text.trim()))) storage.add("isxd");
+    }
+  }
+  // Limit binary inspection for multi-composition packages. A negative bounded
+  // scan is deliberately never interpreted as proof that Dolby metadata is absent.
+  for (const file of [...imagePaths].slice(0, 4)) if (await hasPhdrHeader(file)) storage.add("phdr");
+  const transfer = sharedValue(images.map(image => image.transfer));
+  return {
+    version: 1, container: "imf", applicationIds: [...applications],
+    colorModel: sharedValue(images.map(image => image.colorModel)) || (images.length ? "mixed" : "unknown"),
+    codec: sharedValue(images.map(image => image.codec)), bitDepth: sharedValue(images.map(image => image.bitDepth)),
+    primaries: sharedValue(images.map(image => image.primaries)), transfer,
+    range: sharedValue(images.map(image => image.range)) || "unknown",
+    dynamicRange: transfer === "smpte2084" ? "pq" : transfer === "arib-std-b67" ? "hlg"
+      : ["bt709", "gamma22", "smpte240m", "bt2020-10"].includes(transfer) ? "sdr" : "unknown",
+    compositionCount: cpls.length, segmentCount,
+    packageKind: missingResources ? "external_references" : resourceCount ? "self_contained" : "unknown",
+    missingResources,
+    dolbyVision: { status: storage.has("isxd") ? "declared" : storage.has("phdr") ? "candidate" : storage.has("xml") ? "unlinked" : "unknown",
+      storage: [...storage], validation: "not_validated" },
+    // Application identifiers describe a format family, not a vendor preset or compliance certificate.
+    preset: null
+  };
+}
+
+async function inspectImfPackage(files) {
+  const sourceFormat = await identifyImfPackage(files);
+  try {
+    const imf = await inspectRgbImfPackage(files);
+    if (!imf) return null;
+    return { ...imf, sourceFormat, hasDolbyMetadata: imf.hasDolbyMetadata || sourceFormat?.dolbyVision.status === "declared" };
+  } catch (error) {
+    if (sourceFormat) error.sourceFormat = sourceFormat;
+    throw error;
+  }
+}
+
 // Preserve original Unicode filenames inside an IMF archive so CPL/ASSETMAP
 // references still work when the retained package is opened in another tool.
 const imfPackageRelativePath = filename => relativePath(String(filename).replace(/\\/g, "/"), false);
-module.exports = { parseXml, inspectImfPackage, imfPackageRelativePath, hashImfPackage, applyImfColor, buildImfEncode, validateImfOutput };
+module.exports = { parseXml, identifyImfPackage, inspectImfPackage, imfPackageRelativePath, hashImfPackage, applyImfColor, buildImfEncode, validateImfOutput };

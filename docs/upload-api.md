@@ -87,6 +87,43 @@ Use one of:
 
 ### RGB IMF packages
 
+Identification precedes conversion validation. `sourceFormat` in successful or
+unsupported-conversion upload responses identifies declared IMF application URIs,
+RGB/YCbCr, bit depth, primaries, transfer/range, composition structure and missing
+references. SDR/HLG/YCbCr and multi-segment packages can be identified even when
+the existing RGB/PQ conversion path rejects them. Missing references mean an
+external-reference or incomplete upload, not proof of a valid supplemental IMF.
+Resolve preset names and vendor delivery compliance are never inferred.
+
+Dolby evidence is distinguished as linked ISXD declarations, PHDR descriptors
+(including a bounded 8 MiB MXF header KLV scan for up to four image assets), or
+unlinked Dolby XML sidecars. External MDF inspection recognizes CM4 `dvmd/...`
+namespaces and legacy namespace-free CM2.9 roots using version and video structure
+within a bounded 64 KiB prefix; frame-wrapped `dvmd-fw/...` remains recognized.
+A declaration is not validation of the
+per-frame payload. A negative header scan leaves Dolby presence unknown, rather
+than claiming its absence. The existing playable HEVC path separately verifies
+embedded RPU. These identification paths do not implement Dolby reference
+rendering, ISXD/PHDR-to-RPU conversion or full IMF compliance validation.
+
+The bounded `video_masters.source_format` JSON field persists public provenance;
+raw source probes and filesystem paths are excluded. Automatic SDR inherits the
+original source identity and records whether Dolby metadata was applied to its
+conversion. The player's selected output `type`/codec/range remains authoritative
+for playback capability checks. Source identity does not upgrade HDR10 to Dolby
+Vision. The upload and player UI show source and output separately.
+
+Before deploying this field, run `npm run setup:cms-schema` and ensure the Web
+read account can read `video_masters.source_format`. Existing records may be
+previewed with `npm run backfill:video-source-formats`, then explicitly updated
+with `npm run backfill:video-source-formats -- --apply`. This fills only missing
+summaries from saved probe evidence/IMF parents, preserves existing summaries
+and playback fields, and does not guess unavailable application or preset data.
+Parent provenance is inherited only when source hashes match; an overwritten
+parent cannot relabel an older SDR. Run backfill while uploads are paused.
+It does not re-encode or re-publish videos. Refresh the video page after the
+configured CMS cache interval (or use the existing revalidation flow).
+
 Upload the complete folder as repeated `masterPackage` files with
 `sourceKind=master_package`. The API recognizes CPL/ASSETMAP contents and resolves
 track files by UUID, including relative paths. Supported compositions have one

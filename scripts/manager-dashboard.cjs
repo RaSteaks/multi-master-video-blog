@@ -3,6 +3,7 @@ const fsp = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { createOperationJournal } = require("./service-operations.cjs");
 const {
   runPowerShell: executePowerShell,
   stopProcessesCommand
@@ -88,8 +89,9 @@ const services = [
 ];
 
 const serviceMap = new Map(services.map((service) => [service.id, service]));
+const operationJournal = createOperationJournal(ROOT);
 let activeOperation = null;
-async function withOperation(label, operation) {
+async function withOperation(label, operation, onStarted) {
   if (activeOperation) {
     const error = new Error("Another operation is running: " + activeOperation);
     error.statusCode = 409;
@@ -112,11 +114,32 @@ async function withOperation(label, operation) {
     }
     // A CLI invocation may have changed the persisted mode since Manager started.
     currentWebMode = coerceWebMode(process.env[WEB_MODE_ENV_KEY] || loadEnvFile(path.join(ROOT, ".env"))[WEB_MODE_ENV_KEY] || managerEnv("WEB_MODE", "development"));
-    return await operation();
+    const accepted = await operationJournal.begin(label);
+    onStarted?.(accepted);
+    try {
+      const result = await operation();
+      await operationJournal.finish(null, result);
+      return result;
+    } catch (error) {
+      await operationJournal.finish(error);
+      throw error;
+    }
   } finally {
     try { if (release) await release(); }
     finally { activeOperation = null; }
   }
+}
+
+async function beginManagedOperation(label, task) {
+  // Acknowledge only after acquiring the same lock used by startup scripts.
+  // Work survives navigation and no longer depends on a long proxy request.
+  return new Promise((resolve, reject) => {
+    withOperation(label, task, resolve).catch(reject);
+  });
+}
+
+function serviceStep(service, phase, task) {
+  return operationJournal.step(service.id, phase, task);
 }
 
 function sendJson(res, status, payload) {
@@ -592,7 +615,7 @@ async function waitForPortStopped(service) {
   throw new Error(`${service.name} did not stop on port ${service.port}.`);
 }
 
-async function startProcessService(service, options = {}) {
+async function startProcessService(service) {
   const owners = await getPortOwners(service.port);
   if (owners.length > 0) {
     await waitForProcessHealth(service);
@@ -605,12 +628,9 @@ async function startProcessService(service, options = {}) {
 
   const logDir = path.join(ROOT, "logs");
   await fsp.mkdir(logDir, { recursive: true });
-  if (
-    service.id === "web" &&
-    currentWebMode === "production" &&
-    !options.skipBuild
-  ) {
-    await buildWeb();
+  if (service.id === "web" && currentWebMode === "production" &&
+      !fs.existsSync(path.join(ROOT, "apps", "web", ".next", "BUILD_ID"))) {
+    throw new Error("No production Web build is available. Use Build + Restart or npm run web:rebuild-restart first.");
   }
 
   const stdout = path.join(logDir, `${service.logName}.out.log`);
@@ -660,25 +680,35 @@ async function buildWeb() {
   await fsp.mkdir(logDir, { recursive: true });
   const stdout = path.join(logDir, "web.build.out.log");
   const stderr = path.join(logDir, "web.build.err.log");
-  const exitCode = await runPowerShell(
-    [
-      "$process = Start-Process",
-      "-FilePath 'npm.cmd'",
-      `-ArgumentList ${psArray(web.buildArgs)}`,
-      `-WorkingDirectory ${psQuote(ROOT)}`,
-      `-RedirectStandardOutput ${psQuote(stdout)}`,
-      `-RedirectStandardError ${psQuote(stderr)}`,
-      "-WindowStyle Hidden",
-      "-Wait",
-      "-PassThru;",
-      "Write-Output $process.ExitCode"
-    ].join(" ")
-  );
-
-  if (!/^0$/.test(exitCode)) {
-    throw new Error(
-      `Web build failed with exit code ${exitCode}. Check logs/web.build.err.log.`
+  const buildId = path.join(ROOT, "apps", "web", ".next", "BUILD_ID");
+  // A failed rebuild must not leave the old readiness marker over partial output.
+  // Callers stop Web first because development and production share .next.
+  await fsp.rm(buildId, { force: true });
+  try {
+    const exitCode = await runPowerShell(
+      [
+        "$process = Start-Process",
+        "-FilePath 'npm.cmd'",
+        `-ArgumentList ${psArray(web.buildArgs)}`,
+        `-WorkingDirectory ${psQuote(ROOT)}`,
+        `-RedirectStandardOutput ${psQuote(stdout)}`,
+        `-RedirectStandardError ${psQuote(stderr)}`,
+        "-WindowStyle Hidden",
+        "-Wait",
+        "-PassThru;",
+        "Write-Output $process.ExitCode"
+      ].join(" ")
     );
+
+    if (!/^0$/.test(exitCode)) {
+      throw new Error(`Web build failed with exit code ${exitCode}. Check logs/web.build.err.log.`);
+    }
+    if (!(await fsp.readFile(buildId, "utf8").catch(() => "")).trim()) {
+      throw new Error("Web build produced no valid BUILD_ID. Check the Web build logs before retrying.");
+    }
+  } catch (error) {
+    await fsp.rm(buildId, { force: true });
+    throw error;
   }
 }
 
@@ -894,7 +924,8 @@ async function allStatus() {
     manager: managerStatus(),
     services: serviceStatuses,
     database,
-    uploadTokens: uploadTokenStatus()
+    uploadTokens: uploadTokenStatus(),
+    operation: await operationJournal.read()
   };
 }
 
@@ -907,27 +938,30 @@ async function handleAction(serviceId, action) {
   }
 
   if (service.kind === "windows-service") {
-    if (action === "start") return startWindowsService(service);
-    if (action === "stop") return stopWindowsService(service);
+    if (action === "start") return serviceStep(service, "start", () => startWindowsService(service));
+    if (action === "stop") return serviceStep(service, "stop", () => stopWindowsService(service));
     if (action === "restart") {
-      await stopWindowsService(service);
-      await delay(1000);
-      return startWindowsService(service);
+      await serviceStep(service, "stop", () => stopWindowsService(service));
+      return serviceStep(service, "start", () => startWindowsService(service));
     }
   }
 
   if (service.kind === "process") {
-    if (action === "start") return startProcessService(service);
-    if (action === "stop") return stopProcessService(service);
+    if (action === "start") return serviceStep(service, "start", () => startProcessService(service));
+    if (action === "stop") return serviceStep(service, "stop", () => stopProcessService(service));
     if (action === "restart") {
-      await stopProcessService(service);
-      await delay(1000);
-      return startProcessService(service);
+      await serviceStep(service, "stop", () => stopProcessService(service));
+      return serviceStep(service, "start", () => startProcessService(service));
     }
     if (action === "rebuild-restart" && service.id === "web") {
-      await stopProcessService(service);
-      if (currentWebMode === "production") await buildWeb();
-      return startProcessService(service, { skipBuild: true });
+      if (currentWebMode !== "production") {
+        const error = new Error("Build + Restart requires Production mode. Development uses Restart and hot reload.");
+        error.statusCode = 400;
+        throw error;
+      }
+      await serviceStep(service, "stop", () => stopProcessService(service));
+      await serviceStep(service, "build", buildWeb);
+      return serviceStep(service, "start", () => startProcessService(service));
     }
   }
 
@@ -955,11 +989,11 @@ async function handleWebModeChange(modeValue) {
   const web = serviceMap.get("web");
   const previousMode = currentWebMode;
   // Stop before next build: both modes share the .next output directory.
-  await stopProcessService(web);
+  await serviceStep(web, "stop", () => stopProcessService(web));
   try {
-    if (nextMode === "production") await buildWeb();
+    if (nextMode === "production") await serviceStep(web, "build", buildWeb);
     currentWebMode = nextMode;
-    await startProcessService(web, { skipBuild: true });
+    await serviceStep(web, "start", () => startProcessService(web));
     setRootEnvValue(WEB_MODE_ENV_KEY, nextMode);
     // The persisted selection supersedes the startup override. Future operations
     // read the file so switches from other processes remain visible too.
@@ -968,8 +1002,11 @@ async function handleWebModeChange(modeValue) {
     currentWebMode = previousMode;
     let recovery = "Previous mode restored and restarted.";
     try {
-      await stopProcessService(web);
-      await startProcessService(web);
+      await serviceStep(web, "recovery-stop", () => stopProcessService(web));
+      // Development uses the same .next directory, so rebuilding is required to
+      // restore Production after a failed mode switch, not on ordinary Restart.
+      if (previousMode === "production") await serviceStep(web, "recovery-build", buildWeb);
+      await serviceStep(web, "recovery-start", () => startProcessService(web));
     } catch (recoveryError) {
       recovery = "Previous mode retained, but recovery failed: " + cleanPowerShellError(recoveryError);
     }
@@ -1039,6 +1076,22 @@ async function handleUploadTokenChange(payload) {
 }
 
 async function handleStackAction(action) {
+  if (action === "refresh-app") {
+    // Source updates need only API restart and a fresh production Web bundle.
+    // Dependency installation is a separate explicit deployment step.
+    const results = [];
+    for (const [id, operation] of [["api", "restart"], ["web", currentWebMode === "production" ? "rebuild-restart" : "restart"]]) {
+      try {
+        const result = await handleAction(id, operation);
+        results.push({ serviceId: id, action: operation, ok: true, message: result.message });
+      } catch (error) {
+        results.push({ serviceId: id, action: operation, ok: false, message: cleanPowerShellError(error) });
+        error.results = results;
+        throw error;
+      }
+    }
+    return { ok: true, message: "API + Web updated. PostgreSQL and CMS were not restarted.", results };
+  }
   if (action === "start-all") {
     return runStackActions(["postgres", "cms", "api", "web"], "start");
   }
@@ -1063,9 +1116,10 @@ async function handleStackAction(action) {
     }
     if (stopError) {
       stopError.message = "Restart was incomplete: " + stopError.message + ". Startup recovery completed; services are running.";
+      stopError.results = [...(stopError.results || []), ...(started.results || [])];
       throw stopError;
     }
-    return started;
+    return { ...started, message: "Full stack restarted." };
   }
 
   const error = new Error(`Unsupported stack action: ${action}`);
@@ -1079,10 +1133,11 @@ async function runStackActions(serviceIds, action) {
   for (const serviceId of serviceIds) {
     try {
       const result = await handleAction(serviceId, action);
-      results.push({ serviceId, ok: true, message: result.message });
+      results.push({ serviceId, action, ok: true, message: result.message });
     } catch (error) {
       results.push({
         serviceId,
+        action,
         ok: false,
         message: cleanPowerShellError(error)
       });
@@ -1110,6 +1165,7 @@ async function runStackActions(serviceIds, action) {
 async function readServiceLogs(serviceId) {
   const service = serviceId === "manager"
     ? { id: "manager", name: "Service Manager", logName: "manager" }
+    : serviceId === "web-build" ? { id: "web-build", name: "Web build", logName: "web.build" }
     : serviceMap.get(serviceId);
   if (!service?.logName) {
     const error = new Error(`No logs configured for service: ${serviceId}`);
@@ -1193,6 +1249,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const operationMatch = pathname.match(/^\/api\/operations\/([a-f0-9-]{36})$/);
+    if (req.method === "GET" && operationMatch) {
+      const operation = await operationJournal.read(operationMatch[1]);
+      sendJson(res, operation ? 200 : 404, operation ? { ok: true, operation } : { ok: false, error: "Operation is no longer available. Refresh service status before retrying." });
+      return;
+    }
+
     const logsMatch = pathname.match(/^\/api\/logs\/([^/]+)$/);
     if (req.method === "GET" && logsMatch) {
       sendJson(res, 200, await readServiceLogs(logsMatch[1]));
@@ -1201,8 +1264,11 @@ const server = http.createServer(async (req, res) => {
 
     const stackMatch = pathname.match(/^\/api\/stack\/([^/]+)$/);
     if (req.method === "POST" && stackMatch) {
-      const result = await withOperation(stackMatch[1], () => handleStackAction(stackMatch[1]));
-      sendJson(res, 200, { ok: true, result, status: await allStatus() });
+      if (!["start-all", "stop-all", "restart-all", "refresh-app"].includes(stackMatch[1])) {
+        sendJson(res, 400, { ok: false, error: "Unsupported stack action." }); return;
+      }
+      const operation = await beginManagedOperation(stackMatch[1], () => handleStackAction(stackMatch[1]));
+      sendJson(res, 202, { ok: true, operation });
       return;
     }
 
@@ -1215,15 +1281,20 @@ const server = http.createServer(async (req, res) => {
 
     const webModeMatch = pathname.match(/^\/api\/services\/web\/mode\/([^/]+)$/);
     if (req.method === "POST" && webModeMatch) {
-      const result = await withOperation("web-mode", () => handleWebModeChange(webModeMatch[1]));
-      sendJson(res, 200, { ok: true, result, status: await allStatus() });
+      if (!parseWebMode(webModeMatch[1])) { sendJson(res, 400, { ok: false, error: "Unsupported web mode." }); return; }
+      const operation = await beginManagedOperation("web-mode:" + webModeMatch[1], () => handleWebModeChange(webModeMatch[1]));
+      sendJson(res, 202, { ok: true, operation });
       return;
     }
 
     const serviceMatch = pathname.match(/^\/api\/services\/([^/]+)\/([^/]+)$/);
     if (req.method === "POST" && serviceMatch) {
-      const result = await withOperation(serviceMatch[1] + ":" + serviceMatch[2], () => handleAction(serviceMatch[1], serviceMatch[2]));
-      sendJson(res, 200, { ok: true, result, status: await allStatus() });
+      if (!serviceMap.has(serviceMatch[1])) { sendJson(res, 404, { ok: false, error: "Unknown service." }); return; }
+      if (!["start", "stop", "restart"].includes(serviceMatch[2]) && !(serviceMatch[1] === "web" && serviceMatch[2] === "rebuild-restart")) {
+        sendJson(res, 400, { ok: false, error: "Unsupported service action." }); return;
+      }
+      const operation = await beginManagedOperation(serviceMatch[1] + ":" + serviceMatch[2], () => handleAction(serviceMatch[1], serviceMatch[2]));
+      sendJson(res, 202, { ok: true, operation });
       return;
     }
 
@@ -1263,7 +1334,7 @@ if (require.main === module) server.listen(PORT, HOST, () => {
 module.exports = {
   server, html, withOperation, handleAction, handleStackAction,
   handleWebModeChange, getServiceStatus, getDatabaseStatus, runStackActions,
-  waitForProcessHealth, serviceMap, cleanPowerShellError, managerStatus
+  waitForProcessHealth, serviceMap, cleanPowerShellError, managerStatus, allStatus, beginManagedOperation
 };
 
 function html() {
@@ -1373,7 +1444,7 @@ function html() {
       background: var(--accent);
       animation: slide 1.1s ease-in-out infinite;
     }
-    body:has(#managerApp[aria-busy="true"]) .progress { opacity: 1; }
+    body:has(#managerApp[data-operating="true"]) .progress { opacity: 1; }
     @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
 
     .app {
@@ -1517,6 +1588,17 @@ function html() {
     }
     .action-readout:empty { display: none; }
     .action-readout.error { border-color: var(--bad-line); border-left-color: var(--bad); background: var(--bad-bg); color: var(--bad); }
+    /* Named phases describe real work; a build has no meaningful percentage. */
+    .operation-panel { padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    .operation-panel[hidden] { display: none; }
+    .operation-panel h2 { font-size: 15px; margin-bottom: 6px; }
+    .operation-panel p, .service-help { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .operation-steps { display: grid; gap: 7px; padding-left: 22px; margin-top: 12px; }
+    .operation-steps li { font-size: 13px; overflow-wrap: anywhere; }
+    .operation-steps li[data-state="failed"] { color: var(--bad); }
+    .operation-steps li[data-state="running"] { color: var(--accent); font-weight: 700; }
+    .command-reference summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+    .command-reference code { display: block; padding: 4px 0; font-size: 12px; overflow-wrap: anywhere; }
 
     /* Sections */
     .section-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
@@ -1808,10 +1890,18 @@ function html() {
         <button class="button primary" type="button" data-stack="start-all">Start all</button>
         <button class="button warn" type="button" data-stack="restart-all">Restart all</button>
         <button class="button danger" type="button" data-stack="stop-all">Stop all</button>
+        <button class="button" type="button" data-stack="refresh-app">Update API + Web</button>
       </div>
+      <p class="service-help">Start: PostgreSQL → CMS → API → Web. Stop: reverse order. Restart reuses the current Web build. Update API + Web builds Web in Production; install changed dependencies first.</p>
     </section>
 
     <p class="action-readout" id="actionReadout" role="status" aria-live="polite"></p>
+    <section class="operation-panel" id="operationPanel" aria-labelledby="operationTitle" hidden>
+      <h2 id="operationTitle">Service operation</h2>
+      <p id="operationSummary" role="status" aria-live="polite"></p>
+      <ol class="operation-steps" id="operationSteps"></ol>
+      <button class="button" type="button" data-log="web-build">View Web build log</button>
+    </section>
 
     <section aria-labelledby="servicesTitle">
       <div class="section-head">
@@ -1827,6 +1917,7 @@ function html() {
         <span class="live-state" id="liveLogState"><span class="live-state-dot" aria-hidden="true"></span><span id="liveLogStateText">Idle</span></span>
         <div class="chan-tabs" role="group" aria-label="Live output source">
           <button class="chan-tab" type="button" data-log="web" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Web</button>
+          <button class="chan-tab" type="button" data-log="web-build" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Build</button>
           <button class="chan-tab" type="button" data-log="api" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>API</button>
           <button class="chan-tab" type="button" data-log="cms" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>CMS</button>
           <button class="chan-tab" type="button" data-log="manager" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Manager</button>
@@ -1934,6 +2025,7 @@ function html() {
     const AUTO_REFRESH_INTERVAL_MS = 2000;
     const LOG_SOURCE_LABELS = Object.freeze({
       web: "Web",
+      "web-build": "Web build",
       api: "Upload API",
       cms: "Directus CMS",
       manager: "Service Manager"
@@ -1971,6 +2063,16 @@ function html() {
 
     let state = null;
     let busy = false;
+    let submittingOperation = false;
+    let trackedOperationId = null;
+    let trackedOperationStartedAt = "";
+    let operationPollTimer = null;
+    let operationPollFailures = 0;
+    let operationPollInFlight = false;
+    let lastOperationSignature = "";
+    let latestOperationStartedAt = "";
+    const finishedOperations = new Set();
+    let statusAvailable = false;
     let tokenFormDirty = false;
     let toastTimer = null;
     let refreshPromise = null;
@@ -1996,24 +2098,136 @@ function html() {
     }
 
     function setBusy(nextBusy) {
+      const changed = busy !== nextBusy;
       busy = nextBusy;
-      if (nextBusy) statusGeneration++;
-      managerApp.setAttribute("aria-busy", String(nextBusy));
-      document.querySelectorAll("button, input, select").forEach((control) => {
-        control.disabled = nextBusy;
-      });
+      managerApp.dataset.operating = String(nextBusy);
+      // Keep refresh, navigation and logs usable while mutations are locked.
+      syncActionControls();
       syncArticleTokenInput();
-      if (nextBusy) {
-        clearTimeout(logPollTimer);
-        logRequestController?.abort();
-      } else {
-        scheduleLogPoll(logPollIntervalMs);
-      }
+      if (changed) scheduleLogPoll(logPollIntervalMs);
       updateLogControls();
     }
 
+    function syncActionControls() {
+      document.querySelectorAll("[data-action], [data-stack], [data-web-mode], #tokenForm button, #tokenForm input").forEach(control => {
+        let reason = busy ? "A service operation is running." : !statusAvailable ? "Refresh service status before running a command." : "";
+        const service = state?.services?.find(item => item.id === control.dataset.id);
+        if (!reason && service) {
+          if (control.dataset.action === "start" && service.running) reason = "Already running. Use Restart if unhealthy.";
+          if (["stop", "restart"].includes(control.dataset.action) && !service.running) reason = "Already stopped. Use Start.";
+          if (control.dataset.action === "rebuild-restart" && service.mode !== "production") reason = "Available in Production mode only.";
+        }
+        if (!reason && control.dataset.webMode && control.dataset.webMode === state?.services?.find(item => item.id === "web")?.mode) reason = "This mode is already selected.";
+        if (!reason && control.dataset.stack === "start-all" && state?.services?.every(item => item.running)) reason = "All services are running. Use Restart for unhealthy services.";
+        if (!reason && ["stop-all", "restart-all"].includes(control.dataset.stack) && state?.services?.every(item => !item.running)) reason = "The stack is stopped. Use Start all.";
+        control.disabled = Boolean(reason);
+        if (control.matches("[data-action], [data-stack], [data-web-mode]")) control.title = reason;
+      });
+    }
+
+    function renderOperation(operation) {
+      if (!operation) return;
+      if (operation.startedAt < latestOperationStartedAt) return;
+      latestOperationStartedAt = operation.startedAt || latestOperationStartedAt;
+      // An older status request must not resurrect a completed operation.
+      if (operation.state === "running" && finishedOperations.has(operation.id)) return;
+      if (operation.state !== "running") {
+        finishedOperations.add(operation.id);
+        if (finishedOperations.size > 24) finishedOperations.delete(finishedOperations.values().next().value);
+      }
+      const names = { postgres: "PostgreSQL", cms: "Directus CMS", api: "Upload API", web: "Frontend Web" };
+      const phases = { start: "Start and verify", stop: "Stop and wait", build: "Build production Web", "recovery-stop": "Stop for recovery", "recovery-build": "Rebuild previous mode", "recovery-start": "Restore previous mode" };
+      const labels = { "start-all": "Start all services", "stop-all": "Stop all services", "restart-all": "Restart all services", "refresh-app": "Update API + Web", "upload-tokens": "Save tokens and restart API" };
+      const parts = operation.label.split(":");
+      const label = labels[operation.label] || (parts[0] === "web-mode" ? "Switch Web to " + parts[1] : (names[parts[0]] || parts[0]) + (parts[1] ? " · " + parts[1] : ""));
+      const panel = document.getElementById("operationPanel");
+      panel.hidden = false;
+      const signature = JSON.stringify(operation);
+      if (signature !== lastOperationSignature) {
+        lastOperationSignature = signature;
+        document.getElementById("operationTitle").textContent = label;
+        const phase = operation.steps.find(step => step.state === "running");
+        document.getElementById("operationSummary").textContent = operation.state === "running"
+          ? "In progress · " + (phase ? names[phase.serviceId] + " / " + (phases[phase.phase] || phase.phase) : "Preparing") + ". You can leave this page; the operation continues."
+          : (operation.state === "succeeded" ? "Completed · " : "Needs attention · ") + operation.message;
+        document.getElementById("operationSteps").innerHTML = operation.steps.map(step =>
+          '<li data-state="' + esc(step.state) + '"><strong>' + esc((names[step.serviceId] || step.serviceId) + " · " + (phases[step.phase] || step.phase)) + '</strong> — '
+          + esc(step.state === "running" ? "In progress" : step.state === "succeeded" ? "Completed" : "Failed")
+          + (step.message ? ': ' + esc(step.message) : '') + '</li>').join("");
+      }
+      if (operation.state === "running") {
+        setActionReadout(label + " is in progress. Follow the steps below.");
+        trackedOperationId = operation.id;
+        trackedOperationStartedAt = operation.startedAt || "";
+        setBusy(true);
+        scheduleOperationPoll();
+      } else if (trackedOperationId && !submittingOperation &&
+          (trackedOperationId === operation.id || operation.startedAt > trackedOperationStartedAt)) {
+        // The shared lock serializes operations. A newer terminal operation also
+        // proves the previously tracked one ended, even if its last poll was missed.
+        trackedOperationId = null;
+        trackedOperationStartedAt = "";
+        clearTimeout(operationPollTimer);
+        setActionReadout(operation.message, operation.state === "succeeded" ? "" : "error");
+        // Revalidate service states before enabling commands against the old cards.
+        statusAvailable = false;
+        setBusy(false);
+        if (!refreshPromise) refresh(true);
+      }
+    }
+
+    function scheduleOperationPoll() {
+      clearTimeout(operationPollTimer);
+      if (trackedOperationId && operationPollFailures < 3) operationPollTimer = setTimeout(pollOperation, 1000);
+    }
+
+    async function pollOperation() {
+      if (!trackedOperationId || operationPollInFlight) return;
+      operationPollInFlight = true;
+      const id = trackedOperationId;
+      try {
+        const response = await fetch(apiPath("/api/operations/" + encodeURIComponent(id)), { cache: "no-store", signal: AbortSignal.timeout(10000) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Operation status unavailable.");
+        operationPollFailures = 0;
+        if (id === trackedOperationId) renderOperation(data.operation);
+      } catch (error) {
+        // Ignore an expired request for an operation that has been superseded.
+        if (id !== trackedOperationId) return;
+        operationPollFailures++;
+        setActionReadout("Cannot confirm the command result: " + error.message + ". The operation may still be running. Refresh to reconnect; do not resubmit.", "error");
+      } finally {
+        operationPollInFlight = false;
+        scheduleOperationPoll();
+      }
+    }
+
+    async function submitOperation(url, label) {
+      if (busy || !statusAvailable) return;
+      submittingOperation = true;
+      setBusy(true);
+      setActionReadout(label + " · requesting operation...");
+      try {
+        const response = await fetch(apiPath(url), { method: "POST", headers: MUTATION_HEADERS, signal: AbortSignal.timeout(15000) });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || "Command was not accepted.");
+        // An older POST acknowledgement must not replace a newer operation
+        // already observed through status polling. renderOperation owns tracking.
+        operationPollFailures = 0;
+        renderOperation(data.operation);
+      } catch (error) {
+        statusAvailable = false;
+        setActionReadout("Command result is unconfirmed: " + error.message + ". Refresh status before retrying.", "error");
+      } finally {
+        submittingOperation = false;
+        if (!trackedOperationId) setBusy(false);
+        await refreshPromise;
+        await refresh(true);
+      }
+    }
+
     function syncArticleTokenInput() {
-      const disabled = busy || articleUsesUploadToken.checked;
+      const disabled = busy || !statusAvailable || articleUsesUploadToken.checked;
       articleToken.disabled = disabled;
       document.querySelectorAll('[data-token-generate="articleToken"], [data-token-toggle="articleToken"]').forEach((button) => {
         button.disabled = disabled;
@@ -2108,7 +2322,7 @@ function html() {
           + '<button class="button ' + (item.mode === "production" ? "active" : "") + '" type="button" data-web-mode="production" aria-pressed="' + (item.mode === "production") + '">Production</button>'
           + '</div>'
         : "";
-      const rebuild = item.id === "web"
+      const rebuild = item.id === "web" && item.mode === "production"
         ? '<button class="button" type="button" data-action="rebuild-restart" data-id="' + esc(item.id) + '" aria-label="Build and restart ' + esc(item.name) + '">Build + Restart</button>'
         : "";
       const open = item.openUrl
@@ -2126,6 +2340,14 @@ function html() {
         + '</header>'
         + (issue ? '<p class="svc-issue">' + esc(issue) + '</p>' : "")
         + '<dl class="facts">' + facts.join("") + '</dl>'
+        + '<p class="service-help">' + (item.id === "web"
+          ? (item.mode === "production" ? 'Start and Restart reuse the current production build. Source changes require Build + Restart; a failed build leaves Web stopped. Check the Build log before retrying.' : 'Development runs hot reload. Restart reloads the process; switch to Production to build for deployment.')
+          : item.id === "postgres" ? 'Controls the Windows database service. Start all checks dependencies in order.'
+          : item.id === "api" ? 'Restart reloads API code and configuration. Wait for uploads and conversions to finish first.'
+          : 'Restart reloads CMS configuration. PostgreSQL should be healthy first.') + '</p>'
+        + '<details class="command-reference"><summary>Equivalent commands</summary>'
+        + ['start', 'restart', 'stop', 'status', 'health'].map(action => '<code>npm run ' + esc(item.id) + ':' + action + '</code>').join('')
+        + (item.id === 'web' ? '<code>npm run web:rebuild-restart</code>' : '') + '</details>'
         + '<div class="svc-ops">'
         + webMode
         + '<button class="button' + (item.running ? "" : " primary") + '" type="button" data-action="start" data-id="' + esc(item.id) + '" aria-label="Start ' + esc(item.name) + '">Start</button>'
@@ -2252,14 +2474,27 @@ function html() {
 
     function render(data) {
       state = data;
+      statusAvailable = true;
       renderSummary(data);
       lastSyncAt = new Date(data.updatedAt);
       setSyncState("live", "Live · updated " + lastSyncAt.toLocaleTimeString());
       document.title = data.services.filter((item) => item.healthy).length + "/" + data.services.length + " healthy · Service Manager";
 
       renderTally(data);
-      cards.innerHTML = data.services.map(serviceCard).join("");
-      if (busy) cards.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      // Keep the dialog's original trigger mounted so native focus restoration works.
+      if (!confirmationPending) {
+        const focused = cards.contains(document.activeElement) ? document.activeElement : null;
+        const focusKey = focused?.dataset.action ? '[data-id="' + focused.dataset.id + '"][data-action="' + focused.dataset.action + '"]'
+          : focused?.dataset.webMode ? '[data-web-mode="' + focused.dataset.webMode + '"]'
+          : focused?.dataset.log ? '[data-log="' + focused.dataset.log + '"]'
+          : focused?.tagName === 'SUMMARY' ? '[data-card="' + focused.closest('[data-card]').dataset.card + '"] summary' : null;
+        const openCommands = new Set([...cards.querySelectorAll('.command-reference[open]')].map(item => item.closest('[data-card]').dataset.card));
+        cards.innerHTML = data.services.map(serviceCard).join("");
+        cards.querySelectorAll('.command-reference').forEach(item => { item.open = openCommands.has(item.closest('[data-card]').dataset.card); });
+        if (focusKey) cards.querySelector(focusKey)?.focus({ preventScroll: true });
+      }
+      if (data.operation) renderOperation(data.operation);
+      syncActionControls();
       updateLogControls();
       renderUploadTokens(data.uploadTokens);
       managerMeta.innerHTML = [
@@ -2294,6 +2529,8 @@ function html() {
           if (generation === statusGeneration) render(data);
         } catch (error) {
           if (generation === statusGeneration) {
+            statusAvailable = false;
+            syncActionControls();
             setSyncState("offline", "Manager unreachable" + (lastSyncAt ? " · last data " + lastSyncAt.toLocaleTimeString() : ""));
           }
           if (!silent && generation === statusGeneration) {
@@ -2312,89 +2549,40 @@ function html() {
     }
 
     async function runServiceAction(id, action) {
-      if (busy) return;
-      setBusy(true);
-      setActionReadout("Running " + action + " on " + id + "...");
-      try {
-        const response = await fetch(apiPath("/api/services/" + encodeURIComponent(id) + "/" + encodeURIComponent(action)), {
-          method: "POST", headers: MUTATION_HEADERS
-        });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.error || "Action failed");
-        render(data.status);
-        const message = data.result.message || "Done.";
-        setActionReadout(message);
-        notify(message);
-      } catch (error) {
-        setActionReadout("Error: " + error.message, "error");
-        notify(error.message);
-        await refreshPromise;
-        await refresh(true);
-      } finally {
-        setBusy(false);
+      if (busy || !statusAvailable) return;
+      const service = state?.services?.find(item => item.id === id);
+      if (!service) return;
+      const label = action === "rebuild-restart" ? "Build + Restart" : action[0].toUpperCase() + action.slice(1);
+      if (["stop", "restart", "rebuild-restart"].includes(action)) {
+        const impact = id === "api" ? " Active uploads and conversions will be interrupted."
+          : id === "postgres" ? " CMS and dependent requests will lose database access."
+          : id === "cms" ? " Content and management requests may fail until CMS is healthy." : " Website requests will be interrupted.";
+        if (!await confirmAction(label + " " + service.name + "?" + impact, label)) return;
       }
+      await submitOperation("/api/services/" + encodeURIComponent(id) + "/" + encodeURIComponent(action), label + " " + service.name);
     }
 
     async function runStackAction(action) {
-      if (busy) return;
-      if (action === "stop-all" && !await confirmAction("Stop all managed services, including PostgreSQL?", "Stop all")) return;
-      if (action === "restart-all" && !await confirmAction("Restart the full managed stack?", "Restart all")) return;
-      setBusy(true);
-      setActionReadout("Running " + action + "...");
-      try {
-        const response = await fetch(apiPath("/api/stack/" + encodeURIComponent(action)), { method: "POST", headers: MUTATION_HEADERS });
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-          throw new Error(data.error || "Stack action failed");
-        }
-        render(data.status);
-        setActionReadout((data.result.results || [])
-          .map((item) => item.serviceId + ": " + item.message)
-          .join(" · "));
-        notify(data.result.message || "Done.");
-      } catch (error) {
-        setActionReadout("Error: " + error.message, "error");
-        notify(error.message);
-        await refreshPromise;
-        await refresh(true);
-      } finally {
-        setBusy(false);
+      if (busy || !statusAvailable) return;
+      const labels = { "start-all": "Start all", "stop-all": "Stop all", "restart-all": "Restart all", "refresh-app": "Update API + Web" };
+      const label = labels[action];
+      if (!label) return;
+      if (action !== "start-all") {
+        const message = action === "refresh-app"
+          ? "Restart the Upload API and update Web? Production Web will be rebuilt; PostgreSQL and CMS stay running. Install changed dependencies first. Active uploads and website requests will be interrupted."
+          : label + " four services? This interrupts website, CMS and upload requests, including active conversions. The stop order is Web → API → CMS → PostgreSQL.";
+        if (!await confirmAction(message, label)) return;
       }
+      await submitOperation("/api/stack/" + encodeURIComponent(action), label);
     }
 
     async function setWebMode(mode) {
-      if (busy) return;
+      if (busy || !statusAvailable) return;
       const nextLabel = mode === "production" ? "Production" : "Development";
-      const current = state?.services?.find((item) => item.id === "web")?.mode;
-      if (current === mode) {
-        notify("Frontend Web is already in " + nextLabel + " mode.");
-        return;
-      }
-
-      if (mode === "production" && !await confirmAction("Switch Frontend Web to Production mode? The frontend will stop while the production build runs.", "Switch to Production")) {
-        return;
-      }
-
-      setBusy(true);
-      setActionReadout("Switching Frontend Web to " + nextLabel + " mode...");
-      try {
-        const response = await fetch(apiPath("/api/services/web/mode/" + encodeURIComponent(mode)), {
-          method: "POST", headers: MUTATION_HEADERS
-        });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.error || "Mode switch failed");
-        render(data.status);
-        const message = data.result.message || "Frontend Web mode switched.";
-        setActionReadout(message);
-        notify(message);
-      } catch (error) {
-        setActionReadout("Error: " + error.message, "error");
-        notify(error.message);
-        await refreshPromise;
-        await refresh(true);
-      } finally {
-        setBusy(false);
-      }
+      const current = state?.services?.find(item => item.id === "web")?.mode;
+      if (current === mode) return;
+      if (!await confirmAction("Switch Web to " + nextLabel + "? The website stops during the switch. Production also runs a fresh build.", "Switch to " + nextLabel)) return;
+      await submitOperation("/api/services/web/mode/" + encodeURIComponent(mode), "Switch Web to " + nextLabel);
     }
 
     async function saveUploadTokens() {
@@ -2510,21 +2698,17 @@ function html() {
         const active = Number(button.dataset.logInterval) === logPollIntervalMs;
         button.classList.toggle("active", active);
         button.setAttribute("aria-pressed", String(active));
-        button.disabled = busy || !hasSource;
+        button.disabled = !hasSource;
       });
 
-      toggleLogPolling.disabled = busy || !hasSource;
+      toggleLogPolling.disabled = !hasSource;
       toggleLogPolling.textContent = logPollingEnabled ? "Pause" : "Resume";
       toggleLogPolling.setAttribute("aria-pressed", String(!logPollingEnabled));
 
       let stateClass = "";
       let stateText = "Idle";
       let metaText = "Waiting for a log source.";
-      if (hasSource && busy) {
-        stateClass = "paused";
-        stateText = "Hold";
-        metaText = "Live output holds while a stack command runs.";
-      } else if (hasSource && statusRefreshing) {
+      if (hasSource && statusRefreshing) {
         stateClass = "syncing";
         stateText = "Sync";
         metaText = "Refreshing stack status...";
@@ -2632,7 +2816,7 @@ function html() {
     }
 
     async function loadLogs(id, options = {}) {
-      if (busy || !LOG_SOURCE_LABELS[id]) return;
+      if (!LOG_SOURCE_LABELS[id]) return;
       const sourceChanged = id !== activeLogService;
       if (logRequestInFlight && !sourceChanged) return;
 
@@ -2689,7 +2873,7 @@ function html() {
         document.visibilityState !== "visible"
       ) return;
       logPollTimer = setTimeout(async () => {
-        if (!busy && document.visibilityState === "visible") {
+        if (document.visibilityState === "visible") {
           await loadLogs(activeLogService);
         }
         scheduleLogPoll(logPollIntervalMs);
@@ -2697,7 +2881,7 @@ function html() {
     }
 
     async function selectLogSource(id) {
-      if (busy || !LOG_SOURCE_LABELS[id]) return;
+      if (!LOG_SOURCE_LABELS[id]) return;
       const sourceChanged = id !== activeLogService;
       logPollingEnabled = true;
       if (sourceChanged) {
@@ -2724,7 +2908,7 @@ function html() {
     }
 
     async function toggleLiveLogs() {
-      if (busy || !activeLogService) return;
+      if (!activeLogService) return;
       logPollingEnabled = !logPollingEnabled;
       clearTimeout(logPollTimer);
       if (!logPollingEnabled) {
@@ -2799,20 +2983,27 @@ function html() {
       saveUploadTokens();
     });
     toggleLogPolling.addEventListener("click", toggleLiveLogs);
-    refreshButton.addEventListener("click", () => refresh());
+    refreshButton.addEventListener("click", () => {
+      operationPollFailures = 0;
+      if (trackedOperationId) pollOperation();
+      refresh();
+    });
     log.addEventListener("scroll", updateFollowPill, { passive: true });
+    // Do not advertise usable mutation controls before the first status response.
+    syncActionControls();
+    syncArticleTokenInput();
     refresh();
     selectLogSource(activeLogService).catch((error) => {
       lastLogError = "refresh failed: " + error.message;
       updateLogControls();
     });
     setInterval(() => {
-      if (!busy && document.visibilityState === "visible") {
+      if (document.visibilityState === "visible") {
         refresh(true);
       }
     }, AUTO_REFRESH_INTERVAL_MS);
     document.addEventListener("visibilitychange", () => {
-      if (!busy && document.visibilityState === "visible") {
+      if (document.visibilityState === "visible") {
         refresh(true);
         if (logPollingEnabled) {
           loadLogs(activeLogService).finally(() => scheduleLogPoll(logPollIntervalMs));
