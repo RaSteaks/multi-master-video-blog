@@ -147,6 +147,13 @@ async function ensureField(token, collection, field) {
     console.log(`field created: ${collection}.${field.field}`);
   } catch (error) {
     if (isAlreadyExistsError(error)) {
+      // A 400 can also mean an invalid field definition. Only accept an
+      // existing field after the API confirms it; otherwise preserve the error.
+      try {
+        await request(`/fields/${collection}/${field.field}`, { token });
+      } catch {
+        throw error;
+      }
       console.log(`field exists: ${collection}.${field.field}`);
       return;
     }
@@ -783,7 +790,13 @@ const fields = {
     jsonObjectField("dolby_metadata"),
     jsonObjectField("source_probe_json"),
     // Bounded public source identification; raw probes remain administrative data.
-    jsonObjectField("source_format"),
+    {
+      ...jsonObjectField("source_format"),
+      meta: {
+        ...jsonObjectField("source_format").meta,
+        note: "Source format / 源文件格式：上传时识别的容器、编码和色彩信息，与播放母版格式分开保存。"
+      }
+    },
     jsonObjectField("output_probe_json"),
     selectField("verification_status", verificationStatusTypes, false),
     jsonObjectField("verification_errors"),
@@ -1688,8 +1701,28 @@ function placeholders(db, count) {
   return Array.from({ length: count }, (_, index) => placeholder(db, index + 1)).join(", ");
 }
 
+async function verifyVideoSourceFormat(token) {
+  const { data } = await request("/fields/video_masters/source_format", { token });
+  if (data?.type !== "json" || !data?.schema) {
+    throw new Error("video_masters.source_format must be a persisted JSON field.");
+  }
+  // Exercise the relation used by the video detail page, even on an empty CMS.
+  await request("/items/video_projects?fields=id,masters.source_format&limit=1", { token });
+  console.log("video_masters.source_format is ready for video detail requests.");
+}
+
 async function main() {
+  const args = process.argv.slice(2);
+  if (args.some((arg) => arg !== "--video-source-format-only")) {
+    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only]");
+  }
   const token = await login();
+
+  if (args.includes("--video-source-format-only")) {
+    await ensureField(token, "video_masters", fields.video_masters.find((field) => field.field === "source_format"));
+    await verifyVideoSourceFormat(token);
+    return;
+  }
 
   for (const collection of collections) {
     await ensureCollection(token, collection);
@@ -1707,6 +1740,7 @@ async function main() {
     await ensureRelation(token, relation);
   }
 
+  await verifyVideoSourceFormat(token);
   await ensureAlbumFieldDefaults(token);
   await ensureAssetPresets(token);
   await ensureBuiltInFilmStockPresets(token);

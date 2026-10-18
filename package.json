@@ -33,6 +33,7 @@
     "web:health": "node scripts/service-control.cjs web health",
     "bootstrap:cms": "npm --workspace @multi-master-video-blog/cms run bootstrap",
     "setup:cms-schema": "node scripts/setup-directus-schema.cjs",
+    "setup:video-source-format": "node scripts/setup-directus-schema.cjs --video-source-format-only",
     "backfill:video-source-formats": "node scripts/backfill-video-source-formats.cjs",
     "migrate:cms:postgres": "node scripts/migrate-directus-sqlite-to-postgres.cjs",
     "dev:cms": "npm --workspace @multi-master-video-blog/cms run dev",
