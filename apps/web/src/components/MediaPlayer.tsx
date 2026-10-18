@@ -7,9 +7,7 @@ import type { VideoMaster } from "@/lib/directus";
 import { masterResolution, mediaUrl } from "@/lib/directus";
 import { getDefaultMaster, getSdrFallback, isPlayableMaster, isSdrMaster, playbackErrorMessage } from "@/lib/video-playback";
 import { isHdrVideo, selectAutomaticMaster } from "@/lib/video-capabilities";
-import { playbackFormat, resolveSourceFormat, sourceFormatLabel, dolbyPlaybackLabel } from "@/lib/video-format";
-import { VideoFormatInfo } from "./VideoFormatInfo";
-import formatStyles from "./VideoFormatInfo.module.css";
+import { playbackFormat } from "@/lib/video-format";
 
 type MediaPlayerProps = {
   masters: VideoMaster[];
@@ -398,7 +396,6 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
       : null;
 
   const resolutionLabel = masterResolution(activeMaster);
-  const sourceFormat = resolveSourceFormat(activeMaster);
   const dolbyProfileVersion = formatDolbyProfileVersion(
     activeMaster.dolby_profile,
     activeMaster.dolby_compatibility_id,
@@ -475,13 +472,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
             </div>
           </div>
 
-          {/* Source identity never changes the codec/range used for capability checks. */}
-          <div className={formatStyles.summary} aria-live="polite" aria-label="源母版与当前播放版本">
-            <p><strong>源母版：</strong>{sourceFormatLabel(sourceFormat)}{sourceFormat?.dolbyVision.status === "declared" ? " · 含 Dolby Vision 元数据声明" : ""}</p>
-            <p><strong>当前播放版本：</strong>{playbackFormat(activeMaster)} · {activeMaster.codec || "编码未记录"}</p>
-            {sourceFormat?.container === "imf" ? <p>{dolbyPlaybackLabel(sourceFormat)}</p> : null}
-          </div>
-
+          {/* Playback Info shows stream/device details; source provenance stays in upload results. */}
           <aside
             className={infoOpen ? "player-info-panel open" : "player-info-panel"}
             id="player-info-panel"
@@ -503,9 +494,8 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
             </div>
 
             <div className="info-panel-body">
-              <VideoFormatInfo source={sourceFormat} playback={playbackFormat(activeMaster)} />
               <div className="info-section info-section-master">
-                <h3>Playback Version</h3>
+                <h3>Video</h3>
                 <dl className="tech-grid" aria-label="Current master technical details">
                   <div><dt>Type</dt><dd>{playbackFormat(activeMaster)}</dd></div>
                   <div><dt>Codec</dt><dd>{activeMaster.codec || "N/A"}</dd></div>
@@ -525,13 +515,6 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
                   </div>
                   <div><dt>Processing</dt><dd>{activeMaster.processing_mode || "N/A"}</dd></div>
                   <div><dt>Verified</dt><dd>{activeMaster.verification_status || "N/A"}</dd></div>
-                  <div><dt>Derivative</dt><dd>{formatPresent(activeMaster.is_derivative)}</dd></div>
-                  {activeMaster.is_derivative ? (
-                    <>
-                      <div><dt>Source Master</dt><dd>{activeMaster.derived_from_master_id || "N/A"}</dd></div>
-                      <div><dt>Intent</dt><dd>{activeMaster.conversion_intent || "N/A"}</dd></div>
-                    </>
-                  ) : null}
                   {activeMaster.type === "dolby_vision" ? (
                     <>
                       <div><dt>DV Profile Version</dt><dd>{dolbyProfileVersion || "N/A"}</dd></div>

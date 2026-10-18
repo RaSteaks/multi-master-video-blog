@@ -111,7 +111,8 @@ raw source probes and filesystem paths are excluded. Automatic SDR inherits the
 original source identity and records whether Dolby metadata was applied to its
 conversion. The player's selected output `type`/codec/range remains authoritative
 for playback capability checks. Source identity does not upgrade HDR10 to Dolby
-Vision. The upload and player UI show source and output separately.
+Vision. Upload results show source and output separately; the playback page and
+Playback Info omit source provenance and source/output comparison sections.
 
 Before deploying this field, run `npm run setup:cms-schema` and ensure the Web
 read account can read `video_masters.source_format`. Existing records may be

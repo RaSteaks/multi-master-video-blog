@@ -4,7 +4,7 @@ import styles from "./VideoFormatInfo.module.css";
 
 type Props = { source: unknown; playback?: string | null; lang?: "zh" | "en" };
 
-/** Shared source/delivery wording for upload results and the active player version. */
+/** Source/delivery identification belongs to upload results, outside the playback page. */
 export function VideoFormatInfo({ source, playback, lang = "zh" }: Props) {
   const summary = sanitizeSourceFormat(source);
   const zh = lang === "zh";

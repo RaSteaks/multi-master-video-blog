@@ -88,9 +88,10 @@ corners and inset preview chips use 4px corners.
   These flows reuse the existing upload panels, native inputs/selects, typography
   and CSS tokens; no separate visual theme or persistence of credentials is introduced.
   Behavioral contracts live in `docs/upload-api.md` and `docs/video-workflow.md`.
-  `VideoFormatInfo` shares bounded source-identification wording with `MediaPlayer`.
-  Source IMF/Dolby declarations and the selected playback encoding remain separate;
-  unknown provenance never changes playback capability detection or claims validation.
+  `VideoFormatInfo` presents bounded source identification only in upload results.
+  `MediaPlayer` omits source/current-version summaries and source provenance from
+  Playback Info, which retains stream technical details and device capabilities.
+  Unknown provenance never changes playback capability detection or claims validation.
 
 - `AppearanceControl` owns the non-modal appearance panel and tab keyboard behavior.
 - `HsvPicker` owns the shared saturation/value plane, hue slider and numeric fields.

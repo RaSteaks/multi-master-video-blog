@@ -87,14 +87,16 @@ When an overwrite changes the source hash, the previous automatic SDR is quarant
 
 ## Verification contracts
 
-The upload result and player display the source master separately from the
-selected playback version. `source_format` is a bounded public identification
+The upload result displays the source master separately from the generated
+playback version. The playback page omits this comparison, and Playback Info
+shows stream technical details and device capabilities without source provenance.
+`source_format` is a bounded public identification
 record; it never contains raw probes, archive paths or XML. The player continues
 to make capability/fallback decisions from output codec, range and `type`, not
 from the original IMF or its Dolby metadata declarations. Declared/unlinked
 Dolby metadata is explicitly unvalidated, and conversion-use information is
-separate from whether the output contains RPU. Existing records without evidence
-show "source format not recorded"; see `upload-api.md` for schema/backfill rollout.
+separate from whether the output contains RPU. Upload source information without
+evidence is marked as unrecorded; see `upload-api.md` for schema/backfill rollout.
 
 RGB/PQ IMF folders are an explicit archive-to-delivery exception to copy/remux.
 The uploader recognizes CPL/ASSETMAP, resolves image/audio UUIDs and reads full
