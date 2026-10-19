@@ -10,7 +10,8 @@ function readEnv(filePath = DEFAULT_ENV_PATH) {
   const values = {};
 
   if (!fs.existsSync(filePath)) {
-    throw new Error(`Directus .env not found: ${filePath}`);
+    // Containers receive settings directly from their process environment.
+    return {};
   }
 
   for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
@@ -169,7 +170,14 @@ async function openDirectusDatabase(env = loadDirectusEnv(), connectionOptions =
   }
 
   if (type === "pg") {
-    const { Client } = require("pg");
+    // Official Directus images use pnpm; resolve the driver from its API package.
+    let pg;
+    try { pg = require("pg"); }
+    catch (error) {
+      if (error.code !== "MODULE_NOT_FOUND") throw error;
+      pg = require(require.resolve("pg", { paths: [path.dirname(require.resolve("@directus/api"))] }));
+    }
+    const { Client } = pg;
     const schema = postgresSchema(env);
     const client = new Client({ ...postgresConfig(env), ...connectionOptions });
     try {

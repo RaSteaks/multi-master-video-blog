@@ -20,7 +20,8 @@ function readEnv(filePath) {
   const values = {};
 
   if (!fs.existsSync(filePath)) {
-    throw new Error(`Directus .env not found: ${filePath}`);
+    // Containers receive settings directly from their process environment.
+    return {};
   }
 
   for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
@@ -42,7 +43,7 @@ function readEnv(filePath) {
 }
 
 const env = { ...readEnv(cmsEnvPath), ...process.env };
-const baseUrl = (env.PUBLIC_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8055"}`).replace(/\/$/, "");
+const baseUrl = (env.DIRECTUS_URL || env.PUBLIC_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8055"}`).replace(/\/$/, "");
 
 async function request(pathname, options = {}) {
   const response = await fetch(`${baseUrl}${pathname}`, {
@@ -160,6 +161,22 @@ async function ensureField(token, collection, field) {
 
     throw error;
   }
+}
+
+// Existing select metadata is not updated by ensureField; add this choice without
+// replacing custom choices or other interface options on an installed instance.
+async function ensureFilmResourceBlockedStatus(token) {
+  const endpoint = "/fields/film_scan_jobs/status";
+  const { data } = await request(endpoint, { token });
+  const options = data?.meta?.options || {};
+  const choices = Array.isArray(options.choices) ? options.choices : [];
+  if (choices.some(choice => choice.value === "resource_blocked")) return;
+  await request(endpoint, {
+    method: "PATCH", token,
+    body: { meta: { options: { ...options, choices: [...choices,
+      { text: "Resource blocked", value: "resource_blocked" }
+    ] } } }
+  });
 }
 
 async function ensureRelation(token, relation) {
@@ -662,6 +679,7 @@ const photoHdrTransferTypes = [
 const filmScanStatusTypes = [
   { text: "Uploaded", value: "uploaded" },
   { text: "Analyzing", value: "analyzing" },
+  { text: "Resource blocked", value: "resource_blocked" },
   { text: "Review required", value: "review_required" },
   { text: "Rendering", value: "rendering" },
   { text: "Committed", value: "committed" },
@@ -1734,6 +1752,7 @@ async function main() {
     }
   }
 
+  await ensureFilmResourceBlockedStatus(token);
   await ensureFilmScanSourceSizeType(token);
 
   for (const relation of relations) {

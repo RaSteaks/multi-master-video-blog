@@ -1,0 +1,37 @@
+# Limits include native libraries and children, not just the Node heap.
+services:
+  web:
+    mem_limit: ${WEB_MEM_LIMIT:-512m}
+    cpus: "${WEB_CPUS:-1.0}"
+    environment:
+      RESOURCE_PROFILE: low-4gb
+    build:
+      args:
+        RESOURCE_PROFILE: low-4gb
+  api:
+    mem_limit: ${API_MEM_LIMIT:-1280m}
+    cpus: "${API_CPUS:-1.5}"
+    environment:
+      RESOURCE_PROFILE: low-4gb
+  cms:
+    mem_limit: ${CMS_MEM_LIMIT:-1024m}
+    cpus: "${CMS_CPUS:-1.0}"
+    environment:
+      RESOURCE_PROFILE: low-4gb
+  db:
+    mem_limit: ${DB_MEM_LIMIT:-384m}
+    cpus: "${DB_CPUS:-1.0}"
+    command: [postgres, -c, "shared_buffers=${PG_SHARED_BUFFERS:-256MB}", -c, "max_connections=${PG_MAX_CONNECTIONS:-30}", -c, work_mem=4MB, -c, maintenance_work_mem=64MB, -c, max_parallel_workers_per_gather=0, -c, max_parallel_maintenance_workers=0]
+  nginx:
+    mem_limit: ${NGINX_MEM_LIMIT:-64m}
+    cpus: "${NGINX_CPUS:-0.5}"
+  bootstrap:
+    mem_limit: ${CMS_MEM_LIMIT:-1024m}
+    cpus: "${CMS_CPUS:-1.0}"
+    environment:
+      RESOURCE_PROFILE: low-4gb
+  schema:
+    mem_limit: ${CMS_MEM_LIMIT:-1024m}
+    cpus: "${CMS_CPUS:-1.0}"
+    environment:
+      RESOURCE_PROFILE: low-4gb

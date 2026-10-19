@@ -12,7 +12,7 @@
 [![Windows](https://img.shields.io/badge/Windows-11-0078D4?style=flat-square&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
 
 支持文章发布、SDR / HDR 相簿、视频项目管理、HLS 自适应播放、SDR / HDR10 / HLG / Dolby Vision 多母版切换
-Directus CMS 内容管理，Windows 本地服务 + Nginx + HTTPS 全栈部署
+Directus CMS 内容管理，支持 Windows、Linux systemd 和 Docker Compose 部署，配合 Nginx 提供 HTTPS 与媒体服务
 
 </div>
 
@@ -73,7 +73,9 @@ multi-master-video-blog/
 │   └── cms/directus/        # Directus CMS
 ├── deployment/
 │   ├── nginx/               # Nginx 示例配置
-│   └── windows/             # Windows 服务脚本
+│   ├── windows/             # Windows 服务脚本
+│   ├── linux/               # systemd 单元、低内存配置、维护更新脚本
+│   └── docker/              # 镜像、Compose、HTTPS/Vulkan override
 ├── docs/                    # 项目、前端、上传、部署详细说明
 ├── media/                   # HLS / 媒体文件存储目录
 ├── scripts/                 # CMS 初始化 · 测试 · 迁移 · 健康检查
@@ -90,7 +92,8 @@ multi-master-video-blog/
 - **Node.js** `>= 22`
 - **FFmpeg** + **FFprobe**（加入系统 PATH 或通过 `.env` 指定路径）
 - **PostgreSQL**
-- **Windows 11** / Windows Server
+- **Windows 11** / Windows Server 或 **Linux**；生产安装见 [部署](#部署)
+- Docker 部署只需宿主机 Docker 环境，按下方 [Docker 步骤](#deploy-docker)安装
 
 ### 环境变量配置
 
@@ -309,12 +312,248 @@ npm run manager                # 启动本地服务管理面板
 
 ## 部署
 
-详细部署步骤请参考 [docs/](docs/) 目录：
+| 部署方式 | 入口 | 适用环境 |
+|----------|------|----------|
+| Linux 原生服务 | [systemd 部署步骤](#deploy-linux) | 已有 PostgreSQL、Nginx，希望直接管理进程 |
+| Docker Compose | [Docker 部署步骤](#deploy-docker) | 希望用容器管理应用、数据库和持久化存储 |
+| Windows 本地服务 | [部署说明](docs/deployment.md) · `deployment/windows/` | Windows 11 / Windows Server |
 
-- **网站内写文章** — [docs/article-writing.md](docs/article-writing.md)，包含 `/write`、文章图片与 Directus 发布链路
-- **相簿与 HDR 照片** — [docs/albums.md](docs/albums.md)，包含文件配对、验证、管理接口和显示回退
-- **Windows 服务** — `deployment/windows/` PowerShell 脚本，注册为系统服务开机自启
-- **Nginx** — `deployment/nginx/` 反向代理配置，支持 HLS 静态服务与 HTTPS
+Linux 与 Docker 共用 `low-2gb`、`low-4gb` 资源档位，默认将重处理并发和前端构建 worker 限制为 1。2GB 机器本机构建需预先配置至少 **2GiB swap**，构建期间使用维护窗口。内存预算、迁移和完整回滚说明见 [Linux 部署指南](docs/linux-deployment.md)。
+
+<a id="deploy-linux"></a>
+
+### Linux 原生部署（systemd）
+
+#### 1. 准备环境与目录
+
+需要 **systemd、Node.js 22、npm、PostgreSQL 17、Nginx、FFmpeg / FFprobe、Git、curl、tar、util-linux**。服务单元使用 `/usr/bin/node`，请确认该路径安装的是 Node 22。FFmpeg 需匹配 FFprobe 版本；HDR 自动生成 SDR 还需要 libplacebo、zscale、Dolby Vision 支持和可用 Vulkan。
+
+以下是**首次安装**步骤，从仓库根目录执行，并使用已包含部署文件的已提交版本。已有安装请使用后面的更新流程。
+
+```bash
+resource_profile=low-2gb            # 4GB 机器改为 low-4gb
+release_dir=/opt/video-blog/releases/initial
+
+sudo useradd --system --create-home --shell /usr/sbin/nologin video-blog
+sudo install -d -o video-blog -g video-blog "$release_dir"
+sudo install -d -o video-blog -g video-blog /var/lib/video-blog/{media,uploads,extensions,tmp,content,.private-media/film-scans}
+sudo install -d -o root -g video-blog -m 0750 /etc/video-blog
+
+# 仅导出已提交源码，不复制本机环境文件、依赖或媒体。
+git archive HEAD | sudo tar -x -C "$release_dir"
+sudo chown -R video-blog:video-blog "$release_dir"
+sudo ln -s "$release_dir" /opt/video-blog/current
+cd /opt/video-blog/current
+```
+
+#### 2. 创建数据库、填写配置
+
+在已运行的 PostgreSQL 中创建账号和数据库；交互输入密码，不放进命令行：
+
+```bash
+sudo -u postgres createuser --pwprompt directus
+sudo -u postgres createdb --owner=directus video_blog
+
+sudo install -o root -g video-blog -m 0640 \
+  "deployment/linux/profiles/$resource_profile.env.example" /etc/video-blog/resources.env
+for service in api web cms; do
+  sudo install -o root -g video-blog -m 0640 \
+    "deployment/linux/$service.env.example" "/etc/video-blog/$service.env"
+done
+sudoedit /etc/video-blog/cms.env /etc/video-blog/api.env /etc/video-blog/web.env
+```
+
+填写以下字段，所有真实值保存在 `/etc/video-blog/`，不要提交到 Git：
+
+| 配置文件 | 需要填写或核对 |
+|----------|----------------|
+| `cms.env` | `PUBLIC_URL`（公开站点地址）、`KEY`、`SECRET`、数据库连接、管理员邮箱与密码 |
+| `api.env` | CMS 服务账号、上传/文章 token、FFmpeg/FFprobe 路径；媒体根目录保持 `/var/lib/video-blog/media` |
+| `web.env` | 同一 CMS 服务账号、`REVALIDATE_SECRET` |
+| `resources.env` | `RESOURCE_PROFILE` 与机器内存档位一致 |
+
+`DIRECTUS_URL` 保持 `http://127.0.0.1:8055`；`PUBLIC_URL` 是浏览器访问地址。API/Web 的服务账号在第 4 步创建后填写。可用 `openssl rand -hex 32` 分别生成密钥和 token。
+
+PostgreSQL 的低内存示例位于 `deployment/linux/profiles/postgresql-low-2gb.conf` 和 `postgresql-low-4gb.conf`。按实际数据库安装路径配置 include，审阅后重启数据库；已有数据库先备份。
+
+#### 3. 安装依赖、构建前端
+
+```bash
+sudo -u video-blog env NODE_OPTIONS=--max-old-space-size=768 npm_config_jobs=1 \
+  npm ci --no-audit --no-fund
+
+FFMPEG_PATH=/usr/bin/ffmpeg FFPROBE_PATH=/usr/bin/ffprobe \
+  node scripts/check-media-tools.cjs
+
+sudo -u video-blog env CMS_RUNTIME_ONLY=true node \
+  --env-file=/etc/video-blog/resources.env --env-file=/etc/video-blog/web.env \
+  scripts/run-service.cjs build
+
+# 可写数据放在 release 目录之外，更新源码时保留。
+sudo -u video-blog ln -s /var/lib/video-blog/tmp apps/api/tmp
+sudo -u video-blog ln -s /var/lib/video-blog/content/about.md apps/web/content/about.md
+```
+
+工具检查会确认 FFmpeg 的编译能力；实际 Vulkan 设备还需要运行转换任务验证。自定义 About 内容可写入 `/var/lib/video-blog/content/about.md`，没有该文件时使用默认内容。
+
+#### 4. 初始化 CMS、启动服务
+
+```bash
+sudo -u video-blog node \
+  --env-file=/etc/video-blog/resources.env --env-file=/etc/video-blog/cms.env \
+  scripts/run-service.cjs bootstrap
+
+sudo cp deployment/linux/systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now video-blog-cms
+
+sudo -u video-blog node \
+  --env-file=/etc/video-blog/resources.env --env-file=/etc/video-blog/cms.env \
+  scripts/run-service.cjs schema
+```
+
+CMS 监听 `127.0.0.1:8055`。远程安装时，在自己的电脑执行 `ssh -L 8055:127.0.0.1:8055 user@server`，然后打开 `http://127.0.0.1:8055/admin`。使用管理员账号登录，创建满足项目内容/文件操作需求的有限权限服务账号，将其邮箱和密码填写到 `/etc/video-blog/api.env` 与 `web.env`，再启动应用：
+
+```bash
+sudo systemctl enable --now video-blog-api video-blog-web
+curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:8055/server/health
+curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:8060/health
+curl --fail --silent --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:3000/ > /dev/null
+```
+
+#### 5. 配置 Nginx 与 HTTPS
+
+```bash
+sudo install -d /etc/nginx/blog
+sudo install -m 0644 deployment/nginx/blog-routes.conf /etc/nginx/blog/routes.conf
+sudo install -m 0644 deployment/nginx/linux-nginx.example.conf /etc/nginx/conf.d/video-blog.conf
+sudoedit /etc/nginx/conf.d/video-blog.conf
+# 将 example.com 和证书路径替换为实际值；使用已有证书。
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Nginx 主配置在少核心机器上使用 `worker_processes 1`，并确保包含 `conf.d/*.conf`。媒体通过 API 的规范路径与私有目录检查；不要添加静态媒体 alias。对外只开放 Nginx 的 HTTP/HTTPS 端口；3000、8055、8060 和数据库保持内网访问。
+
+#### 日常管理与更新
+
+```bash
+sudo systemctl status video-blog-cms video-blog-api video-blog-web
+sudo journalctl -u video-blog-api -n 100
+
+# 从包含目标提交的 Git 仓库构建新 release；替换路径和提交号。
+sudo bash deployment/linux/update-native.sh /path/to/repository COMMIT_OR_TAG
+```
+
+更新脚本检查维护状态、暂停应用服务、在独立目录构建，再切换 `current`。构建或就绪检查失败时恢复旧 release 和原服务状态。首次从不支持 `drain` 写请求检查的旧版本迁入，应按首次安装流程安排人工维护窗口。数据库 schema 升级和备份需要单独执行，不随应用更新自动运行。
+
+<a id="deploy-docker"></a>
+
+### Docker Compose 部署
+
+#### 1. 准备环境与配置
+
+需要 **Docker Engine 已启动、Docker Compose v2.24+ 或 v5**。应用依赖和 FFmpeg 在镜像内安装，不需要宿主机 Node/PostgreSQL。Linux 更新脚本另需 bash、flock、awk。以下步骤从仓库根目录开始：
+
+```bash
+cd deployment/docker
+cp .env.example .env
+printf 'RELEASE_TAG=local\n' > .release.env
+chmod 600 .env
+# 用编辑器填写 .env；后续更新不要重新覆盖 .release.env。
+```
+
+在 `.env` 中设置：
+
+- `RESOURCE_PROFILE=low-2gb` 或 `low-4gb`；下方 Compose override 选择相同档位。
+- `PUBLIC_URL`：浏览器访问的完整站点地址，例如本机 `http://localhost:8080`，远程服务器则填写实际域名和端口。
+- `DB_PASSWORD`、`DIRECTUS_KEY`、`DIRECTUS_SECRET`、`ADMIN_EMAIL`、`ADMIN_PASSWORD`。
+- `SERVICE_EMAIL`、`SERVICE_PASSWORD`：预先填写稍后将在 CMS 创建的服务账号信息；Compose 初始化时也要求这两个值非空。
+- `UPLOAD_API_TOKEN`、`ARTICLE_API_TOKEN`、`REVALIDATE_SECRET`：分别生成随机值。
+
+`.release.env` 保存当前应用镜像标签；更新脚本会维护它。可选的 `runtime.env` 用于覆盖非秘密资源参数，详细变量见 [资源档位说明](docs/linux-deployment.md#资源档位)。
+
+#### 2. 串行构建、初始化数据库和 CMS
+
+```bash
+resource_profile=low-2gb            # 4GB 机器改为 low-4gb
+# 以下函数在 deployment/docker 目录、当前 shell 中使用。
+dc() {
+  docker compose --env-file .env --env-file .release.env \
+    -f compose.yaml -f "compose.$resource_profile.yaml" "$@"
+}
+
+dc --profile setup config --quiet
+# 少内存机器逐个构建，避免多个镜像同时编译。
+dc build cms
+dc build api
+dc build web
+
+dc up -d --wait db
+dc --profile setup run --rm bootstrap
+dc up -d --wait cms
+dc --profile setup run --rm schema
+```
+
+首次初始化按“数据库 → Directus bootstrap → CMS → 项目 schema”执行。普通重启不需要重复 bootstrap/schema。Web 镜像构建不连接 CMS，也不传入 CMS 密码；API 镜像构建会检查 FFmpeg 的必要能力。
+
+#### 3. 创建服务账号、启动站点
+
+临时开放 CMS 的宿主机回环端口，以便创建服务账号：
+
+```bash
+docker compose --env-file .env --env-file .release.env \
+  -f compose.yaml -f "compose.$resource_profile.yaml" -f compose.admin-local.yaml \
+  up -d --no-deps cms
+```
+
+访问 `http://127.0.0.1:8055/admin`，远程服务器使用 SSH 端口转发。以管理员登录，创建与 `.env` 中 `SERVICE_EMAIL` / `SERVICE_PASSWORD` 一致、具备项目所需权限的服务账号，然后移除临时端口并启动应用：
+
+```bash
+dc up -d --force-recreate --wait cms
+dc up -d --wait api web nginx
+dc ps
+dc logs --tail 100 cms api web
+```
+
+默认通过 `http://localhost:8080` 访问站点，后台为 `/admin/`。远程访问请使用服务器实际地址。仅 Nginx 对外发布端口；PostgreSQL、CMS、API、Web 通过容器内部网络连接。
+
+#### 可选：HTTPS 和 Vulkan
+
+若要使用 HTTPS，应在首次构建前将 `.env` 的 `PUBLIC_URL` 设为公开 HTTPS origin，设置 `TLS_CERT_DIR`，并在该目录放入 `fullchain.pem`、`privkey.pem`。将 `dc` 定义替换为：
+
+```bash
+dc() {
+  docker compose --env-file .env --env-file .release.env \
+    -f compose.yaml -f "compose.$resource_profile.yaml" -f compose.https.yaml "$@"
+}
+```
+
+随后使用这个函数执行上述构建、初始化和启动步骤。默认 HTTPS 宿主机端口是 `8443`，可通过 `HTTPS_PORT` 改为 `443`；`PUBLIC_URL` 必须与实际公开端口一致。证书只读挂载，不写入镜像。已有站点改变公开 origin 后，需要按更新流程重新构建 Web。
+
+有兼容 Mesa Vulkan 设备时，设置 `VULKAN_DEVICE` 和数字 `RENDER_GID`，在相同的 Compose 文件列表末尾、`"$@"` 前追加 `-f compose.vulkan.yaml`。不使用 privileged。没有合适设备时，HDR 自动生成 SDR 无法保证可运行；普通浏览与 HLS copy 等功能仍保留。
+
+#### 持久化、更新与回滚
+
+数据库、Directus uploads/extensions、公开媒体、私有胶片、上传临时文件和 About 内容使用独立命名卷；Nginx 通过 API 访问媒体，不直接挂载这些文件卷。普通 `dc down` 会保留卷，**更新或停止时不要使用 `down -v`**。数据库和媒体文件需要一起备份，迁移与恢复步骤见 [完整指南](docs/linux-deployment.md#持久化迁移和备份)。
+
+```bash
+# 首次安装完成且四个应用服务运行后，使用未使用过的新标签更新。
+bash update.sh "$resource_profile" release-001
+
+# 如果部署使用 HTTPS/Vulkan，更新时也传入对应选项。
+ENABLE_HTTPS=true ENABLE_VULKAN=true bash update.sh "$resource_profile" release-002
+```
+
+更新脚本先进入维护状态，确认没有在途 API 写请求或媒体处理，再暂停应用并串行构建；失败时尝试恢复原镜像，保留数据库和数据卷。成功后更新 `.release.env`，并生成 `rollback-<标签>.json` / `.env`，用于后续显式回滚。不要重复使用已有发布标签。schema 迁移、外部配置和数据库恢复不包含在镜像回滚中。
+
+Linux 实机、容器和 Vulkan 的验收范围及当前验证结果见 [维护与验证](docs/linux-deployment.md#维护与验证)。
+
+### 其他说明
+
+- **网站内写文章** — [文章发布说明](docs/article-writing.md)，包含 `/write`、文章图片与 Directus 发布链路。
+- **相簿与 HDR 照片** — [相簿说明](docs/albums.md)，包含文件配对、验证、管理接口和显示回退。
+- **Windows 服务** — [部署说明](docs/deployment.md) 与 `deployment/windows/` PowerShell 脚本。
 
 ---
 

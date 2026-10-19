@@ -7571,6 +7571,11 @@ html.vt-panel::view-transition-new(root) {
 .film-processing > div:last-child { display: grid; flex: 1; gap: 7px; }
 .film-processing p, .film-review-error p, .film-complete p { margin: 0; color: var(--muted); }
 
+/* Keep the retained-originals explanation together; wrap its action on phones. */
+.film-resource-blocked { flex-wrap: wrap; }
+.film-resource-blocked > div { display: grid; flex: 1 1 240px; min-width: 0; gap: 7px; }
+
+
 .film-processing-reel {
   width: 54px;
   height: 54px;

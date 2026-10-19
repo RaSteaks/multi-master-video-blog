@@ -63,7 +63,12 @@
     "services:restart": "node scripts/service-control.cjs stack restart-all",
     "services:update": "node scripts/service-control.cjs stack refresh-app",
     "services:status": "node scripts/service-control.cjs stack status",
-    "services:health": "node scripts/service-control.cjs stack health"
+    "services:health": "node scripts/service-control.cjs stack health",
+    "test:resources": "node --test tests/*.test.cjs",
+    "start:linux:api": "node scripts/run-service.cjs api",
+    "start:linux:web": "node scripts/run-service.cjs web",
+    "start:linux:cms": "node scripts/run-service.cjs cms",
+    "build:low-memory": "node scripts/run-service.cjs build"
   },
   "engines": {
     "node": ">=22"

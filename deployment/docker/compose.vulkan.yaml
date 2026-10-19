@@ -1,0 +1,6 @@
+# Use only on hosts with a compatible Mesa Vulkan render device.
+# NVIDIA requires its matching vendor runtime; do not enable privileged mode.
+services:
+  api:
+    devices: ["${VULKAN_DEVICE:-/dev/dri/renderD128}:/dev/dri/renderD128"]
+    group_add: ["${RENDER_GID:?Set the host render-device group ID}"]

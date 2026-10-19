@@ -76,6 +76,11 @@ corners and inset preview chips use 4px corners.
   phases and terminal failures rather than estimated percentages. The command
   and recovery contract is documented in `docs/deployment.md`.
 
+- `FilmScanImport` owns film job feedback. Resource-blocked jobs retain originals
+  and use the existing inline status region and refresh action; they must not
+  reuse the failed-job copy that says originals were removed. Runtime state and
+  restart behavior are defined in `docs/linux-deployment.md`.
+
 - `AlbumGallery` owns both public and managed photo tiles. Its responsive CSS grid
   follows row order so number badges, keyboard focus, lightbox navigation, and the
   first three eager images agree. Images retain their natural aspect ratios;

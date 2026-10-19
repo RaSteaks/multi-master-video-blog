@@ -1,0 +1,4 @@
+# First-install administration only. Remove this override when recreating CMS for production.
+services:
+  cms:
+    ports: ["127.0.0.1:8055:8055"]

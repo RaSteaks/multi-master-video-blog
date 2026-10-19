@@ -220,3 +220,10 @@ For production, replace the Directus admin credentials in API and frontend `.env
 
 The offline security regression checks are `npm run test:security`. They use
 temporary files and mocked CMS/service effects; they do not alter live services.
+
+## Linux and Docker
+
+For native systemd and Docker Compose deployment on 1–2 core, 2–4GB Linux hosts,
+see [Linux low-resource deployment](linux-deployment.md). It covers shared resource
+profiles, persistent storage, explicit initialization, on-host maintenance builds,
+rollback, and the remaining Linux/Vulkan acceptance checks.

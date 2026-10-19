@@ -6,6 +6,11 @@ const http = require("node:http");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const { loadEnvironment, resolveResourceProfile } = require("../../../config/resource-profile.cjs");
+const { mediaThreadArgs, downloadToFile } = require("./resource-io.cjs");
+const { configureFilmResources } = require("./film-scan-utils.cjs");
 const zlib = require("node:zlib");
 const { createMultipartParser } = require("./multipart-utils.cjs");
 const {
@@ -70,6 +75,17 @@ const { sanitizeSourceFormat, sourceFormatFromProbe, sourceFormatForPlayback } =
 const ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(ROOT, "..", "..");
 const env = loadEnv(path.join(ROOT, ".env"));
+const resourceLimits = resolveResourceProfile(env);
+configureFilmResources(resourceLimits);
+// Context carries cancellation into nested FFmpeg calls without reacquiring a slot.
+const mediaContext = new AsyncLocalStorage();
+let maintenanceMode = false;
+let activeWriteRequests = 0;
+const mediaProcessingSlots = createTaskLimiter({
+  concurrency: resourceLimits.mediaConcurrency,
+  maxPending: resourceLimits.maxPending,
+  waitMs: resourceLimits.queueTimeoutMs
+});
 
 const HOST = env.HOST || "127.0.0.1";
 const PORT = Number(env.PORT || 8060);
@@ -177,29 +193,26 @@ const COLOR_REQUIRED_FIELDS = [
 ];
 
 function loadEnv(filePath) {
-  const values = { ...process.env };
+  return loadEnvironment(filePath);
+}
 
-  if (!fs.existsSync(filePath)) {
-    return values;
+// Acquire before parsing uploads; waiting requests retain only bounded socket buffers.
+async function withMediaRequest(req, res, operation) {
+  if (maintenanceMode) throw httpError(503, "Server is in maintenance mode. Please retry later.");
+  const controller = new AbortController();
+  const abort = () => controller.abort(httpError(499, "Processing was canceled."));
+  res.once("close", abort);
+  let release;
+  try {
+    if (res.destroyed) abort();
+    release = await mediaProcessingSlots.acquire({ signal: controller.signal });
+    if (controller.signal.aborted) throw controller.signal.reason;
+    if (maintenanceMode) throw httpError(503, "Server is in maintenance mode. Please retry later.");
+    return await mediaContext.run({ signal: controller.signal }, operation);
+  } finally {
+    release?.();
+    res.removeListener("close", abort);
   }
-
-  for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-
-    const separator = trimmed.indexOf("=");
-    if (separator === -1) {
-      continue;
-    }
-
-    const key = trimmed.slice(0, separator).trim();
-    const value = trimmed.slice(separator + 1).trim();
-    values[key] = value;
-  }
-
-  return values;
 }
 
 function resolveOptionalPackage(packageName, property) {
@@ -221,6 +234,9 @@ function positiveInteger(value, fallback) {
 }
 
 function sendJson(res, statusCode, payload) {
+  if (res.destroyed || res.writableEnded) return;
+  if (res.headersSent) { res.destroy(); return; }
+  if (statusCode === 503) res.setHeader("Retry-After", "60");
   const body = JSON.stringify(payload);
   const bodyBuffer = Buffer.from(body);
   const acceptsGzip = acceptsEncoding(
@@ -413,6 +429,8 @@ function httpError(statusCode, message) {
 }
 
 function runProcess(command, args, options = {}) {
+  options = { ...options, signal: options.signal || mediaContext.getStore()?.signal };
+  args = mediaThreadArgs(args, resourceLimits.ffmpegThreads, command === FFPROBE_PATH);
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) {
       reject(options.signal.reason || httpError(499, "Processing was canceled."));
@@ -423,8 +441,10 @@ function runProcess(command, args, options = {}) {
       windowsHide: true
     });
 
-    let stdout = "";
-    let stderr = "";
+    const stdoutChunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = Buffer.alloc(0);
+    let failure;
     let settled = false;
     const cleanup = () => {
       if (timeout) clearTimeout(timeout);
@@ -432,10 +452,9 @@ function runProcess(command, args, options = {}) {
     };
     const abort = () => {
       if (settled) return;
-      settled = true;
+      failure ||= options.signal?.reason || httpError(499, "Processing was canceled.");
       child.kill("SIGKILL");
-      cleanup();
-      reject(options.signal?.reason || httpError(499, "Processing was canceled."));
+      // Keep the admission slot until the OS reports that the child has exited.
     };
     // Apply a deadline to ordinary probes/packaging too; specialized jobs can override it.
     const timeoutMs = options.timeoutMs ?? VIDEO_PROCESS_TIMEOUT_MS;
@@ -443,25 +462,26 @@ function runProcess(command, args, options = {}) {
       Number(timeoutMs) > 0
         ? setTimeout(() => {
             if (settled) return;
-            settled = true;
+            failure ||= httpError(504, `${path.basename(command)} exceeded the processing timeout.`);
             child.kill("SIGKILL");
-            cleanup();
-            reject(
-              httpError(
-                504,
-                `${path.basename(command)} exceeded the processing timeout.`
-              )
-            );
           }, Number(timeoutMs))
         : null;
     options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
 
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      if (failure) return;
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > resourceLimits.processOutputBytes) {
+        failure = httpError(502, "Media process output exceeded PROCESS_MAX_OUTPUT_BYTES.");
+        child.kill("SIGKILL");
+        return;
+      }
+      stdoutChunks.push(Buffer.from(chunk));
     });
 
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      stderrBytes = Buffer.concat([stderrBytes, Buffer.from(chunk)]).subarray(-resourceLimits.processLogBytes);
     });
 
     child.on("error", (error) => {
@@ -474,6 +494,9 @@ function runProcess(command, args, options = {}) {
       if (settled) return;
       settled = true;
       cleanup();
+      if (failure) { reject(failure); return; }
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderr = stderrBytes.toString("utf8");
       if (code === 0) {
         resolve({ stdout, stderr });
         return;
@@ -1315,9 +1338,9 @@ async function parseAlbumMultipart(req) {
 
       try {
         await Promise.all(pendingWrites);
-        await Promise.all(
-          [...files.sdrFiles, ...files.hdrFiles].map(assertAlbumImageContents)
-        );
+        for (const file of [...files.sdrFiles, ...files.hdrFiles]) {
+          await assertAlbumImageContents(file);
+        }
         settled = true;
         removeRequestListeners();
         resolve({ fields, files, tempDir });
@@ -2035,6 +2058,7 @@ async function probeVideo(sourcePath) {
     video.dovi_rpu_integrity = await withLocalHlsInput(sourcePath, inputPath => {
       const localHls = path.extname(inputPath).toLowerCase() === ".m3u8";
       return hashDolbyRpu(FFMPEG_PATH, localHls ? path.basename(inputPath) : inputPath, {
+        signal: mediaContext.getStore()?.signal,
         timeoutMs: VIDEO_SDR_PROCESS_TIMEOUT_MS, ...(localHls ? { cwd: path.dirname(inputPath) } : {})
       });
     });
@@ -3211,7 +3235,11 @@ async function parseDolbyProfileFile(file, clipName = "") {
     return {};
   }
 
-  const buffer = await fsp.readFile(file.packagePath || file.tempPath);
+  const sidecarPath = file.packagePath || file.tempPath;
+  if ((await fsp.stat(sidecarPath)).size > resourceLimits.processOutputBytes) {
+    throw httpError(413, "Dolby sidecar exceeds PROCESS_MAX_OUTPUT_BYTES.");
+  }
+  const buffer = await fsp.readFile(sidecarPath);
   const text = decodeTextBuffer(buffer);
   const normalized = text.replace(/\u0000/g, " ");
   const lowerName = file.filename.toLowerCase();
@@ -4552,19 +4580,7 @@ async function downloadDirectusAssetToFile(token, fileId, targetPath) {
     );
   }
 
-  const declaredLength = Number(response.headers.get("content-length") || 0);
-  if (
-    Number.isFinite(declaredLength) &&
-    declaredLength > MAX_ALBUM_IMAGE_BYTES
-  ) {
-    throw httpError(413, "The existing SDR photo exceeds the validation limit.");
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length > MAX_ALBUM_IMAGE_BYTES) {
-    throw httpError(413, "The existing SDR photo exceeds the validation limit.");
-  }
-  await fsp.writeFile(targetPath, buffer);
+  await downloadToFile(response, targetPath, MAX_ALBUM_IMAGE_BYTES);
 }
 
 async function deleteDirectusFileSafely(token, fileId, context = "file") {
@@ -5846,20 +5862,29 @@ async function withFilmScanTimeout(operation, label, controller) {
 }
 
 async function drainFilmScanQueue() {
-  if (activeFilmScanJobId || !filmScanQueue.length) return;
+  if (maintenanceMode || activeFilmScanJobId || !filmScanQueue.length) return;
   activeFilmScanJobId = filmScanQueue.shift();
   const jobId = activeFilmScanJobId;
   let controller;
+  let release;
   try {
     controller = registerFilmScanController(jobId);
+    // Durable work waits without a request deadline; cancellation still removes it.
+    if (resourceLimits.enabled) release = await mediaProcessingSlots.acquire({
+      background: true, signal: controller.signal
+    });
     await withFilmScanTimeout(
-      (signal) => analyzeFilmScanJob(jobId, signal),
+      (signal) => mediaContext.run({ signal }, () => analyzeFilmScanJob(jobId, signal)),
       `胶片扫描任务 ${jobId}`,
       controller
     );
   } catch (error) {
     console.error(`[film-scan] Job ${jobId} failed: ${error.stack || error.message}`);
     let cleanupToken = null;
+    // A host budget change is recoverable, not a corrupt upload. Preserve even if
+    // persisting the blocked state fails; startup can inspect the original again.
+    const resourceBlocked = error.code === "FILM_SCAN_PIXEL_LIMIT";
+    let preserveSources = resourceBlocked;
     try {
       cleanupToken = await directusLogin();
       const current = (
@@ -5868,14 +5893,15 @@ async function drainFilmScanQueue() {
           cleanupToken
         )
       ).data;
-      if (error.filmScanCanceled) {
+      if (error.filmScanCanceled || controller?.signal.reason?.filmScanCanceled || current?.status === "canceled") {
+        preserveSources = false;
         await updateFilmScanJob(cleanupToken, jobId, {
           status: "canceled",
           error_message: null
         });
       } else if (current?.status !== "canceled") {
         await updateFilmScanJob(cleanupToken, jobId, {
-          status: "failed",
+          status: resourceBlocked ? "resource_blocked" : "failed",
           error_message: error.message
         });
       }
@@ -5884,13 +5910,16 @@ async function drainFilmScanQueue() {
         `[film-scan] Could not persist failure for ${jobId}: ${updateError.message}`
       );
     } finally {
-      await cleanupFilmScanJobAssets(
-        cleanupToken,
-        jobId,
-        error.filmScanCanceled ? "analysis canceled" : "analysis failed"
-      );
+      if (!preserveSources) {
+        await cleanupFilmScanJobAssets(
+          cleanupToken,
+          jobId,
+          error.filmScanCanceled ? "analysis canceled" : "analysis failed"
+        );
+      }
     }
   } finally {
+    release?.();
     if (controller) releaseFilmScanController(jobId, controller);
     activeFilmScanJobId = null;
     if (filmScanQueue.length) setImmediate(() => void drainFilmScanQueue());
@@ -5909,6 +5938,9 @@ async function analyzeFilmScanJob(jobId, signal) {
   const job = response.data;
   if (!job || ["canceled", "committed"].includes(job.status)) return;
   throwIfFilmScanAborted(signal);
+  for (const source of await listFilmScanSources(token, jobId)) {
+    await inspectFilmScanSource(filmScanSourcePath(source.relative_path));
+  }
   await updateFilmScanJob(token, jobId, {
     status: "analyzing",
     progress: 1,
@@ -6151,6 +6183,8 @@ async function handleFilmScanCreate(req, res, albumId) {
           : `FFF/3F 仅用于 Hasselblad X5；“${unsupportedSource.originalName}”请改用 TIFF 或 JPEG。`
       );
     }
+    // Validate dimensions from headers before creating a job or decoding pixels.
+    for (const file of parsed.files) await inspectFilmScanSource(file.tempPath);
     token = await directusLogin();
     await getAlbumById(token, albumId);
 
@@ -6526,6 +6560,10 @@ async function handleFilmScanJobPatch(req, res, albumId, jobId) {
   if (!["review_required", "failed"].includes(job.status)) {
     throw httpError(409, "仅待审核或失败任务可修改整卷参数。");
   }
+  // Existing jobs may predate this host's pixel budget; check before any patch writes.
+  for (const source of await listFilmScanSources(token, jobId)) {
+    await inspectFilmScanSource(filmScanSourcePath(source.relative_path));
+  }
   const patch = pickFilmScanJobPatch(body);
   if (!Object.keys(patch).length && !Array.isArray(body.frameOrder)) {
     throw httpError(400, "未提供可修改的任务字段。");
@@ -6581,9 +6619,13 @@ async function handleFilmScanFramePatch(req, res, albumId, jobId, frameId) {
   if (job.status !== "review_required") {
     throw httpError(409, "仅待审核任务可修改帧。");
   }
+  const frameSources = await listFilmScanSources(token, jobId);
+  const frameSource = frameSources.find(candidate => String(candidate.id) === String(directusRelationId(frame.source_id)));
+  if (!frameSource) throw httpError(404, "帧对应的原档不存在。");
+  // Do not persist a split/crop that this host cannot safely render afterwards.
+  await inspectFilmScanSource(filmScanSourcePath(frameSource.relative_path));
   if (body.action === "split") {
-    const sources = await listFilmScanSources(token, jobId);
-    const source = sources.find(
+    const source = frameSources.find(
       (candidate) =>
         String(candidate.id) === String(directusRelationId(frame.source_id))
     );
@@ -6948,6 +6990,7 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
   }
   const publishDefault = parseAlbumBoolean(body.published, true);
   const sources = await listFilmScanSources(token, jobId);
+  for (const source of sources) await inspectFilmScanSource(filmScanSourcePath(source.relative_path));
   const sourceById = new Map(sources.map((source) => [String(source.id), source]));
   const existingPhotos = await listAlbumPhotos(token, albumId);
   const maxSortOrder = existingPhotos.reduce(
@@ -7012,6 +7055,7 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
       if (Number(source.bit_depth || 0) >= 16) {
         const sourceKey = String(source.id);
         if (!analysisBySource.has(sourceKey)) {
+          analysisBySource.clear();
           analysisBySource.set(
             sourceKey,
             await createAnalysisImage(filmScanSourcePath(source.relative_path))
@@ -7396,7 +7440,8 @@ async function recoverFilmScanQueue() {
     await fsp.mkdir(FILM_SCAN_ROOT, { recursive: true });
     const token = await directusLogin();
     const params = new URLSearchParams({
-      "filter[status][_in]": "uploaded,analyzing,rendering",
+      // Recheck blocked work once per restart after the operator changes the budget.
+      "filter[status][_in]": "uploaded,analyzing,rendering,resource_blocked",
       fields: "id,status",
       sort: "created_at,id",
       limit: "-1"
@@ -7452,6 +7497,18 @@ async function recoverFilmScanQueue() {
 }
 
 async function handleAlbumRoute(req, res, url) {
+  const expensive = ["POST", "PATCH"].includes(req.method) &&
+    /\/(film-scans|photos)(\/|$)/.test(url.pathname) && !/\/(cancel|retry)$/.test(url.pathname);
+  if (!resourceLimits.enabled || !expensive) return handleAlbumRouteNow(req, res, url);
+  try {
+    requireAlbumAuth(req);
+    await withMediaRequest(req, res, () => handleAlbumRouteNow(req, res, url));
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, { status: "error", error: error.message });
+  }
+}
+
+async function handleAlbumRouteNow(req, res, url) {
   try {
     requireAlbumAuth(req);
     const pathname = url.pathname;
@@ -7843,7 +7900,8 @@ async function handleAnalyticsEvent(req, res) {
       status: "ok",
       event: created.data.id
     });
-    void scheduleAnalyticsRefresh(token, event, item).catch((error) => {
+    // Keep this request in the drain count until the post-response aggregate settles.
+    await scheduleAnalyticsRefresh(token, event, item).catch((error) => {
       console.error(
         `[analytics] Aggregate refresh failed for ${itemKey}: ${error.message}`
       );
@@ -8105,7 +8163,8 @@ async function identifyPairedSources(parsed, metadata) {
     throw httpError(400, "Two source videos cannot be combined with a package or a separate SDR file.");
   }
   if (metadata.mode !== "copy") throw httpError(400, "Paired HDR/SDR uploads must use copy mode.");
-  const probes = await Promise.all(videos.map(file => probeVideo(file.tempPath)));
+  const probes = [];
+  for (const file of videos) probes.push(await probeVideo(file.tempPath));
   const isHdr = probe => ["arib-std-b67", "smpte2084"].includes(probe.color_transfer) ||
     Boolean(extractDolbyVisionMetadata(probe).profile);
   if (probes.filter(isHdr).length !== 1) {
@@ -8192,6 +8251,16 @@ async function prepareImfPlayback(imf, metadata, sourceProbe, outputDir) {
 }
 
 async function handleUpload(req, res) {
+  if (!resourceLimits.enabled) return handleUploadNow(req, res);
+  try {
+    requireUploadAuth(req);
+    await withMediaRequest(req, res, () => handleUploadNow(req, res));
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, { status: "error", error: error.message });
+  }
+}
+
+async function handleUploadNow(req, res) {
   let parsed = null;
   let releaseProcessingSlot;
   let uploadSourceFormat = null;
@@ -8199,7 +8268,8 @@ async function handleUpload(req, res) {
   try {
     requireUploadAuth(req);
     parsed = await parseMultipart(req);
-    releaseProcessingSlot = await videoProcessingSlots.acquire();
+    // Low-resource admission already owns the shared slot.
+    if (!resourceLimits.enabled) releaseProcessingSlot = await videoProcessingSlots.acquire();
     // A caller that left while queued must not start a costly conversion.
     if (res.destroyed) return;
     const { metadata, project: existingProject } = await resolveVideoUploadProject(parsed.fields);
@@ -8357,6 +8427,15 @@ async function handleHealth(res) {
 
   sendJson(res, 200, {
     status: "ok",
+    resources: {
+      ...resourceLimits,
+      maintenance: maintenanceMode,
+      activeWrites: activeWriteRequests,
+      filmControllers: filmScanJobControllers.size,
+      queue: mediaProcessingSlots.snapshot(),
+      videoQueue: videoProcessingSlots.snapshot(),
+      filmQueue: { active: activeFilmScanJobId !== null, pending: filmScanQueue.length }
+    },
     mediaRoot: MEDIA_ROOT,
     directusUrl: DIRECTUS_URL,
     uploadAuthRequired: Boolean(UPLOAD_API_TOKEN),
@@ -8379,7 +8458,7 @@ async function handleHealth(res) {
       sourceBytes: MAX_FILM_SCAN_SOURCE_BYTES,
       jobBytes: MAX_FILM_SCAN_JOB_BYTES,
       sourcesPerJob: MAX_FILM_SCAN_SOURCES,
-      maxPixels: 800_000_000,
+      maxPixels: resourceLimits.maxPixels,
       queueConcurrency: 1,
       formats: ["fff", "3f", "tiff", "jpeg"],
       experimentalScanners: [
@@ -8399,8 +8478,41 @@ async function handleHealth(res) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
+// Count handler completion, not response/socket close: writes and rollback can
+// continue after the client disconnects or after a 202 response has been sent.
+async function dispatchRequest(req, res) {
+  let tracked = false;
+  try {
+    const pathname = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`).pathname;
+    tracked = !["GET", "HEAD", "OPTIONS"].includes(req.method) && pathname !== "/maintenance";
+    if (tracked) activeWriteRequests++;
+    await handleRequest(req, res);
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, { status: "error", error: error.message });
+  } finally {
+    if (tracked) activeWriteRequests--;
+  }
+}
+
+async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
+
+  if (req.method === "POST" && url.pathname === "/maintenance") {
+    try {
+      requireUploadAuth(req);
+      const body = await readJsonBody(req, 1024);
+      if (typeof body.enabled !== "boolean") throw httpError(400, "enabled must be a boolean.");
+      maintenanceMode = body.enabled;
+      if (!maintenanceMode) void drainFilmScanQueue();
+      sendJson(res, 200, { status: "ok", enabled: maintenanceMode });
+    } catch (error) { sendJson(res, error.statusCode || 500, { status: "error", error: error.message }); }
+    return;
+  }
+
+  if (maintenanceMode && !["GET", "HEAD"].includes(req.method) && !url.pathname.endsWith("/cancel")) {
+    sendJson(res, 503, { status: "error", error: "Server is in maintenance mode. Please retry later." });
+    return;
+  }
 
   if (req.method === "GET" && url.pathname === "/health") {
     await handleHealth(res);
@@ -8446,8 +8558,9 @@ const server = http.createServer(async (req, res) => {
     status: "error",
     error: "Not found"
   });
-});
+}
 
+const server = http.createServer(dispatchRequest);
 // Migrate every legacy task, including completed/review tasks, before any public listener starts.
 prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT).then(() => {
   server.listen(PORT, HOST, () => {
@@ -8532,10 +8645,12 @@ async function fetchDirectusAsset(
   token,
   requestHeaders = {},
   method = "GET",
-  authRetried = false
+  authRetried = false,
+  signal
 ) {
   const response = await fetch(assetUrl, {
     method,
+    signal,
     headers: {
       Authorization: `Bearer ${token}`,
       ...(requestHeaders["if-none-match"]
@@ -8550,14 +8665,15 @@ async function fetchDirectusAsset(
     !authRetried &&
     [401, 403].includes(response.status)
   ) {
-    await response.arrayBuffer().catch(() => {});
+    await response.body?.cancel().catch(() => {});
     const refreshedToken = await refreshDirectusLogin(token);
     return fetchDirectusAsset(
       assetUrl,
       refreshedToken,
       requestHeaders,
       method,
-      true
+      true,
+      signal
     );
   }
   return response;
@@ -8577,6 +8693,9 @@ function assetAccess(req) {
 async function handleAsset(req, url, res) {
   // Denials and authenticated previews must never be cached as public media.
   res.setHeader("Cache-Control", "private, no-store");
+  const controller = new AbortController();
+  const disconnect = () => controller.abort();
+  res.once("close", disconnect);
   try {
     const pathname = url.pathname;
     const fileId = decodeURIComponent(pathname.replace(/^\/assets\//, "")).split("/")[0];
@@ -8613,7 +8732,9 @@ async function handleAsset(req, url, res) {
       assetUrl,
       token,
       req.headers,
-      req.method
+      req.method,
+      false,
+      controller.signal
     );
 
     // Even a conditional request must recheck publication before emitting 304.
@@ -8648,6 +8769,7 @@ async function handleAsset(req, url, res) {
     }
 
     if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
       throw httpError(response.status, `Directus asset request failed: ${response.statusText}`);
     }
 
@@ -8660,22 +8782,24 @@ async function handleAsset(req, url, res) {
     });
 
     if (req.method === "HEAD") {
+      await response.body?.cancel().catch(() => {});
       res.end();
       return;
     }
 
     if (response.body) {
-      Readable.fromWeb(response.body).pipe(res);
+      await pipeline(Readable.fromWeb(response.body), res);
       return;
     }
 
-    const buffer = Buffer.from(await response.arrayBuffer());
-    res.end(buffer);
+    res.end();
   } catch (error) {
     sendJson(res, error.statusCode || 404, {
       status: "error",
       error: error.message
     });
+  } finally {
+    res.removeListener("close", disconnect);
   }
 }
 

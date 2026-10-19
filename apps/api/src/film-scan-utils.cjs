@@ -6,10 +6,20 @@ const {
 
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { resolveResourceProfile } = require("../../../config/resource-profile.cjs");
+let filmResources = resolveResourceProfile();
+let configuredSharp = null;
+
+// Called once after the API merges its .env with service-manager overrides.
+function configureFilmResources(resources) {
+  filmResources = resources;
+  configuredSharp = null;
+}
 
 const FILM_SCAN_JOB_STATES = Object.freeze([
   "uploaded",
   "analyzing",
+  "resource_blocked",
   "review_required",
   "rendering",
   "committed",
@@ -662,10 +672,11 @@ function assessFilmFrameDynamicRange(raw, crop = null) {
 }
 
 async function sampleFilmBaseAtPoint(filePath, point) {
+  await inspectFilmScanSource(filePath);
   const sharp = loadSharp();
   const { data, info } = await sharp(filePath, {
     failOn: "error",
-    limitInputPixels: 800_000_000,
+    limitInputPixels: filmResources.maxPixels,
     sequentialRead: true
   })
     .rotate()
@@ -722,7 +733,15 @@ function cropToPixels(crop, width, height) {
 
 function loadSharp() {
   try {
-    return require("sharp");
+    const sharp = require("sharp");
+    if (configuredSharp !== filmResources) {
+      if (filmResources.sharpConcurrency) sharp.concurrency(filmResources.sharpConcurrency);
+      if (filmResources.tuneSharp) {
+        sharp.cache({ memory: filmResources.sharpCacheMiB, files: 0, items: 32 });
+      }
+      configuredSharp = filmResources;
+    }
+    return sharp;
   } catch (error) {
     const wrapped = new Error(
       "胶片扫描处理需要 sharp/libvips；请先安装 API 依赖。"
@@ -736,14 +755,16 @@ async function inspectFilmScanSource(filePath) {
   const sharp = loadSharp();
   const image = sharp(filePath, {
     failOn: "error",
-    limitInputPixels: 800_000_000,
+    limitInputPixels: false,
     sequentialRead: true
   });
   const metadata = await image.metadata();
   const width = Number(metadata.width || 0);
   const height = Number(metadata.height || 0);
   if (!width || !height) throw new Error("无法读取扫描文件尺寸。");
-  if (width * height > 800_000_000) throw new Error("扫描文件超过 800 MP 限制。");
+  if (width * height * Number(metadata.pages || 1) > filmResources.maxPixels) {
+    throw Object.assign(new Error(`扫描文件超过 ${filmResources.maxPixels} 像素限制；请在更大内存机器处理，或显式调整 FILM_SCAN_MAX_PIXELS。`), { statusCode: 413, code: "FILM_SCAN_PIXEL_LIMIT" });
+  }
   return {
     width,
     height,
@@ -759,10 +780,11 @@ async function inspectFilmScanSource(filePath) {
 }
 
 async function createAnalysisImage(filePath, maximumDimension = 2200) {
+  await inspectFilmScanSource(filePath);
   const sharp = loadSharp();
   const result = await sharp(filePath, {
     failOn: "error",
-    limitInputPixels: 800_000_000,
+    limitInputPixels: filmResources.maxPixels,
     sequentialRead: true
   })
     .rotate()
@@ -785,10 +807,11 @@ async function createAnalysisImage(filePath, maximumDimension = 2200) {
 }
 
 async function renderFilmSourceContact(filePath, outputPath) {
+  await inspectFilmScanSource(filePath);
   const sharp = loadSharp();
   return sharp(filePath, {
     failOn: "error",
-    limitInputPixels: 800_000_000,
+    limitInputPixels: filmResources.maxPixels,
     sequentialRead: true
   })
     .rotate()
@@ -844,15 +867,13 @@ async function applyFilmPipeline(image, filmType, adjustments, maskRgb) {
 }
 
 async function renderFilmFrame(options) {
+  // Reuse the bounded header inspection instead of reading the same metadata twice.
+  const metadata = await inspectFilmScanSource(options.sourcePath);
   const sharp = loadSharp();
-  const metadata = await sharp(options.sourcePath, {
-    failOn: "error",
-    limitInputPixels: 800_000_000
-  }).metadata();
   const extraction = cropToPixels(options.crop, metadata.width, metadata.height);
   let image = sharp(options.sourcePath, {
     failOn: "error",
-    limitInputPixels: 800_000_000,
+    limitInputPixels: filmResources.maxPixels,
     sequentialRead: true
   })
     .extract(extraction)
@@ -888,15 +909,13 @@ async function renderFilmFrame(options) {
 }
 
 async function renderFilmRawFrame(options) {
+  // Reuse the bounded header inspection instead of reading the same metadata twice.
+  const metadata = await inspectFilmScanSource(options.sourcePath);
   const sharp = loadSharp();
-  const metadata = await sharp(options.sourcePath, {
-    failOn: "error",
-    limitInputPixels: 800_000_000
-  }).metadata();
   const extraction = cropToPixels(options.crop, metadata.width, metadata.height);
   return sharp(options.sourcePath, {
     failOn: "error",
-    limitInputPixels: 800_000_000,
+    limitInputPixels: filmResources.maxPixels,
     sequentialRead: true
   })
     .extract(extraction)
@@ -920,6 +939,7 @@ async function sha256File(filePath) {
 }
 
 module.exports = {
+  configureFilmResources,
   DEFAULT_ROLL_ADJUSTMENTS,
   FILM_FRAME_ASPECTS,
   FILM_SCAN_JOB_STATES,

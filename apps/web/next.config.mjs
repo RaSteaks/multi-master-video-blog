@@ -1,3 +1,11 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import profiles from "../../config/resource-profile.cjs";
+
+const resources = profiles.resolveResourceProfile();
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const apiUrl = (process.env.API_INTERNAL_URL || "http://127.0.0.1:8060").replace(/\/$/, "");
+
 const allowedDevOrigins = (process.env.NEXT_ALLOWED_DEV_ORIGINS || "")
   .split(",")
   .map((origin) => origin.trim())
@@ -48,10 +56,12 @@ const directusAdminRoutes = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Standalone keeps the workspace layout so traced shared modules still resolve.
+  ...(process.env.STANDALONE_BUILD === "true" ? { output: "standalone", outputFileTracingRoot: repoRoot } : {}),
   // Keep production builds reliable on the same low-memory hosts used for deployment.
   experimental: {
-    cpus: 2,
-    memoryBasedWorkersCount: true
+    cpus: resources.buildWorkers,
+    memoryBasedWorkersCount: !resources.enabled
   },
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   async rewrites() {
@@ -62,11 +72,11 @@ const nextConfig = {
       })),
       {
         source: "/media/:path*",
-        destination: "http://127.0.0.1:8060/media/:path*"
+        destination: `${apiUrl}/media/:path*`
       },
       {
         source: "/api/:path*",
-        destination: "http://127.0.0.1:8060/:path*"
+        destination: `${apiUrl}/:path*`
       }
     ];
   }

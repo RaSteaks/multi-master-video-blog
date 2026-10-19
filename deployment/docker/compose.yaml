@@ -1,0 +1,169 @@
+name: video-blog
+
+x-common: &common
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 60s
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+# Optional non-secret resource tuning; environment entries below still win.
+x-runtime: &runtime
+  env_file:
+    - path: ./runtime.env
+      required: false
+
+x-cms-environment: &cms-environment
+  RESOURCE_PROFILE: ${RESOURCE_PROFILE:-low-2gb}
+  HOST: 0.0.0.0
+  PORT: 8055
+  PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+  DIRECTUS_URL: http://cms:8055
+  KEY: ${DIRECTUS_KEY:?Set DIRECTUS_KEY}
+  SECRET: ${DIRECTUS_SECRET:?Set DIRECTUS_SECRET}
+  DB_CLIENT: pg
+  DB_HOST: db
+  DB_PORT: 5432
+  DB_DATABASE: ${DB_DATABASE:-video_blog}
+  DB_USER: ${DB_USER:-directus}
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+  DB_SSL: "false"
+  ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+  STORAGE_LOCATIONS: local
+  STORAGE_LOCAL_DRIVER: local
+  STORAGE_LOCAL_ROOT: /directus/uploads
+
+services:
+  db:
+    <<: *common
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-video_blog}
+      POSTGRES_USER: ${DB_USER:-directus}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+    command: [postgres, -c, "shared_buffers=${PG_SHARED_BUFFERS:-128MB}", -c, "max_connections=${PG_MAX_CONNECTIONS:-20}", -c, work_mem=4MB, -c, maintenance_work_mem=64MB, -c, max_parallel_workers_per_gather=0, -c, max_parallel_maintenance_workers=0]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  cms:
+    <<: [*common, *runtime]
+    image: video-blog-cms:${RELEASE_TAG:-local}
+    build: { context: ../.., dockerfile: deployment/docker/Dockerfile, target: cms }
+    environment: *cms-environment
+    depends_on:
+      db: { condition: service_healthy }
+    volumes: ["cms-uploads:/directus/uploads", "cms-extensions:/directus/extensions"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8055/server/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 120s
+
+  bootstrap:
+    <<: [*common, *runtime]
+    restart: "no"
+    profiles: [setup]
+    image: video-blog-cms:${RELEASE_TAG:-local}
+    environment: *cms-environment
+    command: [node, /app/scripts/run-service.cjs, bootstrap]
+    depends_on:
+      db: { condition: service_healthy }
+    volumes: ["cms-uploads:/directus/uploads", "cms-extensions:/directus/extensions"]
+
+  schema:
+    <<: [*common, *runtime]
+    restart: "no"
+    profiles: [setup]
+    image: video-blog-cms:${RELEASE_TAG:-local}
+    environment: *cms-environment
+    command: [node, /app/scripts/run-service.cjs, schema]
+    depends_on:
+      cms: { condition: service_healthy }
+
+  api:
+    <<: [*common, *runtime]
+    image: video-blog-api:${RELEASE_TAG:-local}
+    build: { context: ../.., dockerfile: deployment/docker/Dockerfile, target: api }
+    environment:
+      RESOURCE_PROFILE: ${RESOURCE_PROFILE:-low-2gb}
+      DIRECTUS_URL: http://cms:8055
+      DIRECTUS_EMAIL: ${SERVICE_EMAIL:?Set SERVICE_EMAIL}
+      DIRECTUS_PASSWORD: ${SERVICE_PASSWORD:?Set SERVICE_PASSWORD}
+      UPLOAD_API_TOKEN: ${UPLOAD_API_TOKEN:?Set UPLOAD_API_TOKEN}
+      ARTICLE_API_TOKEN: ${ARTICLE_API_TOKEN:?Set ARTICLE_API_TOKEN}
+    depends_on:
+      cms: { condition: service_healthy }
+    volumes: ["media:/app/media", "private-media:/app/.private-media", "api-temp:/app/apps/api/tmp"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8060/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  web:
+    <<: [*common, *runtime]
+    image: video-blog-web:${RELEASE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile
+      target: web
+      args:
+        RESOURCE_PROFILE: ${RESOURCE_PROFILE:-low-2gb}
+        API_INTERNAL_URL: http://api:8060
+        DIRECTUS_URL: http://cms:8055
+        NEXT_PUBLIC_SITE_URL: ${PUBLIC_URL:-http://localhost:8080}
+    environment:
+      RESOURCE_PROFILE: ${RESOURCE_PROFILE:-low-2gb}
+      DIRECTUS_URL: http://cms:8055
+      DIRECTUS_EMAIL: ${SERVICE_EMAIL:?Set SERVICE_EMAIL}
+      DIRECTUS_PASSWORD: ${SERVICE_PASSWORD:?Set SERVICE_PASSWORD}
+      NEXT_PUBLIC_SITE_URL: ${PUBLIC_URL:-http://localhost:8080}
+      DIRECTUS_REVALIDATE: "30"
+      REVALIDATE_SECRET: ${REVALIDATE_SECRET:?Set REVALIDATE_SECRET}
+    depends_on:
+      cms: { condition: service_healthy }
+      api: { condition: service_healthy }
+    volumes: ["about-content:/app/apps/web/content"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  nginx:
+    <<: *common
+    image: nginx:1.28.0-alpine@sha256:30f1c0d78e0ad60901648be663a710bdadf19e4c10ac6782c235200619158284
+    environment:
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+    ports: ["${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-8080}:80"]
+    volumes:
+      - ./nginx.conf:/etc/nginx/templates/nginx.conf.template:ro
+      - ../nginx/blog-routes.conf:/etc/nginx/blog/routes.conf:ro
+    depends_on:
+      web: { condition: service_healthy }
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+# Named volumes survive container replacement and ordinary compose down.
+volumes:
+  postgres-data:
+  cms-uploads:
+  cms-extensions:
+  media:
+  private-media:
+  api-temp:
+  about-content:

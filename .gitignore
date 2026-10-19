@@ -113,3 +113,15 @@ output/
 __pycache__/
 *.pyc
 *.pyo
+
+# Local deployment state, including exact previous image identities.
+/deployment/docker/.update.lock
+/deployment/docker/rollback-*.json
+# Keep the affected performance/mask regression suites; other local fixtures remain ignored.
+!/apps/api/test/
+/apps/api/test/*
+!/apps/api/test/performance.test.cjs
+/deployment/docker/runtime.env
+/deployment/docker/.release.env*
+/deployment/docker/rollback-*.env
+!/apps/api/test/film-mask-mode.test.cjs

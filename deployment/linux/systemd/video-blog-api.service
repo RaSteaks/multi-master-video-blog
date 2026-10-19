@@ -1,0 +1,31 @@
+[Unit]
+Description=Video Blog api
+After=network-online.target video-blog-cms.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=video-blog
+Group=video-blog
+WorkingDirectory=/opt/video-blog/current
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=8060
+EnvironmentFile=/etc/video-blog/resources.env
+EnvironmentFile=/etc/video-blog/api.env
+ExecStart=/usr/bin/node /opt/video-blog/current/scripts/run-service.cjs api
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=60
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+# Journald owns log rotation; media and CMS uploads live outside release directories.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

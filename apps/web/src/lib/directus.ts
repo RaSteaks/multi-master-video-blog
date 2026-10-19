@@ -1,3 +1,4 @@
+import { connection } from "next/server";
 import {
   assetUrl as publicAssetUrl,
   type AssetPreset,
@@ -273,6 +274,9 @@ async function directusFetch<T>(
   retried = false,
   tags: string[] = [],
 ): Promise<T> {
+  // Container builds must never freeze CMS-offline fallback data into public pages.
+  // connection() defers rendering while explicit fetch revalidation remains enabled.
+  if (process.env.CMS_RUNTIME_ONLY === "true") await connection();
   const token = await getToken();
   const cacheOptions =
     REVALIDATE_SECONDS > 0

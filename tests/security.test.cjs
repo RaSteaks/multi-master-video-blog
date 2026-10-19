@@ -8,7 +8,7 @@ const vm = require("node:vm");
 const crypto = require("node:crypto");
 const { createRequire } = require("node:module");
 const { Readable, Writable } = require("node:stream");
-const { finished } = require("node:stream/promises");
+const { finished, pipeline } = require("node:stream/promises");
 const root = path.resolve(__dirname, "..");
 const apiSource = fs.readFileSync(path.join(root, "apps/api/src/server.cjs"), "utf8");
 const media = require("../apps/api/src/media-security.cjs");
@@ -19,7 +19,8 @@ const { createCachedProbe } = require("../apps/api/src/cached-probe.cjs");
 // No server listener, publishing credential, database or production media is used.
 function apiFixture(names, extra = {}) {
   const context = vm.createContext({ fs, fsp, path, crypto, Buffer, URL, URLSearchParams,
-    Readable, Response, ...media, ...require("../apps/api/src/http-utils.cjs"), ...extra });
+    // Stream aborts and resource diagnostics are part of the combined API runtime.
+    Readable, Response, AbortController, pipeline, ...media, ...require("../apps/api/src/http-utils.cjs"), ...extra });
   vm.runInContext(names.map(name => {
     const match = apiSource.match(new RegExp("^(?:async )?function " + name + "\\([\\s\\S]*?^}", "m"));
     assert.ok(match, name);
@@ -491,6 +492,10 @@ test("health requests share a short probe, cache failures and refresh once after
   const gate = new Promise(resolve => { release = resolve; });
   const extra = { FFMPEG_PATH: "ffmpeg", FFPROBE_PATH: "ffprobe", MEDIA_ROOT: "fixture", DIRECTUS_URL: "fixture",
     UPLOAD_API_TOKEN: "", ARTICLE_API_TOKEN: "", ASSET_PRESETS: new Set(),
+    resourceLimits: { maxPixels: 24_000_000 }, maintenanceMode: false,
+    activeWriteRequests: 0, filmScanJobControllers: new Map(), filmScanQueue: [], activeFilmScanJobId: null,
+    mediaProcessingSlots: { snapshot: () => ({ active: 0, pending: 0 }) },
+    videoProcessingSlots: { snapshot: () => ({ active: 0, pending: 0 }) },
     createCachedProbe: probe => createCachedProbe(probe, { now: () => clock }),
     runProcess: async (command, args, options) => { calls++; assert.equal(options.timeoutMs, 5000); await gate; if (!succeed) throw new Error("unavailable"); },
     sendJson: (res, code, payload) => { res.payload = payload; }

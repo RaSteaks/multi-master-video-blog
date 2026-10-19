@@ -61,6 +61,7 @@ type FilmJob = {
   status:
     | "uploaded"
     | "analyzing"
+    | "resource_blocked"
     | "review_required"
     | "rendering"
     | "committed"
@@ -374,6 +375,13 @@ export function FilmScanImport({
         onPatchFrame={patchFrame}
         onMoveFrame={moveFrame}
         onCommit={commit}
+        onRefresh={async () => {
+          setBusy(true);
+          setError("");
+          try { await reloadJob(); }
+          catch (cause) { setError(cause instanceof Error ? cause.message : "刷新任务状态失败。"); }
+          finally { setBusy(false); }
+        }}
         onNew={() => {
           setJob(null);
           setFiles([]);
@@ -797,6 +805,7 @@ function FilmReview({
   onPatchFrame,
   onMoveFrame,
   onCommit,
+  onRefresh,
   onNew,
 }: {
   job: FilmJob;
@@ -811,6 +820,7 @@ function FilmReview({
   onPatchFrame: (frameId: number, patch: Record<string, unknown>) => Promise<void>;
   onMoveFrame: (frameId: number, direction: -1 | 1) => Promise<void>;
   onCommit: () => Promise<void>;
+  onRefresh: () => Promise<void>;
   onNew: () => void;
 }) {
   const [adjustments, setAdjustments] = useState(job.rollAdjustments);
@@ -930,6 +940,20 @@ function FilmReview({
             <p>任务状态已持久化；刷新页面或 API 重启后可以恢复。</p>
             <progress max={100} value={job.progress} />
           </div>
+        </div>
+      ) : null}
+
+      {/* A resource block retains originals; it must never show the destructive-failure copy. */}
+      {job.status === "resource_blocked" ? (
+        <div className="film-review-error film-resource-blocked" role="status">
+          <div>
+            <strong>服务器资源受限，原档已保留</strong>
+            <p>{job.error}</p>
+            <p>请管理员调整处理限制并重启服务，任务会自动重新检查。</p>
+          </div>
+          <button className="album-action-button" type="button" onClick={onRefresh} disabled={busy} aria-busy={busy}>
+            {busy ? "正在刷新…" : "刷新状态"}
+          </button>
         </div>
       ) : null}
 
@@ -1574,6 +1598,7 @@ function filmJobLabel(status: FilmJob["status"]) {
   return {
     uploaded: "已上传",
     analyzing: "自动分析",
+    resource_blocked: "资源受限",
     review_required: "待审核",
     rendering: "生成成片",
     committed: "已写入相簿",

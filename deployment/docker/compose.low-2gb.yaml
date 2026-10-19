@@ -1,0 +1,36 @@
+# Limits include native libraries and children, not just the Node heap.
+services:
+  web:
+    mem_limit: ${WEB_MEM_LIMIT:-320m}
+    cpus: "${WEB_CPUS:-0.50}"
+    environment:
+      RESOURCE_PROFILE: low-2gb
+    build:
+      args:
+        RESOURCE_PROFILE: low-2gb
+  api:
+    mem_limit: ${API_MEM_LIMIT:-512m}
+    cpus: "${API_CPUS:-0.75}"
+    environment:
+      RESOURCE_PROFILE: low-2gb
+  cms:
+    mem_limit: ${CMS_MEM_LIMIT:-576m}
+    cpus: "${CMS_CPUS:-0.50}"
+    environment:
+      RESOURCE_PROFILE: low-2gb
+  db:
+    mem_limit: ${DB_MEM_LIMIT:-192m}
+    cpus: "${DB_CPUS:-0.50}"
+  nginx:
+    mem_limit: ${NGINX_MEM_LIMIT:-32m}
+    cpus: "${NGINX_CPUS:-0.25}"
+  bootstrap:
+    mem_limit: ${CMS_MEM_LIMIT:-576m}
+    cpus: "${CMS_CPUS:-0.50}"
+    environment:
+      RESOURCE_PROFILE: low-2gb
+  schema:
+    mem_limit: ${CMS_MEM_LIMIT:-576m}
+    cpus: "${CMS_CPUS:-0.50}"
+    environment:
+      RESOURCE_PROFILE: low-2gb

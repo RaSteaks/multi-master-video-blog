@@ -31,19 +31,24 @@ function createRpuHasher() {
   };
 }
 
-function hashDolbyRpu(ffmpeg, input, { cwd, timeoutMs = 3600000 } = {}) {
+function hashDolbyRpu(ffmpeg, input, { cwd, timeoutMs = 3600000, signal } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
     const scanner = createRpuHasher();
     const child = spawn(ffmpeg, ["-v", "error", "-nostdin", "-i", input, "-map", "0:v:0",
       "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "pipe:1"], { cwd, windowsHide: true });
     let failure;
     let stderr = "";
-    const timer = setTimeout(() => { failure = new Error("Dolby RPU integrity scan timed out."); child.kill(); }, timeoutMs);
-    child.stdout.on("data", chunk => { try { scanner.write(chunk); } catch (error) { failure = error; child.kill(); } });
+    // Cancellation must stop the full-stream verifier too, not just the encoder.
+    const abort = () => { failure = signal.reason; child.kill("SIGKILL"); };
+    signal?.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(() => { failure = new Error("Dolby RPU integrity scan timed out."); child.kill("SIGKILL"); }, timeoutMs);
+    child.stdout.on("data", chunk => { if (failure) return; try { scanner.write(chunk); } catch (error) { failure = error; child.kill("SIGKILL"); } });
     child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-4000); });
-    child.on("error", error => { clearTimeout(timer); reject(error); });
+    child.on("error", error => { clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(error); });
     child.on("close", code => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
       if (failure || code !== 0) return reject(failure || new Error(`Dolby RPU scan failed: ${stderr}`));
       try { resolve(scanner.finish()); } catch (error) { reject(error); }
     });
