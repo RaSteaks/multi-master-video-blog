@@ -1,5 +1,5 @@
 import type { ComponentPropsWithoutRef } from "react";
-import type { AssetDimensions } from "@/lib/directus";
+import { previewAssetUrl, type AssetDimensions } from "@/lib/directus";
 
 /** Shared intrinsic sizing for article and About markdown. */
 export function markdownImageComponent(dimensions: Map<string, AssetDimensions>) {
@@ -9,7 +9,8 @@ export function markdownImageComponent(dimensions: Map<string, AssetDimensions>)
     const match = typeof src === "string"
       ? src.match(/^\/api\/assets\/([a-zA-Z0-9-]+)$/) : null;
     const size = match ? dimensions.get(match[1]) : undefined;
-    return <img {...props} src={src} alt={alt ?? ""}
+    // Explicit draft-site previews keep CMS credentials on the server, outside image URLs.
+    return <img {...props} src={typeof src === "string" ? previewAssetUrl(src) : src} alt={alt ?? ""}
       width={size?.width ?? props.width} height={size?.height ?? props.height}
       loading="lazy" decoding="async" />;
   };

@@ -42,8 +42,9 @@ Three cache layers are involved and must not be conflated:
 2. **Full Route Cache** — only static-compatible routes are prerendered. Routes
    that read `searchParams` (e.g. `/albums`) or opt into `force-dynamic`
    (e.g. `/about`) stay server-rendered on demand even with Data Cache enabled.
-3. **Browser asset cache** — served images (`/api/assets/*`) and `/media/*` are
-   cached by the browser per response headers; unrelated to the two layers above.
+3. **Browser asset cache** — public `/api/assets/*` images must revalidate their
+   authorization; authenticated draft previews use `private, no-store`. `/media/*`
+   retains its playlist/segment cache policy, independently of the two layers above.
 
 Production values live in `apps/web/.env.production.local` (loaded by
 `next start`, ignored by `next dev`, never committed). Development keeps
@@ -76,7 +77,8 @@ In local development, Next.js rewrites:
 /media/* -> http://127.0.0.1:8060/media/*
 ```
 
-Production should let Nginx serve `/media/` directly from `D:/path/to/media/`.
+Production Nginx forwards `/media/` to the Node API's guarded file handler;
+do not serve the filesystem directly, since that bypasses private scan-file checks.
 
 ## Verification
 

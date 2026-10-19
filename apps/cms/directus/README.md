@@ -19,6 +19,26 @@ npm run dev:cms
 
 Create a local `.env` from `.env.example` before bootstrapping Directus, then set the PostgreSQL password for `DB_PASSWORD`. Keep the real `.env`, database files, uploads, secrets, and production credentials out of Git.
 
+## Video source format upgrade
+
+The video detail page requests `video_masters.source_format`, a nullable JSON
+field shown as **Source Format** in the CMS. When this field is missing, Directus
+returns 403 even for an administrator. With the existing CMS running, apply and
+verify just this field before restarting the application:
+
+```powershell
+npm run setup:video-source-format
+npm run cms:restart
+npm run api:restart
+npm run web:restart
+```
+
+The command is safe to repeat and preserves existing records and permissions.
+For a restricted Web account, also grant read access to this field in its existing
+policy. New installations can use `npm run setup:cms-schema`, which includes the
+same field and verification. Existing values can remain empty; the optional
+`npm run backfill:video-source-formats` command previews recoverable source metadata.
+
 ## SQLite to PostgreSQL Migration
 
 For a full migration that preserves Directus users, roles, permissions, files, and content:

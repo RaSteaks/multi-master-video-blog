@@ -7,6 +7,7 @@ import type { VideoMaster } from "@/lib/directus";
 import { masterResolution, mediaUrl } from "@/lib/directus";
 import { getDefaultMaster, getSdrFallback, isPlayableMaster, isSdrMaster, playbackErrorMessage } from "@/lib/video-playback";
 import { isHdrVideo, selectAutomaticMaster } from "@/lib/video-capabilities";
+import { playbackFormat } from "@/lib/video-format";
 
 type MediaPlayerProps = {
   masters: VideoMaster[];
@@ -441,7 +442,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
                   />
                   <span className="master-button-label">
                     <span>{master.label}</span>
-                    <small>{master.type.replace(/_/g, " ")}</small>
+                    <small>播放：{playbackFormat(master)}</small>
                   </span>
                 </button>
               ))}
@@ -471,6 +472,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
             </div>
           </div>
 
+          {/* Playback Info shows stream/device details; source provenance stays in upload results. */}
           <aside
             className={infoOpen ? "player-info-panel open" : "player-info-panel"}
             id="player-info-panel"
@@ -493,9 +495,9 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
 
             <div className="info-panel-body">
               <div className="info-section info-section-master">
-                <h3>Current Master</h3>
+                <h3>Video</h3>
                 <dl className="tech-grid" aria-label="Current master technical details">
-                  <div><dt>Type</dt><dd>{activeMaster.type.replace(/_/g, " ")}</dd></div>
+                  <div><dt>Type</dt><dd>{playbackFormat(activeMaster)}</dd></div>
                   <div><dt>Codec</dt><dd>{activeMaster.codec || "N/A"}</dd></div>
                   <div><dt>Resolution</dt><dd>{resolutionLabel || "N/A"}</dd></div>
                   <div><dt>Gamut</dt><dd>{formatDisplayGamut(activeMaster)}</dd></div>
@@ -513,13 +515,6 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
                   </div>
                   <div><dt>Processing</dt><dd>{activeMaster.processing_mode || "N/A"}</dd></div>
                   <div><dt>Verified</dt><dd>{activeMaster.verification_status || "N/A"}</dd></div>
-                  <div><dt>Derivative</dt><dd>{formatPresent(activeMaster.is_derivative)}</dd></div>
-                  {activeMaster.is_derivative ? (
-                    <>
-                      <div><dt>Source Master</dt><dd>{activeMaster.derived_from_master_id || "N/A"}</dd></div>
-                      <div><dt>Intent</dt><dd>{activeMaster.conversion_intent || "N/A"}</dd></div>
-                    </>
-                  ) : null}
                   {activeMaster.type === "dolby_vision" ? (
                     <>
                       <div><dt>DV Profile Version</dt><dd>{dolbyProfileVersion || "N/A"}</dd></div>

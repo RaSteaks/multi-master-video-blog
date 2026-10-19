@@ -51,6 +51,10 @@ const {
 } = require("./film-scan-utils.cjs");
 const { createDirectusTokenCache } = require("./directus-auth.cjs");
 const { createTaskLimiter } = require("./task-limiter.cjs");
+const { createCachedProbe } = require("./cached-probe.cjs");
+const { canReadAsset } = require("./asset-access.cjs");
+const { filmScanPath, filmScanStoredPath, prepareFilmScanStorage,
+  publicMediaPath, assetSafetyHeaders } = require("./media-security.cjs");
 const {
   AUTO_SDR_CONVERSION,
   buildDolbySdrConversion,
@@ -60,6 +64,8 @@ const {
 } = require("./video-sdr.cjs");
 const { hashDolbyRpu, compareHdrMetadata } = require("./video-integrity.cjs");
 const { audioCodecFromProbe, hlsAttributesFromProbe, videoCodecFromProbe } = require("./hls-metadata.cjs");
+const { inspectImfPackage, imfPackageRelativePath, hashImfPackage, applyImfColor, buildImfEncode, validateImfOutput } = require("./imf.cjs");
+const { sanitizeSourceFormat, sourceFormatFromProbe, sourceFormatForPlayback } = require("../../../shared/video-source-format.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(ROOT, "..", "..");
@@ -119,7 +125,9 @@ const FILM_SCAN_PROCESS_TIMEOUT_MS = positiveInteger(
   env.FILM_SCAN_PROCESS_TIMEOUT_MS,
   30 * 60 * 1000
 );
-const FILM_SCAN_ROOT = path.join(MEDIA_ROOT, "film-scans");
+// Private work lives beside, never inside, the public media tree (same volume by default).
+const FILM_SCAN_ROOT = path.resolve(ROOT, env.FILM_SCAN_ROOT ||
+  path.join(MEDIA_ROOT, "..", ".private-media", "film-scans"));
 const FFMPEG_PATH = env.FFMPEG_PATH || resolveOptionalPackage("ffmpeg-static") || "ffmpeg";
 const FFPROBE_PATH =
   env.FFPROBE_PATH || resolveOptionalPackage("ffprobe-static", "path") || "ffprobe";
@@ -155,6 +163,8 @@ const ARTICLE_IMAGE_TARGET_PATTERN =
 const ASSET_PRESETS = new Set(
   require("../../../config/directus-asset-presets.json").map((preset) => preset.key)
 );
+const PUBLIC_ASSET_IDS = new Set(String(env.PUBLIC_ASSET_IDS || "")
+  .split(",").map(value => value.trim()).filter(Boolean));
 const JSON_COMPRESSION_MIN_BYTES = 1024;
 const COLOR_REQUIRED_FIELDS = [
   "colorPrimaries",
@@ -480,7 +490,7 @@ function runProcess(command, args, options = {}) {
 
 async function commandAvailable(command) {
   try {
-    await runProcess(command, ["-version"]);
+    await runProcess(command, ["-version"], { timeoutMs: 5000 });
     return true;
   } catch {
     return false;
@@ -495,6 +505,8 @@ async function parseMultipart(req) {
   return new Promise((resolve, reject) => {
     const fields = {};
     const pendingWrites = [];
+    const activeWrites = new Set();
+    const pendingCloses = [];
     let fileInfo = null;
     let uploadBytes = 0;
     let rejected = false;
@@ -502,6 +514,9 @@ async function parseMultipart(req) {
     const files = {};
     const busboy = createMultipartParser({
       headers: req.headers,
+      // Folder-upload references must survive multipart parsing for IMF/HLS.
+      // Paths are validated/sanitized separately before touching the filesystem.
+      preservePath: true,
       limits: {
         files: 500,
         fields: 64,
@@ -516,18 +531,34 @@ async function parseMultipart(req) {
 
       rejected = true;
       req.unpipe(busboy);
-      busboy.removeAllListeners();
-      fsp.rm(tempDir, { recursive: true, force: true }).finally(() => reject(error));
+      // Busboy may still parse the current chunk. Keep its error listener and
+      // drain rejected parts; wait for file handles to close before deleting on Windows.
+      for (const stream of activeWrites) stream.destroy(error);
+      req.resume();
+      Promise.allSettled([...pendingWrites, ...pendingCloses])
+        .then(() => fsp.rm(tempDir, { recursive: true, force: true }))
+        .then(() => reject(error), cleanupError => {
+          error.cleanupError = cleanupError;
+          reject(error);
+        });
     }
 
     busboy.on("field", (name, value) => {
+      if (rejected) return;
       fields[name] = value;
     });
 
     busboy.on("file", (name, file, info) => {
+      if (rejected) { file.resume(); return; }
       if (!["video", "sdrVideo", "cover", "masterPackage"].includes(name)) {
         file.resume();
         return;
+      }
+
+      // Video covers share the same image-only contract as article attachments.
+      if (name === "cover") {
+        try { validateArticleImageMetadata(info); }
+        catch (error) { file.resume(); rejectOnce(error); return; }
       }
 
       const filename = name === "masterPackage" ? safeRelativePath(info.filename) : safeFileName(info.filename);
@@ -538,14 +569,22 @@ async function parseMultipart(req) {
         rejectOnce(httpError(400, name === "video" ? "Select at most two source videos." : `Only one ${name} file is allowed.`));
         return;
       }
-      const tempPath = path.join(tempDir, name, name === "video" ? `${crypto.randomUUID()}-${filename}` : filename);
+      // Package paths may normalize to the same name; keep each multipart part
+      // isolated until CPL/ASSETMAP validation resolves its original relative path.
+      const tempPath = path.join(tempDir, name, ["video", "masterPackage"].includes(name)
+        ? `${crypto.randomUUID()}-${path.basename(filename)}` : filename);
       assertInside(tempDir, tempPath);
       fs.mkdirSync(path.dirname(tempPath), { recursive: true });
       const writeStream = fs.createWriteStream(tempPath);
+      activeWrites.add(writeStream);
+      writeStream.once("close", () => activeWrites.delete(writeStream));
+      pendingCloses.push(new Promise(resolveClose => writeStream.once("close", resolveClose)));
 
       const currentFile = {
         field: name,
         filename,
+        originalName: info.filename,
+        size: 0,
         mimeType: info.mimeType,
         tempPath,
         tempDir
@@ -568,6 +607,10 @@ async function parseMultipart(req) {
 
       file.on("data", (chunk) => {
         uploadBytes += chunk.length;
+        currentFile.size += chunk.length;
+        if (name === "cover" && currentFile.size > MAX_ARTICLE_IMAGE_BYTES) {
+          rejectOnce(httpError(413, "Video cover exceeds the image size limit."));
+        }
       });
 
       file.on("limit", () => {
@@ -595,6 +638,8 @@ async function parseMultipart(req) {
 
       try {
         await Promise.all(pendingWrites);
+
+        if (files.cover) await assertArticleImageContents(files.cover);
 
         resolve({
           fields,
@@ -1769,30 +1814,36 @@ async function moveMasterPackageFiles(files, metadata) {
     throw httpError(400, "Missing Dolby Vision master package files.");
   }
 
-  const packageDir = path.join(MEDIA_ROOT, metadata.slug, "source-package");
+  const sourceImf = metadata.sourceKind === "master_package"
+    ? await inspectImfPackage(files.map(file => ({ ...file, filename: file.originalName || file.filename, packagePath: file.tempPath }))) : null;
+  // Each source archive is immutable, including when replacing its playback rendition.
+  const packageDir = path.join(MEDIA_ROOT, metadata.slug, "source-package", crypto.randomUUID());
   assertInside(MEDIA_ROOT, packageDir);
-
-  if (fs.existsSync(packageDir) && metadata.overwrite) {
-    await fsp.rm(packageDir, { recursive: true, force: true });
-  }
 
   await fsp.mkdir(packageDir, { recursive: true });
 
   const movedFiles = [];
+  const destinations = new Set();
   for (const file of files) {
-    const relative = safeRelativePath(file.filename);
+    const relative = sourceImf ? imfPackageRelativePath(file.originalName || file.filename) : safeRelativePath(file.filename);
+    // Reject case aliases too: deployments may use a case-insensitive filesystem.
+    const collisionKey = relative.normalize("NFC").toLowerCase();
+    if (destinations.has(collisionKey)) throw httpError(422, "Package filenames collide after normalization.");
+    destinations.add(collisionKey);
     const targetPath = path.join(packageDir, relative);
     assertInside(packageDir, targetPath);
     await fsp.mkdir(path.dirname(targetPath), { recursive: true });
     await fsp.rename(file.tempPath, targetPath);
     movedFiles.push({
       ...file,
+      filename: sourceImf ? file.originalName || file.filename : file.filename,
       packagePath: targetPath,
       packageRelativePath: relative
     });
   }
 
-  const primary =
+  const imf = sourceImf ? await inspectImfPackage(movedFiles) : null;
+  const primary = imf ? movedFiles.find(file => file.packagePath === imf.video.path) :
     metadata.sourceKind === "hls_package"
       ? selectHlsPackagePrimary(movedFiles)
       : selectMasterPackagePrimary(movedFiles);
@@ -1809,6 +1860,7 @@ async function moveMasterPackageFiles(files, metadata) {
     sourcePath: primary.packagePath,
     packageDir,
     files: movedFiles,
+    imf,
     sidecars: movedFiles.filter((file) => isDolbySidecar(file.packagePath))
   };
 }
@@ -2223,6 +2275,8 @@ async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract,
     const sdrRecords = await createOrUpdateDirectusRecords(
       sdrMetadata, sdrPath, finalized.playlistPath, sdrProbe, {}, {}, {
         project: records.project,
+        // Keep the archival source identity when SDR is generated from an IMF's HDR10 intermediate.
+        sourceFormat: records.master.source_format,
         sourceHash: records.master.source_sha256,
         sourceContract,
         outputContract: finalized.outputContract,
@@ -3014,6 +3068,9 @@ function validateColorContract(metadata, contract, context = "source") {
   const errors = [];
 
   for (const field of COLOR_REQUIRED_FIELDS) {
+    // RGB has no subsampled Cb/Cr location. Range must still be explicit; an RGB
+    // matrix is supplied only by the verified CPL path, never guessed for YUV.
+    if (field === "chromaLocation" && /^(rgb|gbr)/.test(contract.pixelFormat || "")) continue;
     if (contract[field] === undefined || contract[field] === null || contract[field] === "") {
       errors.push(`${context}: missing ${field}.`);
     }
@@ -3839,7 +3896,9 @@ async function handleArticleCreate(req, res) {
       coverImageId = await directusUploadFile(
         directusToken,
         article.cover,
-        `${article.title} cover`
+        `${article.title} cover`,
+        // Covers remain article-owned when replaced or removed but still referenced in Markdown.
+        { reconciliationTag: `article-image:${crypto.randomUUID()}` }
       );
       uploadedFileIds.push(coverImageId);
     } else if (article.removeCover) {
@@ -3851,7 +3910,9 @@ async function handleArticleCreate(req, res) {
       const fileId = await directusUploadFile(
         directusToken,
         inlineImage.file,
-        inlineImage.alt || inlineImage.name || `${article.title} image`
+        inlineImage.alt || inlineImage.name || `${article.title} image`,
+        // Provenance is service-written metadata, never a grant inferred from Markdown text.
+        { reconciliationTag: `article-image:${crypto.randomUUID()}` }
       );
       uploadedFileIds.push(fileId);
       uploadedImages.push({
@@ -5636,9 +5697,7 @@ async function handleFilmStockPresets(req, res) {
 }
 
 function filmScanSourcePath(relativePath) {
-  const filePath = path.resolve(MEDIA_ROOT, String(relativePath || ""));
-  assertInside(FILM_SCAN_ROOT, filePath);
-  return filePath;
+  return filmScanPath(FILM_SCAN_ROOT, relativePath);
 }
 
 function filmScanJobDirectory(jobId) {
@@ -5968,7 +6027,7 @@ async function analyzeFilmScanJob(jobId, signal) {
         await renderReviewedFilmFrame(previewOptions);
         previewRenders.push(previewOptions);
         throwIfFilmScanAborted(signal);
-        const previewRelative = path.relative(MEDIA_ROOT, previewPath);
+        const previewRelative = filmScanStoredPath(FILM_SCAN_ROOT, previewPath);
         await directusRequest(`/items/film_scan_frames/${frameCreated.id}`, token, {
           method: "PATCH",
           body: {
@@ -6147,7 +6206,7 @@ async function handleFilmScanCreate(req, res, albumId) {
       const targetPath = path.join(sourceDir, file.filename);
       assertInside(finalDir, targetPath);
       await fsp.rename(file.tempPath, targetPath);
-      const relativePath = path.relative(MEDIA_ROOT, targetPath);
+      const relativePath = filmScanStoredPath(FILM_SCAN_ROOT, targetPath);
       const source = (
         await directusRequest("/items/film_scan_sources", token, {
           method: "POST",
@@ -6596,10 +6655,10 @@ async function handleFilmScanFramePatch(req, res, albumId, jobId, frameId) {
         }
       })
     ).data;
-    const previewRelative = path.join(
-      path.dirname(String(frame.preview_path)),
-      `${created.id}.jpg`
-    );
+    // Resolve old Windows separators before deriving a newly persisted frame path.
+    const previewRelative = filmScanStoredPath(FILM_SCAN_ROOT, path.join(
+      path.dirname(filmScanSourcePath(frame.preview_path)), `${created.id}.jpg`
+    ));
     const createdWithPreview = (
       await directusRequest(`/items/film_scan_frames/${created.id}`, token, {
         method: "PATCH",
@@ -7902,6 +7961,10 @@ async function createOrUpdateDirectusRecords(
     hdr_static_metadata: outputContract.hdrStaticMetadata,
     dolby_metadata: outputContract.dolbyMetadata,
     source_probe_json: verificationResult.sourceProbe || probe,
+    source_format: sourceFormatForPlayback(
+      verificationResult.sourceFormat || sourceFormatFromProbe(verificationResult.sourceProbe || probe),
+      outputContract, verification.conversion
+    ),
     output_probe_json: verificationResult.outputProbe || probe,
     verification_status: verification.status,
     verification_errors: verification.errors,
@@ -8092,9 +8155,46 @@ async function saveCompanionSdr(input, project) {
   return { status: "ready", master: records.master, hlsUrl: mediaUrlFromPath(finalized.playlistPath) };
 }
 
+async function prepareImfPlayback(imf, metadata, sourceProbe, outputDir) {
+  if (!(await availableVideoSdrFilters()).has("zscale")) {
+    throw httpError(422, "RGB IMF conversion requires FFmpeg with zscale and libx265. The source package has been retained.");
+  }
+  const playbackPath = path.join(outputDir, "hdr10.mp4");
+  const conversion = buildImfEncode(imf, playbackPath);
+  try {
+    await runProcess(FFMPEG_PATH, conversion.args);
+    const probe = await probeVideo(playbackPath);
+    const contract = buildColorContract(probe, metadata);
+    const sourceContract = buildColorContract(sourceProbe, metadata);
+    const errors = [...validateColorContract(metadata, contract, "IMF conversion"),
+      ...validateImfOutput(imf, probe, contract), ...compareHdrMetadata(sourceContract, contract)];
+    if (errors.length) throwColorContractError(errors);
+    const output = await generateHls(playbackPath, outputDir, { ...metadata, mode: "copy" }, probe);
+    output.conversion = {
+      intent: conversion.intent, engine: conversion.engine, filter: conversion.filter,
+      cplId: imf.cplId, displayWindow: imf.crop, usesDolbyMetadata: false,
+      dolbyMetadataPreservedInSource: imf.hasDolbyMetadata,
+      notice: "RGB IMF was converted to HDR10. Dolby Vision dynamic metadata remains in the source package and is not applied to playback."
+    };
+    // HLS must preserve the encoded delivery contract, not match the RGB archive.
+    const finalized = await finalizeHlsOutput(output, { ...metadata, mode: "copy" }, contract, {}, probe);
+    finalized.verification.sourceProbeSummary = summarizeProbe(sourceProbe);
+    await writeVerificationReport(outputDir, {
+      verification: finalized.verification, sourceContract, convertedContract: contract,
+      outputContract: finalized.outputContract
+    });
+    return { finalized, playbackPath, probe, contract };
+  } catch (error) {
+    // Partial encodes are never registered, while the original package stays intact.
+    await fsp.rm(outputDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 async function handleUpload(req, res) {
   let parsed = null;
   let releaseProcessingSlot;
+  let uploadSourceFormat = null;
 
   try {
     requireUploadAuth(req);
@@ -8104,16 +8204,32 @@ async function handleUpload(req, res) {
     if (res.destroyed) return;
     const { metadata, project: existingProject } = await resolveVideoUploadProject(parsed.fields);
     await identifyPairedSources(parsed, metadata);
-    validateProcessingPolicy(metadata);
-    const companionInput = await inspectCompanionSdr(parsed.files.sdrVideo, metadata);
+    if (metadata.sourceKind !== "master_package") validateProcessingPolicy(metadata);
     const packageInfo =
       metadata.sourceKind === "master_package" || metadata.sourceKind === "hls_package"
         ? await moveMasterPackageFiles(parsed.files.masterPackage, metadata)
         : null;
+    const imf = packageInfo?.imf;
+    uploadSourceFormat = sanitizeSourceFormat(imf?.sourceFormat);
+    if (imf) {
+      // IMF is an archival source, not an embedded browser Dolby Vision stream.
+      // The server owns the delivery type regardless of the form's selected type.
+      metadata.masterType = "hdr10";
+      metadata.label = /^(?:SDR|HDR10|HLG|Dolby Vision|Custom)(?: Master)?$/i.test(metadata.label)
+        ? "HDR10 (IMF)" : `${metadata.label} · HDR10 (IMF)`;
+      metadata.mode = "copy";
+      metadata.processingMode = "transcode";
+      metadata.resolutionWidth = null;
+      metadata.resolutionHeight = null;
+      metadata.bitrateMbps = null;
+      metadata.notes = [metadata.notes, "IMF RGB → HDR10 playback; Dolby Vision dynamic metadata is retained only in the source package."].filter(Boolean).join("\n");
+    }
+    validateProcessingPolicy(metadata);
+    const companionInput = await inspectCompanionSdr(parsed.files.sdrVideo, metadata);
     const sourcePath = packageInfo
       ? packageInfo.sourcePath
       : await moveSourceFile(parsed.file, metadata);
-    const dolbySidecar = await parseDolbyProfileFiles(
+    const dolbySidecar = imf ? {} : await parseDolbyProfileFiles(
       packageInfo?.sidecars || [],
       parsed.fields.dolbyXmlClipName || parsed.fields.dolby_xml_clip_name || ""
     );
@@ -8121,7 +8237,9 @@ async function handleUpload(req, res) {
       metadata.sourceKind === "hls_package"
         ? await inspectHlsPackage(packageInfo, metadata, dolbySidecar)
         : null;
-    const probe = hlsInspection?.probe || await probeVideo(sourcePath);
+    const rawProbe = hlsInspection?.probe || await probeVideo(sourcePath);
+    const audioProbe = imf?.audio ? (await probeMediaStreams(imf.audio.path)).find(stream => stream.codec_type === "audio") : null;
+    const probe = imf ? applyImfColor(imf, rawProbe, audioProbe) : rawProbe;
     validateDolbyVisionUpload(metadata, probe, dolbySidecar);
     const sourceContract =
       hlsInspection?.contract ||
@@ -8134,11 +8252,12 @@ async function handleUpload(req, res) {
     }
 
     const outputDir = await prepareOutputDir(metadata);
-    const hlsOutput =
+    const imfPlayback = imf ? await prepareImfPlayback(imf, metadata, probe, outputDir) : null;
+    const hlsOutput = imfPlayback ? null :
       metadata.sourceKind === "hls_package"
         ? await prepareHlsPackageOutput(packageInfo, outputDir)
         : await generateHls(sourcePath, outputDir, metadata, probe);
-    const finalized = await finalizeHlsOutput(
+    const finalized = imfPlayback?.finalized || await finalizeHlsOutput(
       hlsOutput,
       metadata,
       sourceContract,
@@ -8154,9 +8273,10 @@ async function handleUpload(req, res) {
       dolbySidecar,
       {
         project: existingProject || undefined,
+        sourceHash: imf ? await hashImfPackage(packageInfo.files) : undefined,
         sourceContract,
         outputContract: finalized.outputContract,
-        sourceProbe: probe,
+        sourceProbe: imf ? { ...probe, rawProbe } : probe,
         outputProbe: finalized.outputProbe,
         verification: finalized.verification
       }
@@ -8175,8 +8295,8 @@ async function handleUpload(req, res) {
     if (!existingProject && !companionInput && HDR_MASTER_TYPES.has(metadata.masterType)) {
       try {
         sdrDerivative = await createDolbySdrMaster(
-          metadata, hlsInspection?.playlistPath || sourcePath,
-          probe, sourceContract, records
+          metadata, imfPlayback?.playbackPath || hlsInspection?.playlistPath || sourcePath,
+          imfPlayback?.probe || probe, imfPlayback?.contract || sourceContract, records
         );
         if (sdrDerivative.master.is_default) records.master.is_default = false;
       } catch (error) {
@@ -8208,6 +8328,7 @@ async function handleUpload(req, res) {
       hlsUrl: mediaUrlFromPath(finalized.playlistPath),
       probe,
       colorContract: finalized.outputContract,
+      sourceFormat: records.master.source_format,
       verification: finalized.verification,
       derivativeOf: metadata.isDerivative ? metadata.derivedFromMasterId : null
     });
@@ -8215,6 +8336,7 @@ async function handleUpload(req, res) {
     sendJson(res, error.statusCode || 500, {
       status: "error",
       error: error.message,
+      sourceFormat: sanitizeSourceFormat(error.sourceFormat) || uploadSourceFormat,
       verificationErrors: error.verificationErrors || null
     });
   } finally {
@@ -8225,11 +8347,13 @@ async function handleUpload(req, res) {
   }
 }
 
-async function handleHealth(res) {
-  const [ffmpegAvailable, ffprobeAvailable] = await Promise.all([
+const getMediaHealth = createCachedProbe(() => Promise.all([
     commandAvailable(FFMPEG_PATH),
     commandAvailable(FFPROBE_PATH)
-  ]);
+  ]));
+
+async function handleHealth(res) {
+  const [ffmpegAvailable, ffprobeAvailable] = await getMediaHealth();
 
   sendJson(res, 200, {
     status: "ok",
@@ -8324,16 +8448,21 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Upload API listening on http://${HOST}:${PORT}`);
-  void recoverFilmScanQueue();
+// Migrate every legacy task, including completed/review tasks, before any public listener starts.
+prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT).then(() => {
+  server.listen(PORT, HOST, () => {
+    console.log(`Upload API listening on http://${HOST}:${PORT}`);
+    void recoverFilmScanQueue();
+  });
+}).catch(error => {
+  console.error(`Private film-scan storage is not ready: ${error.message}`);
+  process.exitCode = 1;
 });
 
 async function handleMedia(req, pathname, res) {
   try {
-    const relativePath = decodeURIComponent(pathname.replace(/^\/media\//, ""));
-    const filePath = path.resolve(MEDIA_ROOT, relativePath);
-    assertInside(MEDIA_ROOT, filePath);
+    const filePath = await publicMediaPath(MEDIA_ROOT, FILM_SCAN_ROOT,
+      pathname.replace(/^\/media\//, ""));
 
     const stat = await fsp.stat(filePath);
     if (!stat.isFile()) {
@@ -8434,7 +8563,20 @@ async function fetchDirectusAsset(
   return response;
 }
 
+function assetAccess(req) {
+  const bearer = String(req.headers.authorization || "").match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  const credentials = [bearer, req.headers["x-upload-token"], req.headers["x-article-token"]].filter(Boolean);
+  const media = credentials.some(value => tokenMatches(value, UPLOAD_API_TOKEN));
+  const article = credentials.some(value => tokenMatches(value, ARTICLE_API_TOKEN));
+  if ((req.headers.authorization || credentials.length) && !media && !article) {
+    throw httpError(401, "Invalid asset preview token.");
+  }
+  return { media, article };
+}
+
 async function handleAsset(req, url, res) {
+  // Denials and authenticated previews must never be cached as public media.
+  res.setHeader("Cache-Control", "private, no-store");
   try {
     const pathname = url.pathname;
     const fileId = decodeURIComponent(pathname.replace(/^\/assets\//, "")).split("/")[0];
@@ -8456,7 +8598,11 @@ async function handleAsset(req, url, res) {
       }
     }
 
+    const access = assetAccess(req);
     const token = await directusLogin();
+    if (!await canReadAsset(fileId, access, route => directusRequest(route, token), PUBLIC_ASSET_IDS)) {
+      throw httpError(404, "Asset not found.");
+    }
     const assetUrl = new URL(
       `${DIRECTUS_URL}/assets/${encodeURIComponent(fileId)}`
     );
@@ -8470,10 +8616,13 @@ async function handleAsset(req, url, res) {
       req.method
     );
 
-    const cacheHeader =
-      "public, max-age=86400, stale-while-revalidate=604800";
+    // Even a conditional request must recheck publication before emitting 304.
+    const cacheHeader = access.media || access.article
+      ? "private, no-store" : "public, no-cache, must-revalidate";
     const validatorHeaders = {
       "Cache-Control": cacheHeader,
+      Vary: "Authorization, X-Upload-Token, X-Article-Token",
+      ...assetSafetyHeaders(response.headers.get("content-type")),
       ...(response.headers.get("etag")
         ? { ETag: response.headers.get("etag") }
         : {}),

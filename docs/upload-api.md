@@ -85,6 +85,85 @@ Use one of:
 
 `sourceKind=hls_package` must include a multivariant `master.m3u8` with `VIDEO-RANGE=SDR|PQ|HLG`. All variants must share the same verified color contract.
 
+### RGB IMF packages
+
+Identification precedes conversion validation. `sourceFormat` in successful or
+unsupported-conversion upload responses identifies declared IMF application URIs,
+RGB/YCbCr, bit depth, primaries, transfer/range, composition structure and missing
+references. SDR/HLG/YCbCr and multi-segment packages can be identified even when
+the existing RGB/PQ conversion path rejects them. Missing references mean an
+external-reference or incomplete upload, not proof of a valid supplemental IMF.
+Resolve preset names and vendor delivery compliance are never inferred.
+
+Dolby evidence is distinguished as linked ISXD declarations, PHDR descriptors
+(including a bounded 8 MiB MXF header KLV scan for up to four image assets), or
+unlinked Dolby XML sidecars. External MDF inspection recognizes CM4 `dvmd/...`
+namespaces and legacy namespace-free CM2.9 roots using version and video structure
+within a bounded 64 KiB prefix; frame-wrapped `dvmd-fw/...` remains recognized.
+A declaration is not validation of the
+per-frame payload. A negative header scan leaves Dolby presence unknown, rather
+than claiming its absence. The existing playable HEVC path separately verifies
+embedded RPU. These identification paths do not implement Dolby reference
+rendering, ISXD/PHDR-to-RPU conversion or full IMF compliance validation.
+
+The bounded `video_masters.source_format` JSON field persists public provenance;
+raw source probes and filesystem paths are excluded. Automatic SDR inherits the
+original source identity and records whether Dolby metadata was applied to its
+conversion. The player's selected output `type`/codec/range remains authoritative
+for playback capability checks. Source identity does not upgrade HDR10 to Dolby
+Vision. Upload results show source and output separately; the playback page and
+Playback Info omit source provenance and source/output comparison sections.
+
+Before deploying this field, run `npm run setup:cms-schema` and ensure the Web
+read account can read `video_masters.source_format`. Existing records may be
+previewed with `npm run backfill:video-source-formats`, then explicitly updated
+with `npm run backfill:video-source-formats -- --apply`. This fills only missing
+summaries from saved probe evidence/IMF parents, preserves existing summaries
+and playback fields, and does not guess unavailable application or preset data.
+Parent provenance is inherited only when source hashes match; an overwritten
+parent cannot relabel an older SDR. Run backfill while uploads are paused.
+It does not re-encode or re-publish videos. Refresh the video page after the
+configured CMS cache interval (or use the existing revalidation flow).
+
+Upload the complete folder as repeated `masterPackage` files with
+`sourceKind=master_package`. The API recognizes CPL/ASSETMAP contents and resolves
+track files by UUID, including relative paths. Supported compositions have one
+segment, one JPEG 2000 RGB image resource, at most one audio resource, no repeats,
+and full-range 10/12/16-bit PQ with P3-D65 or BT.2020 primaries. A CPL must declare
+component reference levels, display aspect/window, mastering display metadata,
+MaxCLL and MaxFALL. Non-square display pixels, missing/ambiguous references,
+conflicting stream/CPL metadata, multiple CPLs/segments/resources, split assets,
+and unsupported color layouts fail with an actionable `IMF:` error. Export a
+flattened composition when those editing features are needed. This is not a full
+IMF/PKL compliance or cryptographic asset-hash validator.
+
+For a recognized RGB IMF, the server selects `HDR10 (IMF)` delivery regardless of
+the form's master type or copy/transcode selection. It retains the entire source
+package in a unique `media/<slug>/source-package/<id>/` directory, including on
+overwrite. `file_url` continues to identify the original image MXF; the package
+files remain alongside it. The source SHA-256 covers the whole package, so audio
+and CPL changes also invalidate stale automatic SDR versions.
+
+The source contract uses CPL-derived RGB matrix/full range and no chroma siting;
+YUV validation stays strict. Encoding applies resource entry points/durations,
+crops the CPL display window, restores square display pixels, converts P3 to
+BT.2020 in linear light, and produces 10-bit limited-range HEVC/AAC MP4 and fMP4
+HLS (`VIDEO-RANGE=PQ`). FFmpeg must provide `zscale` and `libx265`. HDR10 output
+must preserve the mastering/CLL/FALL values, match the composition's duration,
+frame rate and display dimensions, and retain audio before registration. HLS is
+then checked against the converted MP4 contract. Partial encodes are removed on
+failure; the source package is retained.
+
+Independent Dolby ISXD metadata is **archived, not applied or converted to RPU**.
+The result is labeled HDR10, never playable Dolby Vision. The API's
+`verification.conversion` reports `intent=imf_rgb_to_hdr10`, the actual filter,
+CPL ID, display window and `usesDolbyMetadata=false`. `color-verification.json`
+records separate source, converted and output contracts. The normal new-project
+SDR workflow runs from the converted, audio-inclusive HDR10 MP4; it requires
+libplacebo/Vulkan and does not apply the archived Dolby trims. A supplied SDR
+suppresses automatic generation, and existing projects retain the usual append
+behavior. SDR failure is reported separately without discarding verified HDR10.
+
 ### Paired HDR / SDR and later additions
 
 - The source-video picker accepts one file or two files together. Two embedded sources are sent as two `video` fields; the server identifies exactly one HDR and one SDR from their probed metadata, regardless of order or filename, and infers the HDR master type. Two HDR files, two SDR files, more than two files, or mixing this mode with `sdrVideo`/a package are rejected. Both sources must use copy mode.
@@ -120,7 +199,7 @@ masterType=dolby_vision
 mode=copy
 ```
 
-HDR10, HLG, and Dolby Vision masters must use `mode=copy`. The API rejects HDR transcode requests because they can strip HDR metadata, alter primaries, or remove Dolby Vision RPU data.
+Embedded HDR10, HLG, and Dolby Vision masters must use `mode=copy`. The API rejects arbitrary HDR transcode requests because they can strip HDR metadata, alter primaries, or remove Dolby Vision RPU data. Recognized RGB IMF packages use the dedicated conversion path described above.
 
 The API will package copy-mode uploads as fMP4 HLS under:
 

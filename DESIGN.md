@@ -67,6 +67,15 @@ corners and inset preview chips use 4px corners.
 
 ## Components
 
+- `scripts/manager-dashboard.cjs` owns the standalone Service Manager. Preserve
+  its existing system-font, light/dark operational console and CSS variables;
+  it is separate from the public site's reference-room theme. Service cards,
+  native confirmation dialog and persistent operation panel share action names
+  with `scripts/service-control.cjs`. Keep read-only refresh/log controls usable
+  during operations, retain keyboard focus across polling, and show actual named
+  phases and terminal failures rather than estimated percentages. The command
+  and recovery contract is documented in `docs/deployment.md`.
+
 - `AlbumGallery` owns both public and managed photo tiles. Its responsive CSS grid
   follows row order so number badges, keyboard focus, lightbox navigation, and the
   first three eager images agree. Images retain their natural aspect ratios;
@@ -79,6 +88,10 @@ corners and inset preview chips use 4px corners.
   These flows reuse the existing upload panels, native inputs/selects, typography
   and CSS tokens; no separate visual theme or persistence of credentials is introduced.
   Behavioral contracts live in `docs/upload-api.md` and `docs/video-workflow.md`.
+  `VideoFormatInfo` presents bounded source identification only in upload results.
+  `MediaPlayer` omits source/current-version summaries and source provenance from
+  Playback Info, which retains stream technical details and device capabilities.
+  Unknown provenance never changes playback capability detection or claims validation.
 
 - `AppearanceControl` owns the non-modal appearance panel and tab keyboard behavior.
 - `HsvPicker` owns the shared saturation/value plane, hue slider and numeric fields.

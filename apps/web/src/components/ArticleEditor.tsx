@@ -17,6 +17,7 @@ import {
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import styles from "./ArticleEditor.module.css";
+import { AuthenticatedAssetImage } from "./AuthenticatedAssetImage";
 
 type SubmitPhase = "idle" | "uploading" | "success" | "error";
 type ViewMode = "write" | "split" | "preview";
@@ -240,9 +241,11 @@ function persistUploadedImageUrls(
 const ArticlePreview = memo(function ArticlePreview({
   content,
   images,
+  token,
 }: {
   content: string;
   images: PendingImage[];
+  token: string;
 }) {
   const imageMap = useMemo(
     () => new Map(images.map((image) => [image.key, image])),
@@ -267,8 +270,8 @@ const ArticlePreview = memo(function ArticlePreview({
 
         return (
           <span className={styles.previewImage}>
-            {/* Blob URLs are local editor previews and are never persisted. */}
-            <img {...props} src={localImage?.previewUrl ?? source} alt={alt ?? ""} />
+            {/* Local previews stay blobs; persisted draft images use the editor's in-memory token. */}
+            <AuthenticatedAssetImage {...props} token={token} src={localImage?.previewUrl ?? source} alt={alt ?? ""} />
             {alt ? <span>{alt}</span> : null}
           </span>
         );
@@ -287,7 +290,7 @@ const ArticlePreview = memo(function ArticlePreview({
         );
       },
     }),
-    [imageMap],
+    [imageMap, token],
   );
 
   if (!content.trim()) {
@@ -1372,7 +1375,7 @@ export function ArticleEditor() {
               <div className={styles.previewScroller}>
                 {/* CSS hiding alone still parses Markdown and creates image elements while typing. */}
                 {viewMode !== "write" ? (
-                  <ArticlePreview content={deferredContent} images={images} />
+                  <ArticlePreview content={deferredContent} images={images} token={token} />
                 ) : null}
               </div>
             </div>

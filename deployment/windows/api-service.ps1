@@ -3,7 +3,7 @@ param(
   [string]$Action = "status",
   [string]$ProjectRoot = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent),
   [int]$Port = 8060,
-  [int]$WaitSeconds = 30
+  [int]$WaitSeconds = 90
 )
 $ErrorActionPreference = "Stop"
 if ($Port -ne 8060) { throw "The api service is configured for port 8060. Custom ports are not supported by its npm script." }

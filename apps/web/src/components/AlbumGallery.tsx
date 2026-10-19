@@ -22,6 +22,7 @@ import {
 } from "@/lib/album-management";
 import { AlbumPhotoUploader, UploadIcon } from "@/components/AlbumPhotoUploader";
 import { albumThumbSrcSet, assetUrl } from "@/lib/asset-url";
+import { AuthenticatedAssetImage } from "./AuthenticatedAssetImage";
 
 export type GalleryPhoto = {
   id: number;
@@ -479,7 +480,9 @@ export function AlbumGallery({
                       photo.caption ? `：${photo.caption}` : ""
                     }`}
                   >
-                    <img
+                    {/* Draft tiles use authenticated blobs; public tiles keep ordinary URLs/srcsets. */}
+                    <AuthenticatedAssetImage
+                      token={managedAlbum ? token : undefined}
                       src={photo.thumbnailUrl}
                       srcSet={photo.thumbnailSrcSet ?? undefined}
                       sizes={
@@ -576,6 +579,7 @@ export function AlbumGallery({
 
       {selectedPhoto && lightboxIndex !== null ? (
         <PhotoLightbox
+          token={managedAlbum ? token : undefined}
           photo={selectedPhoto}
           index={lightboxIndex}
           total={photos.length}
@@ -970,6 +974,7 @@ function PhotoEditDialog({
 }
 
 function PhotoLightbox({
+  token,
   photo,
   index,
   total,
@@ -981,6 +986,7 @@ function PhotoLightbox({
   onNext,
   onClose,
 }: {
+  token?: string;
   photo: GalleryPhoto;
   index: number;
   total: number;
@@ -1086,7 +1092,8 @@ function PhotoLightbox({
                     aria-current={itemIndex === index ? "true" : undefined}
                     onClick={() => onSelect(itemIndex)}
                   >
-                    <img
+                    <AuthenticatedAssetImage
+                      token={token}
                       src={item.thumbnailUrl}
                       srcSet={item.thumbnailSrcSet ?? undefined}
                       sizes="112px"
@@ -1181,7 +1188,8 @@ function PhotoLightbox({
 
         <figure>
           <picture>
-            <img
+            <AuthenticatedAssetImage
+              token={token}
               key={`${photo.id}-${activeRange}`}
               src={
                 activeRange === "PQ" && canUsePq

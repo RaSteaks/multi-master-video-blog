@@ -3468,6 +3468,47 @@ html.vt-panel::view-transition-new(root) {
   gap: 12px;
 }
 
+/* Asset rows use two columns so packages, covers and file names never leave a vacant third. */
+.upload-assets-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+}
+
+.upload-assets-grid > * {
+  min-width: 0;
+}
+
+.upload-assets-grid .upload-source-note {
+  align-self: end;
+  min-height: 112px;
+  overflow-wrap: anywhere;
+}
+
+/* SDR is a full-width disclosure; its label uses the same checkbox owner as other options. */
+.upload-companion {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.upload-companion .upload-checks label {
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.upload-companion .upload-checks label:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.upload-companion-file {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
 .upload-source-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5230,6 +5271,10 @@ html.vt-panel::view-transition-new(root) {
 
   .upload-grid {
     grid-template-columns: 1fr;
+  }
+
+  .upload-assets-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .route-loading-form {

@@ -19,7 +19,7 @@ D:\path\to\project\
 - Frontend: Next.js on `127.0.0.1:3000`
 - CMS: Directus on `127.0.0.1:8055`
 - Upload API: Node.js service on `127.0.0.1:8060`
-- Media: local files served by Nginx under `/media/`
+- Media: Nginx forwards `/media/` to the Node API's guarded file handler
 - HTTPS: configured manually in Windows Nginx
 
 ## Security Checklist
@@ -68,6 +68,66 @@ Run health checks:
 npm run health
 ```
 
+## Manager service controls
+
+Manager controls PostgreSQL, Directus CMS, Upload API and Frontend Web. Its page
+and CLI share the same lifecycle functions and cross-process operation lock.
+The Manager itself is separate: update its code with `npm run manager:restart`,
+then reload the page to obtain the new CSRF nonce. Do this after any active
+service operation finishes. These controls target the Windows deployment.
+
+| Service | Start | Stop | Restart | Inspect |
+| --- | --- | --- | --- | --- |
+| PostgreSQL | `npm run postgres:start` | `npm run postgres:stop` | `npm run postgres:restart` | `postgres:status`, `postgres:health` |
+| Directus CMS | `npm run cms:start` | `npm run cms:stop` | `npm run cms:restart` | `cms:status`, `cms:health` |
+| Upload API | `npm run api:start` | `npm run api:stop` | `npm run api:restart` | `api:status`, `api:health` |
+| Frontend Web | `npm run web:start` | `npm run web:stop` | `npm run web:restart` | `web:status`, `web:health` |
+
+Run the inspect aliases with `npm run` as well. All aliases invoke
+`node scripts/service-control.cjs <service> <action>`; existing PowerShell
+wrappers remain available, with a 90-second default startup-health deadline.
+PostgreSQL control may require an Administrator terminal/Manager process.
+
+- **Start** is idempotent and waits for process HTTP health. An occupied but
+  unhealthy port fails rather than being reported as a successful start.
+- **Stop** waits for the service/port to stop. The UI disables it for a stopped
+  service, while the CLI still accepts an idempotent stop.
+- **Restart** stops then starts the selected service. Production Web reuses its
+  existing `.next/BUILD_ID` build; ordinary Start/Restart never build implicitly.
+  A missing production build reports the corrective command.
+- **Build + Restart** / `npm run web:rebuild-restart` stops Web, runs `build:web`,
+  starts it and waits for health. It is available only in Production mode; use
+  Restart in Development or switch to Production. A build failure leaves Web
+  stopped and does not start an incomplete bundle. Inspect the **Build** log,
+  fix the build and run Build + Restart again.
+- **Update API + Web** / `npm run services:update` restarts API, then builds and
+  restarts production Web (restarts only in Development). PostgreSQL and CMS are
+  untouched. A failed API step prevents the Web step. Install changed dependencies
+  separately first, for example `npm install`; Manager does not fetch packages.
+- `npm run services:start` starts PostgreSQL → CMS → API → Web, stopping on the
+  first failed startup. `services:stop` attempts Web → API → CMS → PostgreSQL,
+  retaining every failure. `services:restart` performs both phases and tries to
+  restore service availability even if a stop failed; the overall result still
+  reports that failure. `services:status` / `services:health` inspect the stack.
+- Single-service actions do not silently restart dependent services. Stop/restart
+  confirmation explains the interruption; finish uploads/conversions first.
+
+Service, stack and Web-mode POST endpoints return **202** once the operation lock
+is acquired, with `{ok:true, operation:{id,...}}`. This is acceptance, not success.
+Poll authenticated `GET /api/operations/<id>` for `running`, `succeeded`, `failed`
+or `interrupted`; `/api/status` also includes the latest operation. Conflicting
+commands return 409. The CLI continues to wait and returns a nonzero exit code
+on failure, including partial stack results.
+
+The UI shows named per-service phases, keeps refresh/log viewing available, and
+disables duplicate mutations. Refreshing or closing the page does not cancel
+work. The latest bounded record is saved to `logs/service-operation.json`, so CLI
+operations and page reloads share progress. The current process also retains up
+to 12 recent records. A controller crash without a recorded result is shown as
+interrupted once its lock is released/stale. An interrupted or unreachable
+operation is not automatically retried: refresh actual service state first.
+The journal excludes credential request/result fields and is not an audit log.
+
 ## Upload API Security
 
 Set a strong `UPLOAD_API_TOKEN` in `apps/api/.env`. Keep `8060` bound to `127.0.0.1` and expose uploads through Nginx `/api/` only.
@@ -101,9 +161,62 @@ changes asset transforms to preset-only unless the instance was already
 intentionally configured as `all`. The Node asset proxy independently rejects
 arbitrary transform parameters and only accepts these managed preset keys.
 
-The example Nginx config enables gzip for text/JSON responses, streams large
-multipart requests directly to Node, keeps file metadata hot, and caches HLS
-segments for seven days. HLS manifests continue to revalidate so overwritten
-playlists are observed promptly.
+The example Nginx config enables gzip for text/JSON responses and streams large
+multipart requests directly to Node. Media requests also pass through Node's
+canonical-path checks, preserving byte ranges and HLS cache headers. Do not add
+a separate static media alias or playlist location that bypasses these checks.
 
 For production, replace the Directus admin credentials in API and frontend `.env` files with limited service accounts.
+
+## Security update rollout
+
+- Set `MANAGER_AUTH_PASSWORD` to a strong password in the repository-root `.env`
+  or the Manager process environment; `MANAGER_AUTH_USERNAME` defaults to `admin`.
+  Without a password, its HTTP interface returns 503. Local CLI service-control
+  commands remain available. The public Nginx example denies `/manager/`; use a
+  private administration endpoint if remote access is needed. If proxying it,
+  preserve `Host` and retain Manager authentication. Reload the page after a
+  Manager restart because its CSRF nonce changes. Every POST requires the page's
+  `X-Manager-CSRF` header and `Content-Type: application/json`.
+- Film-scan originals, review previews and rollback journals now live in
+  `MEDIA_ROOT/../.private-media/film-scans` by default. `FILM_SCAN_ROOT` can override
+  this location but must resolve outside the public media tree. Back up the old
+  directory before upgrading. At API startup, all numeric job directories under
+  legacy `MEDIA_ROOT/film-scans` are moved without overwriting existing destinations,
+  before listening. Existing videos using the `film-scans` slug retain their
+  `source`/`sdr`/HDR directories and public URLs.
+  Database paths keep the logical `film-scans/...` format, including old Windows
+  separators. A collision or cross-volume rename stops startup with an error;
+  reconcile/move the remaining files to the private root before restarting.
+- Update the actual Nginx media routing together with the API. The new template
+  has no raw filesystem alias, so private files cannot bypass Node through an
+  alternate Windows path or symlink. Remove old private-file copies from all
+  public roots after verifying backups/migration, and purge previously cached
+  `/media/film-scans/*`, `/api/media/film-scans/*` and private asset responses from
+  any reverse-proxy/CDN caches. New code cannot recall bytes already downloaded.
+- Public `/api/assets/:id` reads require a published owner or a site background
+  reference. The API service account needs read access to the relevant content
+  collections as well as files. Denied collections grant no access; CMS outages
+  fail closed. Article and upload tokens allow previews only for their respective
+  article or video/album content. The editor/gallery fetch draft images into
+  memory using authorization headers. Public responses revalidate authorization;
+  authenticated responses use `private, no-store`.
+  For CMS files used only in local `content/about.md` or `SITE_HOME_AVATAR_URL`,
+  explicitly list their IDs in the API's comma-separated `PUBLIC_ASSET_IDS`;
+  these are intentional public exceptions and must be removed there to revoke
+  access. New article cover and inline uploads have a service-written
+  `description=article-image:<UUID>` provenance marker; a Markdown link alone
+  cannot grant access to an unrelated file. Older inline images lack this proof:
+  an administrator must verify their article ownership and set that marker in
+  Directus before they can be reused privately. Do not automatically adopt IDs
+  from untrusted Markdown or add private draft images to `PUBLIC_ASSET_IDS`.
+  `DIRECTUS_SHOW_DRAFTS=true` continues to serve referenced draft post/video
+  images through a separate, non-cacheable Next preview route. This explicitly
+  exposes draft content as before; keep the flag false on the public site.
+- Video covers now use the article image type/signature and size limits. Existing
+  non-image assets are forced to download with a sandbox CSP and `nosniff`.
+  Health checks share cached FFmpeg/FFprobe availability for 60 seconds, with a
+  five-second deadline per probe; they are not a real-time codec diagnostic.
+
+The offline security regression checks are `npm run test:security`. They use
+temporary files and mocked CMS/service effects; they do not alter live services.

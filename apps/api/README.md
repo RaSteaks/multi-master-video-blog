@@ -50,6 +50,15 @@ Common form fields:
 
 Use `mode=copy` by default. HDR10, HLG, and Dolby Vision masters must use `mode=copy`; transcode requests for HDR masters are rejected. HDR primaries are preserved and normalized as `BT.2020`, `P3-D65(smpte432)`, or `DCI-P3(smpte431)`.
 
+Exception: complete RGB/PQ IMF folders with CPL and ASSETMAP use a dedicated
+JPEG 2000 → HDR10 HEVC/AAC conversion (`zscale` + `libx265`). The API reads CPL
+color/range, mastering/CLL/FALL, timing and display-window metadata, joins the
+independent audio, and validates the delivery before publishing. Original package
+files remain archived. Dolby ISXD metadata is not applied or turned into RPU;
+playback is labeled HDR10. New-project uploads can also generate SDR through the
+existing libplacebo/Vulkan pipeline. See `docs/upload-api.md` for supported IMF
+composition limits and verification/provenance fields.
+
 For Dolby Vision, use `mode=copy` so FFmpeg repackages the existing HEVC/Dolby Vision bitstream into fMP4 HLS instead of re-encoding it. The API rejects Dolby Vision uploads without embedded configuration, decodable RPU and a verified RPU bitstream. Sidecars alone are not accepted.
 
 New-project HDR uploads without a supplied `sdrVideo` automatically generate a separate SDR MP4/HLS master. All HDR derivatives use adaptive `libplacebo`/Vulkan tone and gamut mapping; verified Dolby streams apply embedded RPU. Copy checks retain static metadata and full-stream RPU hashes. Paired uploads report `companionSdr` for the manual SDR; automatic conversion reports `sdrDerivative`. Later uploads use `projectId` to preserve existing project information and do not trigger automatic conversion. See `docs/upload-api.md` for pairing, authenticated project discovery, defaults and partial-failure recovery.
@@ -135,7 +144,17 @@ the tag and SDR relation before rollback, then removes photo records first and
 files second. Photo deletion returns HTTP 202 with `cleanupRequired` and
 `orphanFileIds` if the record is gone but one or more file deletions fail.
 
-Original assets are available at `/api/assets/:id`. The proxy accepts only
+Original assets are available at `/api/assets/:id` only when referenced by
+published content, site backgrounds, or explicit operator `PUBLIC_ASSET_IDS`
+(for local About/branding files without a CMS owner). Authenticated article/video/album previews
+use their corresponding publishing token in a header and receive private,
+non-cacheable responses; unrelated CMS files remain inaccessible. Public asset
+requests recheck publication even when conditional cache headers are present.
+Inline article files require service-written provenance in addition to their
+Markdown reference; see `docs/deployment.md` for the one-time review of legacy
+inline images without provenance. Merely writing another file's ID into a draft
+does not grant access to it.
+The proxy accepts only
 the named presets in `config/directus-asset-presets.json`: `album-cover`,
 `album-thumb`, `album-thumb-sm`, `content-card`, `content-hero`,
 `site-background`, and `site-background-thumb`, requested with `?key=...`.

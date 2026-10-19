@@ -1,18 +1,30 @@
 import {
-  assetUrl,
+  assetUrl as publicAssetUrl,
+  type AssetPreset,
+  type DirectusFileId,
+  type ImageDimensions,
+} from "./asset-url";
+import { sanitizeSourceFormat, type SourceFormat } from "../../../../shared/video-source-format.cjs";
+
+// Re-exported so existing importers keep one entry point for asset helpers.
+export {
+  albumThumbSrcSet,
   type AssetPreset,
   type DirectusFileId,
   type ImageDimensions,
 } from "./asset-url";
 
-// Re-exported so existing importers keep one entry point for asset helpers.
-export {
-  albumThumbSrcSet,
-  assetUrl,
-  type AssetPreset,
-  type DirectusFileId,
-  type ImageDimensions,
-} from "./asset-url";
+// Explicit site-preview mode already renders draft records. Keep its image access
+// scoped to referenced content through a separate server route, never a client credential.
+export function previewAssetUrl(src: string) {
+  return process.env.DIRECTUS_SHOW_DRAFTS === "true" && /^\/api\/assets\/[a-zA-Z0-9-]+(?:\?key=[a-zA-Z0-9-]+)?$/.test(src)
+    ? src.replace("/api/assets/", "/internal/preview/assets/") : src;
+}
+
+export function assetUrl(fileId: DirectusFileId, preset?: AssetPreset) {
+  const src = publicAssetUrl(fileId, preset);
+  return src ? previewAssetUrl(src) : null;
+}
 
 export type Post = {
   id: number;
@@ -30,6 +42,7 @@ export type Post = {
 
 // Public playback projection; raw probe/verification documents stay in the CMS.
 export type VideoMaster = {
+  source_format?: SourceFormat | null;
   id: number;
   project_id: number;
   label: string;
@@ -156,7 +169,7 @@ const VIDEO_MASTER_FIELDS = [
   "status", "processing_mode", "is_derivative", "derived_from_master_id", "display_gamut",
   "color_primaries", "color_transfer", "matrix_coefficients", "color_range", "pixel_format",
   "chroma_location", "hls_video_range", "verification_status", "verified_at",
-  "conversion_intent", "uploaded_at",
+  "conversion_intent", "uploaded_at", "source_format",
 ] as const satisfies readonly (keyof VideoMaster)[];
 const VIDEO_DETAIL_FIELDS =
   "id,title,slug,description,cover_image,category,tags,published,sort_order,created_at,updated_at," +
@@ -238,6 +251,21 @@ async function getToken() {
   }
 
   return pendingToken;
+}
+
+/** No Data Cache here: preview authorization and bytes must observe the current CMS state. */
+export async function fetchDirectusPreview(pathname: string, retried = false): Promise<Response> {
+  const token = await getToken();
+  const response = await fetch(`${directusUrl}${pathname}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    cache: "no-store", redirect: "error", signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status === 401 && token && !retried) {
+    await response.body?.cancel();
+    if (cachedToken === token) cachedToken = null;
+    return fetchDirectusPreview(pathname, true);
+  }
+  return response;
 }
 
 async function directusFetch<T>(
@@ -399,7 +427,13 @@ export async function getVideoProject(slug: string) {
     ["videos:list", `videos:slug:${slug}`],
   );
   const project = response.data[0] ?? null;
-  return project ? sortMasters(project) : null;
+  if (!project) return null;
+  // Serialize only the public projection, even if a CMS adapter returns extra
+  // properties. The player never receives raw probes or local archive paths.
+  return sortMasters({ ...project, masters: project.masters?.map(master => ({
+    ...Object.fromEntries(VIDEO_MASTER_FIELDS.map(field => [field, master[field]])) as VideoMaster,
+    source_format: sanitizeSourceFormat(master.source_format)
+  })) });
 }
 
 export function filterPublishedAlbums(albums: Album[]) {

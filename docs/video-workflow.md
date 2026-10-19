@@ -87,6 +87,26 @@ When an overwrite changes the source hash, the previous automatic SDR is quarant
 
 ## Verification contracts
 
+The upload result displays the source master separately from the generated
+playback version. The playback page omits this comparison, and Playback Info
+shows stream technical details and device capabilities without source provenance.
+`source_format` is a bounded public identification
+record; it never contains raw probes, archive paths or XML. The player continues
+to make capability/fallback decisions from output codec, range and `type`, not
+from the original IMF or its Dolby metadata declarations. Declared/unlinked
+Dolby metadata is explicitly unvalidated, and conversion-use information is
+separate from whether the output contains RPU. Upload source information without
+evidence is marked as unrecorded; see `upload-api.md` for schema/backfill rollout.
+
+RGB/PQ IMF folders are an explicit archive-to-delivery exception to copy/remux.
+The uploader recognizes CPL/ASSETMAP, resolves image/audio UUIDs and reads full
+range, primaries, PQ, display window, edit points and HDR static metadata. It
+converts supported single-segment compositions to verified HDR10 HEVC/AAC HLS,
+with a separate source/converted/output report and immutable source package.
+The upload form and result identify this as HDR10; independent Dolby metadata
+is retained only in the archive. Automatic SDR uses the converted HDR10 with
+audio. See `upload-api.md` for supported structures, dependencies and limits.
+
 Copy/remux compares dimensions, codec, pixel format, bit depth, primaries, transfer,
 matrix, range, chroma location and static HDR metadata values. Dolby verification
 requires a supported embedded configuration, decoded frame metadata and actual
