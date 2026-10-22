@@ -6,12 +6,15 @@ import { SLUG_MAX_LENGTH, SLUG_PATTERN, sanitizeSlugInput, slugify, slugifyFileN
 import { VideoProjectPicker, type UploadProject } from "./VideoProjectPicker";
 import { VideoFormatInfo } from "./VideoFormatInfo";
 import type { SourceFormat } from "@/lib/video-format";
+import { matchUploadFiles, rememberedVideoUpload, rememberVideoUpload, transferVideoUpload,
+  uploadDelay, uploadManifest, uploadRequest, type UploadProgress, type VideoUploadSession } from "@/lib/video-upload";
 
-type UploadState = "idle" | "uploading" | "success" | "error";
+type UploadState = "idle" | "uploading" | "paused" | "queued" | "processing" | "success" | "error";
 type SourceKind = "embedded" | "master_package" | "hls_package";
 
 type UploadResponse = {
   status: string;
+  processingInterrupted?: boolean;
   sourceFormat?: SourceFormat | null;
   master?: { type: string };
   hlsUrl?: string;
@@ -359,7 +362,14 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
   const [selectedProject, setSelectedProject] = useState<UploadProject | null>(null);
   const [pairedSdr, setPairedSdr] = useState(false);
   const [sdrVideo, setSdrVideo] = useState<File | null>(null);
-  const requestRef = useRef<XMLHttpRequest | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
+  const sourcesRef = useRef<File[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [session, setSession] = useState<VideoUploadSession<UploadResponse> | null>(null);
+  const [resumeFiles, setResumeFiles] = useState<File[]>([]);
+  const [transfer, setTransfer] = useState<UploadProgress | null>(null);
+  const [storageWarning, setStorageWarning] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [title, setTitle] = useState("");
   const [slug, setSlug] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
@@ -401,10 +411,151 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
   useEffect(() => {
     // File selections cannot be restored after navigation; warn before losing a queued upload.
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
-    if (state === "success" || !(video || sdrVideo || masterPackageFiles.length)) return;
+    if (["success", "queued", "processing"].includes(state) || !(video || sdrVideo || masterPackageFiles.length)) return;
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [video, sdrVideo, masterPackageFiles.length, state]);
+
+  useEffect(() => {
+    setSessionId(rememberedVideoUpload());
+    // Keep SSR inputs inert until React owns changes and the recovery bookmark has loaded.
+    setHydrated(true);
+    return () => { requestRef.current?.abort(); };
+  }, []);
+
+  const copy = lang === "zh" ? {
+    recover: "恢复上传 / 刷新状态", saved: "有可恢复的视频上传。输入上传令牌后读取进度。",
+    pause: "暂停上传", resume: "继续上传", paused: "上传已暂停，已确认的数据保留。",
+    select: "重新选择原文件", folder: "重新选择原文件夹", selected: "已选择待核对文件",
+    reselect: "请选择原来的所有文件（含配对母版和封面），再继续上传。已上传部分会核对后跳过。",
+    queued: "上传已完成，等待服务器处理。可以离开页面后回来查询。",
+    processing: "上传已完成，正在校验、打包及处理视频。可以稍后回来查询。",
+    interrupted: "主母版已保存，但后续处理被中断。请先检查已有母版，需要时为此项目补充 SDR。",
+    uncertain: "发布过程被中断，结果待确认。请检查项目中已有的母版，避免重复上传。",
+    verifying: "正在核对已上传数据…", retrying: "连接暂时中断，正在重试…", uploading: "正在上传…",
+    forget: "移除此设备的恢复记录", forgetNote: "仅移除本机记录，服务器上的任务仍会继续；未完成文件将在保留期后清理。",
+    cancel: "取消此上传", canceled: "上传已取消。", storage: "浏览器无法保存恢复记录，请保留此任务 ID：",
+    expires: "恢复记录至少保留至", confirmed: "已确认", speed: "速度", remaining: "预计剩余", minutes: "分钟",
+    error: "连接失败。已确认的数据保留，请检查网络或令牌后恢复。", title: "上传任务",
+  } : {
+    recover: "Recover upload / refresh status", saved: "A video upload can be recovered. Enter your upload token to check it.",
+    pause: "Pause upload", resume: "Resume upload", paused: "Upload paused. Confirmed data is retained.",
+    select: "Reselect original files", folder: "Reselect original folder", selected: "Files selected for verification",
+    reselect: "Reselect all original files, including paired masters and the cover. Confirmed bytes will be verified and skipped.",
+    queued: "Upload received. Waiting for processing. You can return later to check it.",
+    processing: "Upload received. Verifying and preparing the video. You can return later to check it.",
+    interrupted: "The primary master was saved, but later processing was interrupted. Check existing masters before adding SDR.",
+    uncertain: "Publication was interrupted and its result needs checking. Check existing masters before another upload.",
+    verifying: "Verifying confirmed data…", retrying: "Connection interrupted. Retrying…", uploading: "Uploading…",
+    forget: "Remove recovery record from this device", forgetNote: "This only removes the local record. Server jobs continue; unfinished files expire after the retention period.",
+    cancel: "Cancel this upload", canceled: "Upload canceled.", storage: "The browser could not save recovery information. Keep this task ID:",
+    expires: "Recovery available at least until", confirmed: "Confirmed", speed: "Speed", remaining: "Estimated remaining", minutes: "min",
+    error: "Connection failed. Confirmed data is retained; check your network or token, then recover.", title: "Upload task",
+  };
+  const busy = ["uploading", "queued", "processing"].includes(state);
+
+  function successMessage(payload: UploadResponse | null) {
+    return payload?.processingInterrupted ? copy.interrupted
+      : payload?.companionSdr?.status === "ready" ? t.pairedComplete
+      : payload?.companionSdr?.status === "failed" ? t.pairedPartial
+      : payload?.sdrDerivative?.status === "ready" ? t.dolbyComplete
+      : payload?.sdrDerivative?.status === "failed" ? t.dolbyPartial : t.uploadComplete;
+  }
+  // Derive completed and active phase copy from the current locale, even during a language switch.
+  const statusMessage = state === "success" ? successMessage(result)
+    : state === "queued" || state === "processing" ? copy[state]
+    : state === "uploading" && transfer ? copy[transfer.activity] : message;
+
+  function acceptSession(current: VideoUploadSession<UploadResponse>) {
+    setSession(current);
+    const total = current.files.reduce((sum, file) => sum + file.size, 0);
+    setProgress(total ? Math.floor(current.files.reduce((sum, file) => sum + file.offset, 0) / total * 100) : 0);
+    if (current.state === "completed") {
+      const payload = current.result;
+      setState("success"); setResult(payload); rememberVideoUpload(null);
+      setMessage(successMessage(payload));
+    } else if (current.state === "failed" || current.state === "interrupted") {
+      setState("error"); setResult(current.result);
+      setMessage(current.state === "interrupted" ? copy.uncertain : current.error || copy.error);
+    } else if (current.state === "canceled") { setState("paused"); setMessage(copy.canceled); }
+    else if (current.state === "receiving") { setState("paused"); setMessage(copy.reselect); }
+    else { setState(current.state); setMessage(copy[current.state]); }
+  }
+
+  async function runUpload(form?: FormData, resume = false) {
+    if (requestRef.current || !token.trim()) return;
+    const controller = new AbortController(); requestRef.current = controller;
+    const credential = token.trim();
+    setState("uploading"); setMessage(copy.verifying);
+    try {
+      let current: VideoUploadSession<UploadResponse>;
+      if (form) {
+        const manifest = await uploadManifest(form, controller.signal);
+        sourcesRef.current = manifest.sources;
+        const id = crypto.randomUUID();
+        setSessionId(id); setStorageWarning(!rememberVideoUpload(id));
+        // A stable client ID makes a lost creation response recoverable without duplicate jobs.
+        for (let attempt = 0; ; attempt++) {
+          try { current = await uploadRequest(id, credential, controller.signal, "PUT", "", manifest.body); break; }
+          catch (error) {
+            const status = (error as { status?: number }).status;
+            if (controller.signal.aborted || attempt >= 4 || (status && ![408, 409, 429, 500, 502, 503, 504].includes(status))) throw error;
+            setMessage(copy.retrying);
+            await uploadDelay(Math.min(16_000, 1000 * 2 ** attempt), controller.signal);
+          }
+        }
+      } else {
+        if (!sessionId) return;
+        current = await uploadRequest(sessionId, credential, controller.signal);
+      }
+      acceptSession(current);
+      if (current.state === "receiving") {
+        if (!form && !resume) return;
+        if (!sourcesRef.current.length) sourcesRef.current = await matchUploadFiles(current.files, resumeFiles, controller.signal);
+        setState("uploading");
+        current = await transferVideoUpload(current, sourcesRef.current, credential, controller.signal, value => {
+          setTransfer(value); setProgress(Math.floor(value.confirmed / value.total * 100)); setMessage(copy[value.activity]);
+        });
+        acceptSession(current);
+      }
+      let failures = 0;
+      while (["queued", "processing"].includes(current.state)) {
+        await uploadDelay(document.hidden ? 15_000 : 3000, controller.signal);
+        try {
+          current = await uploadRequest(current.id, credential, controller.signal);
+          failures = 0; acceptSession(current);
+        } catch (error) {
+          if (controller.signal.aborted || ++failures >= 5 || (error as { status?: number }).status === 401) throw error;
+          setMessage(copy.retrying);
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted) { setState("paused"); setMessage(copy.paused); }
+      else {
+        // A mismatching selection must be replaceable on the next resume attempt.
+        if ([400, 422].includes((error as { status?: number }).status || 0)) {
+          sourcesRef.current = []; setResumeFiles([]);
+        }
+        setState("error");
+        const detail = error instanceof Error ? error.message : "";
+        setMessage([400, 422].includes((error as { status?: number }).status || 0) ? detail : `${copy.error} ${detail}`);
+      }
+    } finally { if (requestRef.current === controller) requestRef.current = null; }
+  }
+
+  async function cancelUpload() {
+    if (!sessionId || requestRef.current) return;
+    const controller = new AbortController(); requestRef.current = controller;
+    try { acceptSession(await uploadRequest(sessionId, token.trim(), controller.signal, "POST", "/cancel")); }
+    catch (error) { setMessage(error instanceof Error ? error.message : copy.error); }
+    finally { requestRef.current = null; }
+  }
+
+  function forgetUpload() {
+    // This removes a device bookmark only; it must not delete sources or cancel a remote job.
+    rememberVideoUpload(null); setSessionId(null); setSession(null); sourcesRef.current = [];
+    setResumeFiles([]); setTransfer(null); setState("idle"); setMessage(""); setResult(null); setProgress(0);
+  }
 
   const selectedSourceMode =
     sourceKind !== "embedded"
@@ -429,9 +580,9 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
           !sourceError &&
           (!appendProject || selectedProject) &&
           (!pairedSdr || !isHdr || sdrVideo) &&
-          state !== "uploading" && state !== "success"
+          !sessionId && state !== "uploading" && state !== "success"
       ),
-    [slug, slugInvalid, sourceReady, state, title, token, appendProject, selectedProject, pairedSdr, isHdr, sdrVideo, sourceError]
+    [sessionId, slug, slugInvalid, sourceReady, state, title, token, appendProject, selectedProject, pairedSdr, isHdr, sdrVideo, sourceError]
   );
 
   const dropTexts = {
@@ -524,54 +675,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
     form.append("isDefault", String(isDefault));
     form.append("overwrite", String(overwrite));
 
-    const request = new XMLHttpRequest();
-    requestRef.current = request;
-    request.open("POST", "/api/uploads/videos");
-    request.setRequestHeader("Authorization", `Bearer ${token.trim()}`);
-
-    request.upload.onprogress = (uploadEvent) => {
-      if (!uploadEvent.lengthComputable) return;
-      setProgress(Math.round((uploadEvent.loaded / uploadEvent.total) * 100));
-    };
-    request.upload.onload = () => {
-      if (isHdr || embeddedPair) setMessage(t.processingDolby);
-    };
-
-    request.onload = () => {
-      requestRef.current = null;
-      let payload: UploadResponse | null = null;
-      try {
-        payload = request.responseText
-          ? JSON.parse(request.responseText)
-          : null;
-      } catch {
-        payload = null;
-      }
-
-      if (request.status >= 200 && request.status < 300) {
-        setState("success");
-        setProgress(100);
-        setResult(payload);
-        setMessage(payload?.companionSdr?.status === "ready" ? t.pairedComplete
-          : payload?.companionSdr?.status === "failed" ? t.pairedPartial
-          : payload?.sdrDerivative?.status === "ready" ? t.dolbyComplete
-          : payload?.sdrDerivative?.status === "failed" ? t.dolbyPartial : t.uploadComplete);
-        return;
-      }
-
-      setState("error");
-      // Unsupported conversions still return useful source identification.
-      setResult(payload);
-      setMessage(payload?.error || t.httpError(request.status));
-    };
-
-    request.onerror = () => {
-      requestRef.current = null;
-      setState("error");
-      setMessage(t.networkError);
-    };
-
-    request.send(form);
+    void runUpload(form);
   }
 
   const projectHref = result?.project?.slug
@@ -586,7 +690,6 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
 
   return (
     <form className="upload-form" noValidate onSubmit={submit}>
-      <fieldset className="upload-form upload-fields" disabled={state === "uploading"}>
       {/* ── Access ── */}
       <section className="upload-panel">
         <h2>{t.access}</h2>
@@ -598,16 +701,54 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
               value={token}
               onChange={(event) => setToken(event.target.value)}
               autoComplete="off"
+              disabled={!hydrated}
               placeholder="UPLOAD_API_TOKEN"
               required
             />
           </label>
-          <button type="button" aria-pressed={showToken} onClick={() => setShowToken(value => !value)}>
+          <button className="upload-token-toggle" type="button" disabled={!hydrated}
+            aria-pressed={showToken} onClick={() => setShowToken(value => !value)}>
             {lang === "zh" ? (showToken ? "隐藏令牌" : "显示令牌") : (showToken ? "Hide token" : "Show token")}
           </button>
         </div>
       </section>
 
+      {sessionId ? <section className="upload-panel upload-recovery" aria-labelledby="upload-task-heading">
+        <h2 id="upload-task-heading">{copy.title}</h2>
+        <p className="field-note">{session ? session.fields.title || session.fields.projectId : copy.saved}</p>
+        <code>{sessionId}</code>
+        {storageWarning ? <p role="alert">{copy.storage} {sessionId}</p> : null}
+        {session ? <>
+          <p className="field-note">{copy.expires}: {new Date(session.expiresAt).toLocaleString(lang === "zh" ? "zh-CN" : "en-US")}</p>
+          <ul className="upload-file-status">{session.files.map((file, index) => <li key={index}>
+            <span>{file.name}</span><span>{Math.floor(file.offset / file.size * 100)}%</span>
+          </li>)}</ul>
+        </> : null}
+        <div className="upload-progress" role="progressbar" aria-label={copy.confirmed}
+          aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <span style={{ width: `${progress}%` }} />
+        </div>
+        <p className="field-note upload-transfer-details">{copy.confirmed}: {progress}%
+          {state === "uploading" && transfer?.bytesPerSecond ? <> · {copy.speed}: {(transfer.bytesPerSecond / 1024).toFixed(0)} KiB/s
+            · {copy.remaining}: {Math.ceil((transfer.total - transfer.confirmed) / transfer.bytesPerSecond / 60)} {copy.minutes}</> : null}
+        </p>
+        {session?.state === "receiving" && !busy && !sourcesRef.current.length ? <>
+          <p className="field-note">{copy.reselect}</p>
+          <label>{copy.select}<input type="file" multiple onChange={event => setResumeFiles(files => [...files, ...Array.from(event.target.files || [])])} /></label>
+          <label>{copy.folder}<input type="file" multiple {...({ webkitdirectory: "", directory: "" } as DirectoryInputProps)}
+            onChange={event => setResumeFiles(files => [...files, ...Array.from(event.target.files || [])])} /></label>
+          <p className="field-note">{copy.selected}: {resumeFiles.length}</p>
+        </> : null}
+        <div className="upload-actions">
+          {state === "uploading" ? <button type="button" onClick={() => requestRef.current?.abort()}>{copy.pause}</button> : null}
+          {!busy && state !== "success" ? <button type="button" disabled={!token.trim()}
+            onClick={() => void runUpload(undefined, session?.state === "receiving")}>{session?.state === "receiving" ? copy.resume : copy.recover}</button> : null}
+          {!busy && session?.state === "receiving" ? <button className="upload-secondary" type="button" disabled={!token.trim()} onClick={() => void cancelUpload()}>{copy.cancel}</button> : null}
+          {!busy ? <button className="upload-secondary" type="button" onClick={forgetUpload}>{copy.forget}</button> : null}
+        </div>
+        {!busy ? <p className="field-note">{copy.forgetNote}</p> : null}
+      </section> : null}
+      <fieldset className="upload-form upload-fields" disabled={!hydrated || busy || Boolean(sessionId)} hidden={Boolean(sessionId)}>
       <section className="upload-panel">
         <h2>{t.target}</h2>
         <div className="upload-checks">
@@ -929,15 +1070,15 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
       </fieldset>
 
       {/* ── Status / Result ── */}
-      {message ? (
+      {statusMessage ? (
         <div
           className={
-            state === "error" || result?.sdrDerivative?.status === "failed" || result?.companionSdr?.status === "failed"
+            state === "error" || result?.processingInterrupted || result?.sdrDerivative?.status === "failed" || result?.companionSdr?.status === "failed"
               ? "upload-status error" : "upload-status"
           }
           role="status"
         >
-          <p>{message}</p>
+          <p>{statusMessage}</p>
           {result?.sourceFormat ? <VideoFormatInfo source={result.sourceFormat} lang={lang}
             playback={state === "success" ? ({ hdr10: "HDR10", sdr: "SDR", hlg: "HLG", dolby_vision: "Dolby Vision" } as Record<string, string>)[result.master?.type || ""] || result.colorContract?.hlsVideoRange : null} /> : null}
           {/* Name the actual delivery format even when the uploaded archive contains Dolby metadata. */}

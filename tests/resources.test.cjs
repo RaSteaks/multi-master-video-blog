@@ -77,6 +77,8 @@ test("video and film HTTP entries share admission and queued disconnects never s
   let filmCalls = 0;
   const api = await fixture(["httpError", "withMediaRequest", "handleUpload", "handleAlbumRoute"], {
     mediaProcessingSlots: slots, requireUploadAuth() {}, requireAlbumAuth() {}, sendJson() {},
+    // Multipart reception now precedes shared processing admission.
+    parseMultipart: async () => ({}),
     handleUploadNow: () => new Promise(resolve => { finish = resolve; started(); }),
     handleAlbumRouteNow: async () => { filmCalls++; }
   });

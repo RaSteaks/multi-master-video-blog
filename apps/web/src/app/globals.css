@@ -3773,6 +3773,52 @@ html.vt-panel::view-transition-new(root) {
   gap: 10px;
 }
 
+/* Recovery uses the existing panel tokens; long package paths must fit narrow screens. */
+.upload-recovery {
+  min-width: 0;
+}
+
+.upload-recovery code,
+.upload-file-status span:first-child {
+  overflow-wrap: anywhere;
+}
+
+.upload-file-status {
+  max-height: 240px;
+  overflow: auto;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.upload-file-status li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  padding: 6px 0;
+  font-size: 0.85rem;
+}
+
+.upload-transfer-details {
+  min-height: 1.5em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Keep the recovery credential toggle keyboard/touch accessible outside the disabled form. */
+.upload-token-toggle {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-overlay);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.upload-fields[hidden] {
+  display: none;
+}
+
 .upload-actions button {
   min-height: 44px;
   border: 1px solid var(--accent);
@@ -3796,6 +3842,14 @@ html.vt-panel::view-transition-new(root) {
 .upload-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+/* Resume remains primary; cancel and local bookmark removal use neutral emphasis. */
+.upload-actions .upload-secondary {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
 }
 
 .upload-progress {

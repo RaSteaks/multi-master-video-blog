@@ -18,6 +18,7 @@
     "api:status": "node scripts/service-control.cjs api status",
     "api:health": "node scripts/service-control.cjs api health",
     "test:api": "npm --workspace @multi-master-video-blog/api run test",
+    "test:video-upload": "node --test tests/video-upload.test.cjs",
     "test:security": "node --test tests/security.test.cjs",
     "test:album-api": "node scripts/test-album-api.cjs",
     "test:film-scan-cleanup": "node scripts/test-film-scan-cleanup.cjs",

@@ -1,4 +1,5 @@
 const fsp = require("node:fs/promises");
+const { constants } = require("node:fs");
 const { Readable, Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 
@@ -52,4 +53,24 @@ async function downloadToFile(response, targetPath, maxBytes) {
   }
 }
 
-module.exports = { mediaThreadArgs, downloadToFile };
+// Docker can place the private spool and media on separate mounts. Preserve bytes
+// and remove the staging link only after a complete copy has reached the destination.
+async function moveUploadFile(source, destination) {
+  try { await fsp.rename(source, destination); }
+  catch (error) {
+    if (error.code !== "EXDEV") throw error;
+    let copied = false;
+    try {
+      await fsp.copyFile(source, destination, constants.COPYFILE_EXCL);
+      copied = true;
+      const output = await fsp.open(destination, "r+");
+      try { await output.sync(); } finally { await output.close(); }
+      await fsp.unlink(source);
+    } catch (copyError) {
+      if (copied) await fsp.rm(destination, { force: true }).catch(() => {});
+      throw copyError;
+    }
+  }
+}
+
+module.exports = { mediaThreadArgs, downloadToFile, moveUploadFile };

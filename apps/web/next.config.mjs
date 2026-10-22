@@ -61,7 +61,10 @@ const nextConfig = {
   // Keep production builds reliable on the same low-memory hosts used for deployment.
   experimental: {
     cpus: resources.buildWorkers,
-    memoryBasedWorkersCount: !resources.enabled
+    memoryBasedWorkersCount: !resources.enabled,
+    // Development/direct-Next uploads must allow a 1 MiB chunk on very slow links.
+    // Production Nginx routes /api directly; this matches the browser's chunk deadline.
+    proxyTimeout: 300_000
   },
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   async rewrites() {

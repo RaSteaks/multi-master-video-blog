@@ -9,7 +9,7 @@ const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const { loadEnvironment, resolveResourceProfile } = require("../../../config/resource-profile.cjs");
-const { mediaThreadArgs, downloadToFile } = require("./resource-io.cjs");
+const { mediaThreadArgs, downloadToFile, moveUploadFile } = require("./resource-io.cjs");
 const { configureFilmResources } = require("./film-scan-utils.cjs");
 const zlib = require("node:zlib");
 const { createMultipartParser } = require("./multipart-utils.cjs");
@@ -56,6 +56,7 @@ const {
 } = require("./film-scan-utils.cjs");
 const { createDirectusTokenCache } = require("./directus-auth.cjs");
 const { createTaskLimiter } = require("./task-limiter.cjs");
+const { createVideoUploadStore } = require("./video-upload-store.cjs");
 const { createCachedProbe } = require("./cached-probe.cjs");
 const { canReadAsset } = require("./asset-access.cjs");
 const { filmScanPath, filmScanStoredPath, prepareFilmScanStorage,
@@ -533,6 +534,11 @@ async function parseMultipart(req) {
     let fileInfo = null;
     let uploadBytes = 0;
     let rejected = false;
+    const interrupted = () => rejectOnce(httpError(400, "Video upload was interrupted."));
+    const removeRequestListeners = () => {
+      req.removeListener("aborted", interrupted);
+      req.removeListener("error", rejectOnce);
+    };
 
     const files = {};
     const busboy = createMultipartParser({
@@ -553,6 +559,8 @@ async function parseMultipart(req) {
       }
 
       rejected = true;
+      // An aborted IncomingMessage can emit its error after "aborted"; keep that listener until close.
+      req.removeListener("aborted", interrupted);
       req.unpipe(busboy);
       // Busboy may still parse the current chunk. Keep its error listener and
       // drain rejected parts; wait for file handles to close before deleting on Windows.
@@ -664,6 +672,7 @@ async function parseMultipart(req) {
 
         if (files.cover) await assertArticleImageContents(files.cover);
 
+        removeRequestListeners();
         resolve({
           fields,
           files,
@@ -680,6 +689,10 @@ async function parseMultipart(req) {
       }
     });
 
+    // Disconnects must close file handles and remove legacy multipart temporary files.
+    req.once("aborted", interrupted);
+    req.once("error", rejectOnce);
+    req.once("close", removeRequestListeners);
     req.pipe(busboy);
   });
 }
@@ -1827,7 +1840,7 @@ async function moveSourceFile(file, metadata) {
   assertInside(MEDIA_ROOT, sourcePath);
 
   await fsp.mkdir(sourceDir, { recursive: true });
-  await fsp.rename(file.tempPath, sourcePath);
+  await moveUploadFile(file.tempPath, sourcePath);
 
   return sourcePath;
 }
@@ -1856,7 +1869,7 @@ async function moveMasterPackageFiles(files, metadata) {
     const targetPath = path.join(packageDir, relative);
     assertInside(packageDir, targetPath);
     await fsp.mkdir(path.dirname(targetPath), { recursive: true });
-    await fsp.rename(file.tempPath, targetPath);
+    await moveUploadFile(file.tempPath, targetPath);
     movedFiles.push({
       ...file,
       filename: sourceImf ? file.originalName || file.filename : file.filename,
@@ -3493,6 +3506,8 @@ async function directusRequest(pathname, token, options = {}) {
   try {
     response = await fetch(`${DIRECTUS_URL}${pathname}`, {
       ...requestOptions,
+      // CMS calls have a bounded wait; transport errors retain the existing uncertain-write handling.
+      signal: requestOptions.signal || AbortSignal.timeout(30_000),
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -8251,27 +8266,44 @@ async function prepareImfPlayback(imf, metadata, sourceProbe, outputDir) {
 }
 
 async function handleUpload(req, res) {
-  if (!resourceLimits.enabled) return handleUploadNow(req, res);
+  let parsed;
   try {
     requireUploadAuth(req);
-    await withMediaRequest(req, res, () => handleUploadNow(req, res));
+    // Receiving a slow upload must not occupy an FFmpeg/film-processing slot.
+    parsed = await parseMultipart(req);
+    if (resourceLimits.enabled) {
+      await withMediaRequest(req, res, () => handleUploadNow(req, res, { parsedInput: parsed }));
+    } else await handleUploadNow(req, res, { parsedInput: parsed });
   } catch (error) {
     sendJson(res, error.statusCode || 500, { status: "error", error: error.message });
+  } finally {
+    if (parsed?.tempDir) await fsp.rm(parsed.tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-async function handleUploadNow(req, res) {
+async function handleUploadNow(req, res, { parsedInput, background = false, checkpoint = async () => {} } = {}) {
   let parsed = null;
   let releaseProcessingSlot;
   let uploadSourceFormat = null;
 
   try {
-    requireUploadAuth(req);
-    parsed = await parseMultipart(req);
+    if (!background) requireUploadAuth(req);
+    parsed = parsedInput || await parseMultipart(req);
+    if (background) {
+      // Match the legacy parser's normalized disk names while retaining original package references.
+      for (const file of [...(parsed.files.videos || []), ...(parsed.files.masterPackage || []),
+        parsed.files.sdrVideo, parsed.files.cover].filter(Boolean)) {
+        file.filename = file.field === "masterPackage" ? safeRelativePath(file.originalName) : safeFileName(file.originalName);
+      }
+    }
+    if (background && parsed.files.cover) {
+      validateArticleImageMetadata({ filename: parsed.files.cover.originalName, mimeType: parsed.files.cover.mimeType });
+      await assertArticleImageContents(parsed.files.cover);
+    }
     // Low-resource admission already owns the shared slot.
-    if (!resourceLimits.enabled) releaseProcessingSlot = await videoProcessingSlots.acquire();
+    if (!resourceLimits.enabled && !background) releaseProcessingSlot = await videoProcessingSlots.acquire();
     // A caller that left while queued must not start a costly conversion.
-    if (res.destroyed) return;
+    if (!background && res.destroyed) return;
     const { metadata, project: existingProject } = await resolveVideoUploadProject(parsed.fields);
     await identifyPairedSources(parsed, metadata);
     if (metadata.sourceKind !== "master_package") validateProcessingPolicy(metadata);
@@ -8334,6 +8366,8 @@ async function handleUploadNow(req, res) {
       dolbySidecar,
       probe
     );
+    // Journal the publication boundary before non-idempotent CMS writes.
+    await checkpoint("publishing");
     const records = await createOrUpdateDirectusRecords(
       metadata,
       sourcePath,
@@ -8351,6 +8385,31 @@ async function handleUploadNow(req, res) {
         verification: finalized.verification
       }
     );
+
+    const response = {
+      status: "ok",
+      project: records.project,
+      master: records.master,
+      masters: [records.master],
+      companionSdr: null,
+      sdrDerivative: null,
+      sourceKind: metadata.sourceKind,
+      masterPackage: packageInfo
+        ? {
+            fileCount: packageInfo.files.length,
+            sourceFile: path.relative(packageInfo.packageDir, packageInfo.sourcePath).replace(/\\/g, "/"),
+            sidecarCount: packageInfo.sidecars.length
+          }
+        : null,
+      sourceUrl: mediaUrlFromPath(sourcePath),
+      hlsUrl: mediaUrlFromPath(finalized.playlistPath),
+      probe,
+      colorContract: finalized.outputContract,
+      sourceFormat: records.master.source_format,
+      verification: finalized.verification,
+      derivativeOf: metadata.isDerivative ? metadata.derivedFromMasterId : null
+    };
+    await checkpoint("derivatives", response);
 
     let companionSdr = null;
     if (companionInput) {
@@ -8378,37 +8437,21 @@ async function handleUploadNow(req, res) {
       }
     }
 
-    sendJson(res, 201, {
-      status: "ok",
-      project: records.project,
-      master: records.master,
-      masters: [records.master, ...(companionSdr?.status === "ready" ? [companionSdr.master] : []),
-        ...(sdrDerivative?.status === "ready" ? [sdrDerivative.master] : [])],
-      companionSdr,
-      sdrDerivative,
-      sourceKind: metadata.sourceKind,
-      masterPackage: packageInfo
-        ? {
-            fileCount: packageInfo.files.length,
-            sourceFile: path.relative(packageInfo.packageDir, packageInfo.sourcePath).replace(/\\/g, "/"),
-            sidecarCount: packageInfo.sidecars.length
-          }
-        : null,
-      sourceUrl: mediaUrlFromPath(sourcePath),
-      hlsUrl: mediaUrlFromPath(finalized.playlistPath),
-      probe,
-      colorContract: finalized.outputContract,
-      sourceFormat: records.master.source_format,
-      verification: finalized.verification,
-      derivativeOf: metadata.isDerivative ? metadata.derivedFromMasterId : null
-    });
+    response.companionSdr = companionSdr;
+    response.sdrDerivative = sdrDerivative;
+    response.masters.push(...(companionSdr?.status === "ready" ? [companionSdr.master] : []),
+      ...(sdrDerivative?.status === "ready" ? [sdrDerivative.master] : []));
+    if (!background) sendJson(res, 201, response);
+    return response;
   } catch (error) {
-    sendJson(res, error.statusCode || 500, {
+    const payload = {
       status: "error",
       error: error.message,
       sourceFormat: sanitizeSourceFormat(error.sourceFormat) || uploadSourceFormat,
       verificationErrors: error.verificationErrors || null
-    });
+    };
+    if (background) { error.uploadResult = payload; throw error; }
+    sendJson(res, error.statusCode || 500, payload);
   } finally {
     releaseProcessingSlot?.();
     if (parsed?.tempDir) {
@@ -8434,6 +8477,7 @@ async function handleHealth(res) {
       filmControllers: filmScanJobControllers.size,
       queue: mediaProcessingSlots.snapshot(),
       videoQueue: videoProcessingSlots.snapshot(),
+      videoUploads: videoUploads.snapshot(),
       filmQueue: { active: activeFilmScanJobId !== null, pending: filmScanQueue.length }
     },
     mediaRoot: MEDIA_ROOT,
@@ -8483,6 +8527,9 @@ async function handleHealth(res) {
 async function dispatchRequest(req, res) {
   let tracked = false;
   try {
+    // Bound idle body reads independently from the much longer total upload deadline.
+    req.setTimeout(120_000, () => req.destroy());
+    req.once("end", () => req.setTimeout(0));
     const pathname = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`).pathname;
     tracked = !["GET", "HEAD", "OPTIONS"].includes(req.method) && pathname !== "/maintenance";
     if (tracked) activeWriteRequests++;
@@ -8503,7 +8550,7 @@ async function handleRequest(req, res) {
       const body = await readJsonBody(req, 1024);
       if (typeof body.enabled !== "boolean") throw httpError(400, "enabled must be a boolean.");
       maintenanceMode = body.enabled;
-      if (!maintenanceMode) void drainFilmScanQueue();
+      if (!maintenanceMode) { void drainFilmScanQueue(); void videoUploads.drain(); }
       sendJson(res, 200, { status: "ok", enabled: maintenanceMode });
     } catch (error) { sendJson(res, error.statusCode || 500, { status: "error", error: error.message }); }
     return;
@@ -8526,6 +8573,26 @@ async function handleRequest(req, res) {
 
   if (["GET", "HEAD"].includes(req.method) && url.pathname.startsWith("/assets/")) {
     await handleAsset(req, url, res);
+    return;
+  }
+
+  if (url.pathname.startsWith("/uploads/video-sessions/")) {
+    requireUploadAuth(req);
+    res.setHeader("Cache-Control", "no-store");
+    const match = url.pathname.match(/^\/uploads\/video-sessions\/([^/]+)(?:\/(complete|cancel|files\/(\d+)))?$/);
+    if (!match) throw httpError(404, "Upload route not found.");
+    const [, id, action, fileIndex] = match;
+    if (req.method === "PUT" && !action) {
+      const body = await readJsonBody(req, 1024 * 1024);
+      // Reject malformed project metadata before receiving large file bodies.
+      if (!body.fields?.projectId) normalizeUpload(body.fields || {});
+      sendJson(res, 201, await videoUploads.create(id, body));
+    } else if (req.method === "GET" && !action) sendJson(res, 200, videoUploads.status(id));
+    else if (req.method === "GET" && fileIndex !== undefined) sendJson(res, 200, videoUploads.receipts(id, Number(fileIndex)));
+    else if (req.method === "PATCH" && fileIndex !== undefined) sendJson(res, 200, await videoUploads.append(id, Number(fileIndex), req));
+    else if (req.method === "POST" && action === "complete") sendJson(res, 202, await videoUploads.complete(id));
+    else if (req.method === "POST" && action === "cancel") sendJson(res, 200, await videoUploads.cancel(id));
+    else throw httpError(405, "Method not allowed.");
     return;
   }
 
@@ -8560,15 +8627,42 @@ async function handleRequest(req, res) {
   });
 }
 
-const server = http.createServer(dispatchRequest);
+const videoUploads = createVideoUploadStore({
+  root: path.resolve(env.VIDEO_UPLOAD_ROOT || path.join(MEDIA_ROOT, "..", ".private-media", "video-uploads")),
+  mediaRoot: MEDIA_ROOT, maxFileBytes: MAX_UPLOAD_BYTES, maxCoverBytes: MAX_ARTICLE_IMAGE_BYTES,
+  maxTotalBytes: positiveInteger(env.VIDEO_UPLOAD_MAX_BYTES, 8 * 1024 ** 3),
+  quotaBytes: positiveInteger(env.VIDEO_UPLOAD_QUOTA_BYTES, 20 * 1024 ** 3),
+  maxSessions: positiveInteger(env.VIDEO_UPLOAD_MAX_SESSIONS, 32),
+  ttlMs: positiveInteger(env.VIDEO_UPLOAD_TTL_HOURS, 168) * 3600_000,
+  canProcess: () => !maintenanceMode,
+  async processUpload(parsed, checkpoint) {
+    const limiter = resourceLimits.enabled ? mediaProcessingSlots : videoProcessingSlots;
+    // A bounded admission wait leaves the durable job queued instead of discarding its source.
+    const release = await limiter.acquire();
+    try {
+      if (maintenanceMode) throw httpError(503, "Server is in maintenance mode.");
+      activeWriteRequests++;
+      try {
+        await checkpoint("processing");
+        return await handleUploadNow(null, null, { parsedInput: parsed, background: true, checkpoint });
+      } finally { activeWriteRequests--; }
+    } finally { release(); }
+  }
+});
+const server = http.createServer({
+  // Covers legacy multipart clients; resumable browser requests are at most 1 MiB.
+  requestTimeout: positiveInteger(env.UPLOAD_REQUEST_TIMEOUT_MS, 24 * 3600_000),
+  headersTimeout: 60000, keepAliveTimeout: 65000
+}, dispatchRequest);
 // Migrate every legacy task, including completed/review tasks, before any public listener starts.
-prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT).then(() => {
+prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT).then(() => videoUploads.init()).then(() => {
   server.listen(PORT, HOST, () => {
     console.log(`Upload API listening on http://${HOST}:${PORT}`);
     void recoverFilmScanQueue();
+    void videoUploads.drain();
   });
 }).catch(error => {
-  console.error(`Private film-scan storage is not ready: ${error.message}`);
+  console.error(`Private media storage is not ready: ${error.message}`);
   process.exitCode = 1;
 });
 

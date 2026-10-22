@@ -7,7 +7,7 @@ const os = require("node:os");
 const vm = require("node:vm");
 const crypto = require("node:crypto");
 const { createRequire } = require("node:module");
-const { Readable, Writable } = require("node:stream");
+const { Readable, Writable, PassThrough } = require("node:stream");
 const { finished, pipeline } = require("node:stream/promises");
 const root = path.resolve(__dirname, "..");
 const apiSource = fs.readFileSync(path.join(root, "apps/api/src/server.cjs"), "utf8");
@@ -439,6 +439,25 @@ test("video cover parsing rejects active or forged files and preserves valid ima
   assert.deepEqual(await fsp.readFile(parsed.files.cover.tempPath), bytes);
 });
 
+test("legacy video disconnect handles the subsequent socket error and cleans its spool", async t => {
+  const dir = await temp(t);
+  const api = apiFixture(["parseMultipart", "safeFileName", "safeRelativePath", "assertInside", "httpError"], {
+    ROOT: dir, MAX_UPLOAD_BYTES: 1048576,
+    createMultipartParser: require("../apps/api/src/multipart-utils.cjs").createMultipartParser
+  });
+  const req = new PassThrough();
+  req.headers = { "content-type": "multipart/form-data; boundary=abort-fixture" };
+  const pending = api.parseMultipart(req);
+  const rejection = assert.rejects(pending, /interrupted/);
+  // Wait for the asynchronous directory creation to attach the real parser.
+  while (!req.listenerCount("aborted")) await new Promise(resolve => setImmediate(resolve));
+  req.write('--abort-fixture\r\nContent-Disposition: form-data; name="video"; filename="clip.mp4"\r\n\r\npartial');
+  req.emit("aborted");
+  req.destroy(new Error("socket reset"));
+  await rejection;
+  assert.deepEqual(await fsp.readdir(path.join(dir, "tmp")), []);
+});
+
 async function managerFixture(t, password) {
   const dir = await temp(t), filename = path.join(root, "scripts/manager-dashboard.cjs");
   const context = vm.createContext({ require: createRequire(filename), module: { exports: {} },
@@ -496,6 +515,8 @@ test("health requests share a short probe, cache failures and refresh once after
     activeWriteRequests: 0, filmScanJobControllers: new Map(), filmScanQueue: [], activeFilmScanJobId: null,
     mediaProcessingSlots: { snapshot: () => ({ active: 0, pending: 0 }) },
     videoProcessingSlots: { snapshot: () => ({ active: 0, pending: 0 }) },
+    // Health reports durable uploads independently from the FFmpeg admission queue.
+    videoUploads: { snapshot: () => ({ sessions: 0, active: false, queued: 0 }) },
     createCachedProbe: probe => createCachedProbe(probe, { now: () => clock }),
     runProcess: async (command, args, options) => { calls++; assert.equal(options.timeoutMs, 5000); await gate; if (!succeed) throw new Error("unavailable"); },
     sendJson: (res, code, payload) => { res.payload = payload; }

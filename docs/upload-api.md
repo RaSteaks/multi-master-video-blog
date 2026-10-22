@@ -18,6 +18,100 @@ Nginx should expose the API through:
 
 Do not expose `8060` directly to the public internet.
 
+## Resumable browser uploads
+
+The video form uses a durable upload session. Each file is transferred sequentially
+in 1 MiB chunks (the final chunk may be shorter); originals are not recompressed.
+The API writes chunks to a private disk spool and acknowledges them only after
+the bytes and updated offset journal are saved. Receiving uploads does not occupy
+an FFmpeg processing slot, including under low-resource profiles.
+
+All routes below require the existing upload token and return `Cache-Control:
+no-store`. This is the project's offset/checksum protocol, not a tus endpoint.
+Paths below are relative to the public `/api` prefix:
+
+| Method and path | Contract |
+| --- | --- |
+| `PUT /uploads/video-sessions/:id` | Create with a client-generated UUID v4 and JSON `{fields, files}`. Reusing the ID with identical metadata returns the existing session; different metadata returns 409. |
+| `GET /uploads/video-sessions/:id` | Read state, phase, file offsets, retention time and final/partial result. |
+| `GET /uploads/video-sessions/:id/files/:index` | Read the confirmed offset and ordered SHA-256 chunk receipts for re-selection verification. |
+| `PATCH /uploads/video-sessions/:id/files/:index` | Send `application/octet-stream`, decimal `Upload-Offset`, and hex SHA-256 `Upload-Checksum`. An offset conflict returns 409; invalid length/checksum never advances the offset. |
+| `POST /uploads/video-sessions/:id/complete` | Validate that every file is complete and durably enqueue once. Return 202 with the same task on repeated calls, including while processing and after completion. |
+| `POST /uploads/video-sessions/:id/cancel` | Cancel a receiving/available queued session; a worker that already owns it returns 409. Retain staged files until their expiration. |
+
+`fields` contains the same string metadata as the legacy multipart form.
+`files` is an ordered array of `{field, name, size, type, fingerprint}` entries,
+where `field` is `video`, `sdrVideo`, `cover`, or `masterPackage`. Folder names
+retain their original relative paths for IMF/HLS resolution; storage filenames
+are server-owned. The browser fingerprint hashes the decimal size followed by
+the first and last 64 KiB, but is only a selection hint: on resume the client
+also checks **every already-confirmed chunk** against the reselected file.
+The existing server video/color/package verification still runs before publication.
+
+The browser retries transient network/408/409/429/5xx failures with bounded
+exponential backoff and reconciles offsets before resending. It supports pause,
+resume and reload recovery. Only the session ID is stored locally, never the
+token or video bytes. After reload, enter the token and reselect the original
+files when reception is incomplete. If browser storage is unavailable, keep the
+displayed task ID for authenticated API lookup. Transfer progress represents
+server-confirmed bytes; waiting and processing are separate named states.
+The form polls queued/running jobs every 3 seconds, or 15 seconds while hidden.
+
+Sessions transition through `receiving → queued → processing → completed`.
+Processing uses the existing bounded media limiter and returns its original
+HDR/SDR success or partial-success payload. A full processing queue retains the
+uploaded bytes and retries admission. Closing the browser does not cancel a
+queued or running job.
+
+After an API restart, receiving sessions keep their confirmed offsets and queued
+jobs resume. Processing interrupted **before CMS publication** can restart safely.
+The API journals the publication boundary before making CMS writes: a crash or
+uncertain failure during those writes becomes `interrupted`, requiring inspection
+of the project's existing masters instead of blindly publishing twice. If the
+primary master was checkpointed before derivative work, its result is restored
+with `processingInterrupted=true`; inspect existing masters before adding SDR.
+This is not an exactly-once transaction across the filesystem and Directus.
+
+The private spool defaults to the media directory's sibling
+`.private-media/video-uploads`. It must stay outside the public media tree.
+Sources and journals are retained for seven days after activity/completion by
+default; queued/running jobs do not expire. Cleanup runs every five seconds.
+The defaults reserve at most 20 GiB across 32 sessions and allow 8 GiB per session;
+`MAX_UPLOAD_BYTES` still limits each source file and the existing image limit
+applies to covers. Free disk space is also checked before admission. These bounds
+cover the spool, not final source archives, HLS or transcoding output.
+
+Configure `VIDEO_UPLOAD_ROOT`, `VIDEO_UPLOAD_MAX_BYTES`,
+`VIDEO_UPLOAD_QUOTA_BYTES`, `VIDEO_UPLOAD_MAX_SESSIONS` and
+`VIDEO_UPLOAD_TTL_HOURS` in the API environment. One API process owns a spool,
+enforced by a filesystem lock; multiple processes must not share it. An unclean
+kill may require up to 30 seconds for the lock to become stale. Container installs
+already persist the private-media volume. Separate spool/media mounts are
+supported using a file copy when rename cannot cross volumes.
+
+The API's `UPLOAD_REQUEST_TIMEOUT_MS` defaults to 24 hours for legacy multipart
+clients, while idle request-body reads expire after 120 seconds. Browser chunk
+requests and the Next.js development proxy allow five minutes per chunk.
+Nginx templates retain streaming request forwarding, set a 120-second idle body
+timeout and reuse upstream connections. Align any additional ingress/CDN limits
+with these settings; whole-file legacy uploads still need enough proxy response
+time for their upload and processing. No hosting configuration is applied
+automatically by changing these example files.
+
+Focused regression checks:
+
+```sh
+npm run test:video-upload
+```
+
+`tests/video-upload-browser.cjs` exercises the real Next/API/FFmpeg pipeline with
+an in-memory CMS, generated SDR video, a throttling proxy and headless WebKit.
+It uses only disposable media and loopback ports 13000, 18055, 18060 and 18061.
+Provide an installed `playwright` package (or `PLAYWRIGHT_MODULE`), an optional
+`WEBKIT_EXECUTABLE`, and usable `FFMPEG_PATH`/`FFPROBE_PATH` when running it on
+another machine. Reports, screenshots and the browser trace are retained under
+`test-results/video-upload`; no personal browser profile or Chrome is used.
+
 ## Requirements
 
 The project uses npm-provided `ffmpeg-static` and `ffprobe-static` by default. For production, you can install FFmpeg yourself and set absolute paths in `apps/api/.env`:

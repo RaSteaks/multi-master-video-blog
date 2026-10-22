@@ -93,6 +93,11 @@ corners and inset preview chips use 4px corners.
   These flows reuse the existing upload panels, native inputs/selects, typography
   and CSS tokens; no separate visual theme or persistence of credentials is introduced.
   Behavioral contracts live in `docs/upload-api.md` and `docs/video-workflow.md`.
+  `video-upload.ts` owns chunk transfer, confirmed progress and safe resume.
+  The task panel reuses the upload panel tokens and keeps authentication editable
+  for recovery; it separates byte progress from queued/processing states.
+  Only the recovery ID is stored locally. A refreshed page reselects and verifies
+  original files, while completed uploads keep the existing result/add-master flow.
   `VideoFormatInfo` presents bounded source identification only in upload results.
   `MediaPlayer` omits source/current-version summaries and source provenance from
   Playback Info, which retains stream technical details and device capabilities.

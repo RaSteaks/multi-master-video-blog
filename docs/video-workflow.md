@@ -50,7 +50,9 @@ The frontend player uses Shaka Player and only exposes masters with `verificatio
 
 ## Automated Upload Workflow
 
-For automated processing, use the upload API:
+The browser uses resumable upload sessions, then a persistent background job;
+see `upload-api.md` for the session endpoints, limits and restart behavior.
+Scripted clients can continue using the legacy multipart upload API:
 
 ```text
 POST /api/uploads/videos
@@ -77,7 +79,11 @@ Only new-project HDR10, HLG and Dolby Vision uploads without a supplied SDR atte
 - The SDR MP4 and fMP4 HLS are stored in their own versioned directory under `media/<slug>/sdr/`. The generated record has `is_derivative=true`, `derived_from_master_id`, and the conversion filter and intent. Its file URL points to the SDR MP4, while its source probe/hash identify the original master.
 - Both the converted MP4 and packaged HLS must pass SDR color checks before registration. The original color-preservation gate remains strict; intentional conversion is recorded separately in `color-verification.json`.
 - `isDefault=true` makes an automatically generated SDR the default once it is ready. For paired uploads it applies to the primary HDR master; the supplied SDR is added without changing that default. Later additions default to preserving the existing default. Manually uploaded SDR records are never overwritten by automatic derivatives.
-- The upload waits for SDR processing. The form distinguishes file upload from server processing and reports success or partial failure. `VIDEO_SDR_PROCESS_TIMEOUT_MS` bounds encoding (default one hour); proxy timeouts must allow the full upload and processing duration.
+- Browser uploads enqueue processing after all chunks are confirmed. The form
+  distinguishes receiving, waiting, processing, success and partial failure,
+  and can recover a task after navigation. Legacy multipart requests still wait
+  for SDR processing. `VIDEO_SDR_PROCESS_TIMEOUT_MS` bounds encoding (default one
+  hour); legacy proxy timeouts must allow the full upload and processing duration.
 
 The player exposes both verified masters. Manual switches preserve playback position and whether playback was active. If Dolby Vision fails to load or decode, the player automatically selects its paired verified SDR, or another verified SDR if needed. SDR failure stops with a retry action; it cannot loop back to HDR.
 
