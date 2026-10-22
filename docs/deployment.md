@@ -22,6 +22,32 @@ D:\path\to\project\
 - Media: Nginx forwards `/media/` to the Node API's guarded file handler
 - HTTPS: configured manually in Windows Nginx
 
+## Next.js security update (2026-10-22)
+
+The Web workspace pins Next.js 16.4.1 and its lockfile resolves the Next.js image
+decoder to Sharp 0.35.5. Install from the updated lockfile and create a new
+production build; restarting an old `.next` build does not apply this update.
+
+For the Windows deployment, stop Web before replacing its installed dependencies,
+run `npm install --workspace @multi-master-video-blog/web --include-workspace-root=false`,
+then run `npm run web:rebuild-restart` in Production mode. For a development
+instance, restart Web after installing instead. For Linux/systemd, build a fresh
+release using the configured environment and restart `video-blog-web`; for Docker,
+rebuild the Web image and recreate the `web` container using the deployment's
+existing Compose files and environment.
+
+This isolated Web dependency update requires **Web to restart**. API, Directus,
+PostgreSQL, Manager and Nginx do not need restarting for this commit. Later API,
+CMS or proxy changes have their own deployment requirements. Installation/build
+commands must run on the deployment host; a Git push alone does not update a
+running process.
+
+Web 工作区固定 Next.js 16.4.1，其图像解码依赖锁定为 Sharp 0.35.5。部署时必须
+安装新锁文件中的依赖、重新构建并重启 **Web**；直接重启旧 `.next` 构建不会生效。
+Windows 生产环境先停止 Web、安装 Web workspace 依赖，再执行
+`npm run web:rebuild-restart`。Linux 重启 `video-blog-web`；Docker 重新构建并替换
+`web` 容器。仅此提交无需重启 API、CMS、PostgreSQL、Manager 或 Nginx。
+
 ## Security Checklist
 
 - Require login for CMS access.
