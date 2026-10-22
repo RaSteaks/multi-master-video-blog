@@ -475,10 +475,19 @@ async function managerFixture(t, password) {
     handleUploadTokenChange = async payload => effects.push('tokens'); allStatus = async () => ({});`, context);
   const { server, html } = context.module.exports;
   assert.equal(server.listening, false);
-  const page = html();
+  // Establish a real server-side session; there is no Basic-auth bypass anymore.
+  let cookie = "", nonce = "";
+  if (password) {
+    context.fixturePassword = password;
+    vm.runInContext(`var sessionCookie;
+      managerAuth.signIn({headers:{},socket:{}}, {setHeader(name,value){if(name==='Set-Cookie') sessionCookie=value.split(';')[0];}},
+        {username:'admin',password:fixturePassword});`, context);
+    cookie = context.sessionCookie;
+    nonce = vm.runInContext('managerAuth.csrfToken({headers:{cookie:sessionCookie}})', context);
+  }
+  const page = html(nonce);
   new vm.Script(page.match(/<script>([\s\S]*?)<\/script>/)[1]);
-  const nonce = page.match(/"X-Manager-CSRF": "([a-f0-9]+)"/)[1];
-  return { effects: context.effects, nonce, async post(route, headers = {}) {
+  return { effects: context.effects, nonce, cookie, async post(route, headers = {}) {
     const req = Readable.from([Buffer.from("{}")]);
     Object.assign(req, { method: "POST", url: route, headers: { host: "site.invalid", ...headers }, socket: { remoteAddress: "127.0.0.1" } });
     const res = new Reply(); await server.listeners("request")[0](req, res); await finished(res); return res;
@@ -490,7 +499,7 @@ test("Manager fails closed without credentials and every POST requires same-orig
   assert.equal((await disabled.post("/api/upload-tokens", { "content-type": "application/json" })).status, 503);
   assert.equal(disabled.effects.length, 0);
   const mgr = await managerFixture(t, "synthetic-password");
-  const auth = { authorization: "Basic " + Buffer.from("admin:synthetic-password").toString("base64") };
+  const auth = { cookie: mgr.cookie };
   const good = { ...auth, origin: "https://site.invalid", "content-type": "application/json", "x-manager-csrf": mgr.nonce };
   for (const route of ["/api/stack/stop-all", "/api/services/api/restart", "/api/services/web/mode/production", "/api/upload-tokens"]) {
     assert.equal((await mgr.post(route, { ...auth, "content-type": "application/x-www-form-urlencoded" })).status, 403);
@@ -498,7 +507,7 @@ test("Manager fails closed without credentials and every POST requires same-orig
     assert.equal((await mgr.post(route, { ...good, "sec-fetch-site": "cross-site" })).status, 403);
   }
   assert.equal(mgr.effects.length, 0);
-  assert.equal((await mgr.post("/api/stack/stop-all", { ...good, authorization: "Basic invalid" })).status, 401);
+  assert.equal((await mgr.post("/api/stack/stop-all", { ...good, cookie: "manager_session=invalid" })).status, 401);
   assert.equal((await mgr.post("/api/stack/stop-all", { ...good, "content-type": "text/plain" })).status, 415);
   for (const route of ["/api/stack/stop-all", "/api/services/api/restart", "/api/services/web/mode/production", "/api/upload-tokens"]) {
     assert.equal((await mgr.post(route, good)).status, route === "/api/upload-tokens" ? 200 : 202);

@@ -75,6 +75,12 @@ corners and inset preview chips use 4px corners.
   during operations, retain keyboard focus across polling, and show actual named
   phases and terminal failures rather than estimated percentages. The command
   and recovery contract is documented in `docs/deployment.md`.
+  `managerStyles()` supplies the same tokens and controls to the dashboard and
+  `scripts/manager-login.cjs`. The login is a compact Chinese-language form with
+  inline validation, password visibility, and stable pending/error space. Browser
+  authentication uses a session cookie and an explicit logout control. All HTTP
+  clients use the same throttled login; operation nonces are bound to the session.
+  Session rules live in `docs/deployment.md`.
 
 - `FilmScanImport` owns film job feedback. Resource-blocked jobs retain originals
   and use the existing inline status region and refresh action; they must not

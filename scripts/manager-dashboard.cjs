@@ -3,6 +3,8 @@ const fsp = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { createManagerAuth } = require("./manager-auth.cjs");
+const { loginHtml } = require("./manager-login.cjs");
 const { createOperationJournal } = require("./service-operations.cjs");
 const {
   runPowerShell: executePowerShell,
@@ -27,8 +29,9 @@ const MANAGER_AUTH_USERNAME =
 const MANAGER_AUTH_PASSWORD =
   managerEnv("MANAGER_AUTH_PASSWORD", managerEnv("MANAGER_PASSWORD", ""));
 const MANAGER_AUTH_ENABLED = MANAGER_AUTH_PASSWORD.length > 0;
-// Only authenticated HTML exposes this nonce; a cross-site form cannot supply it.
-const MANAGER_CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
+// The public login nonce cannot authorize authenticated management mutations.
+const MANAGER_LOGIN_CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
+const managerAuth = createManagerAuth({ username: MANAGER_AUTH_USERNAME, password: MANAGER_AUTH_PASSWORD, basePath: MANAGER_BASE_PATH });
 const POSTGRES_SERVICE_NAME =
   managerEnv("POSTGRES_SERVICE_NAME", "postgresql-x64-17");
 const WEB_MODE_ENV_KEY = "MANAGER_WEB_MODE";
@@ -152,12 +155,19 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
-function sendHtml(res) {
-  const body = html();
+function sendHtml(res, body) {
+  // Authorize only the exact server-rendered script. Injected scripts, eval,
+  // third-party connections and framing are not needed by this local console.
+  const scriptHashes = [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    .map(match => "'sha256-" + crypto.createHash("sha256").update(match[1]).digest("base64") + "'");
   res.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
-    "Cache-Control": "no-store"
+    "Cache-Control": "no-store",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "default-src 'none'; script-src " + (scriptHashes.join(" ") || "'none'")
+      + "; script-src-attr 'none'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"
   });
   res.end(body);
 }
@@ -357,8 +367,9 @@ async function readJsonBody(req, maxBytes = 8192) {
       throw new Error("Request body must be a JSON object.");
     }
     return body;
-  } catch (cause) {
-    const error = new Error(cause.message || "Invalid JSON request body.");
+  } catch {
+    // Parser diagnostics may echo credential fragments from malformed input.
+    const error = new Error("Invalid JSON request body.");
     error.statusCode = 400;
     throw error;
   }
@@ -391,15 +402,9 @@ function webStartScript(mode = currentWebMode) {
   return mode === "production" ? "start:web" : "dev:web";
 }
 
-function sendAuthRequired(res) {
-  const body = "Authentication required.";
-  res.writeHead(401, {
-    "Content-Type": "text/plain; charset=utf-8",
-    "Content-Length": Buffer.byteLength(body),
-    "Cache-Control": "no-store",
-    "WWW-Authenticate": 'Basic realm="Service Manager", charset="UTF-8"'
-  });
-  res.end(body);
+function redirectManager(res, suffix = "") {
+  res.writeHead(303, { Location: (MANAGER_BASE_PATH || "") + suffix || "/", "Cache-Control": "no-store" });
+  res.end();
 }
 
 function localOnly(req) {
@@ -428,18 +433,12 @@ function stripManagerBasePath(pathname) {
 
 function isAuthenticated(req) {
   // A reverse proxy is also a loopback peer, so missing credentials must fail closed.
-  if (!MANAGER_AUTH_ENABLED) return false;
-
-  const credentials = parseBasicAuth(req.headers.authorization);
-  if (!credentials) return false;
-
-  return (
-    timingSafeStringEqual(credentials.username, MANAGER_AUTH_USERNAME) &&
-    timingSafeStringEqual(credentials.password, MANAGER_AUTH_PASSWORD)
-  );
+  // Every HTTP client must use the throttled login path; Basic auth would create
+  // an alternate unlimited password-guessing path and undermine logout.
+  return MANAGER_AUTH_ENABLED && managerAuth.hasSession(req);
 }
 
-function requireManagerMutation(req) {
+function requireManagerMutation(req, nonce = managerAuth.csrfToken(req)) {
   const origin = req.headers.origin;
   let sameOrigin = !origin;
   if (origin) {
@@ -449,33 +448,18 @@ function requireManagerMutation(req) {
       sameOrigin = ["http:", "https:"].includes(parsed.protocol) && parsed.host === req.headers.host;
     } catch { sameOrigin = false; }
   }
-  if (!sameOrigin || req.headers["sec-fetch-site"] === "cross-site" ||
-      !timingSafeStringEqual(req.headers["x-manager-csrf"] || "", MANAGER_CSRF_TOKEN)) {
+  if (!nonce || !sameOrigin || req.headers["sec-fetch-site"] === "cross-site") {
     throw Object.assign(new Error("Invalid management request origin or CSRF token."), { statusCode: 403 });
+  }
+  if (!timingSafeStringEqual(req.headers["x-manager-csrf"] || "", nonce)) {
+    // A different tab can rotate the shared cookie while this page keeps its
+    // old nonce. Distinguish that rejection without accepting or replaying work.
+    throw Object.assign(new Error("Invalid management request origin or CSRF token."), {
+      statusCode: 403, code: "MANAGER_CSRF_MISMATCH"
+    });
   }
   if (String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase() !== "application/json") {
     throw Object.assign(new Error("Content-Type must be application/json."), { statusCode: 415 });
-  }
-}
-
-function parseBasicAuth(header) {
-  if (!header || typeof header !== "string") return null;
-
-  const [scheme, encoded] = header.split(/\s+/, 2);
-  if (!scheme || scheme.toLowerCase() !== "basic" || !encoded) {
-    return null;
-  }
-
-  try {
-    const decoded = Buffer.from(encoded, "base64").toString("utf8");
-    const separator = decoded.indexOf(":");
-    if (separator === -1) return null;
-    return {
-      username: decoded.slice(0, separator),
-      password: decoded.slice(separator + 1)
-    };
-  } catch {
-    return null;
   }
 }
 
@@ -1216,7 +1200,12 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const server = http.createServer(async (req, res) => {
+// Bound slow/incomplete requests without shortening background service jobs.
+const server = http.createServer({ maxHeaderSize: 16384, headersTimeout: 10000, requestTimeout: 15000 }, async (req, res) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   try {
     if (!localOnly(req)) {
       sendJson(res, 403, { ok: false, error: "Local access only." });
@@ -1228,19 +1217,39 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (!isAuthenticated(req)) {
-      sendAuthRequired(res);
+    const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
+    const pathname = stripManagerBasePath(url.pathname);
+    if (!managerAuth.hasSession(req)) managerAuth.requireAnonymousBudget(res);
+
+    if (req.method === "GET" && pathname === "/login") {
+      if (managerAuth.hasSession(req)) redirectManager(res);
+      else sendHtml(res, loginHtml({ basePath: MANAGER_BASE_PATH, nonce: MANAGER_LOGIN_CSRF_TOKEN, styles: managerStyles() }));
+      return;
+    }
+    if (req.method === "POST" && pathname === "/api/login") {
+      requireManagerMutation(req, MANAGER_LOGIN_CSRF_TOKEN);
+      managerAuth.signIn(req, res, await readJsonBody(req, 4096));
+      sendJson(res, 200, { ok: true });
       return;
     }
 
-    // One guard covers every current and future POST before it can produce side effects.
+    if (!isAuthenticated(req)) {
+      if (req.method === "GET" && !pathname.startsWith("/api/")) redirectManager(res, "/login");
+      else sendJson(res, 401, { ok: false, error: "请登录 Manager 后继续。" });
+      return;
+    }
+
+    // Login has its own public nonce; all authenticated POSTs use this guard.
     if (req.method === "POST") requireManagerMutation(req);
 
-    const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
-    const pathname = stripManagerBasePath(url.pathname);
+    if (req.method === "POST" && pathname === "/api/logout") {
+      managerAuth.signOut(req, res);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
 
     if (req.method === "GET" && pathname === "/") {
-      sendHtml(res);
+      sendHtml(res, html(managerAuth.csrfToken(req)));
       return;
     }
 
@@ -1303,6 +1312,7 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, error.statusCode || 500, {
       ok: false,
       error: cleanPowerShellError(error),
+      code: error.code === "MANAGER_CSRF_MISMATCH" ? error.code : undefined,
       results: error.results || undefined
     });
   }
@@ -1337,15 +1347,9 @@ module.exports = {
   waitForProcessHealth, serviceMap, cleanPowerShellError, managerStatus, allStatus, beginManagedOperation
 };
 
-function html() {
-  return String.raw`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="color-scheme" content="light dark" />
-  <title>Service Manager</title>
-  <style>
+// Login and dashboard share one palette, typography and control stylesheet.
+function managerStyles() {
+  return String.raw`
     /* Service Manager — status-first console.
        One question answered first: is the stack running normally?
        Overview banner -> per-service cards -> live output -> records. */
@@ -1597,6 +1601,12 @@ function html() {
     .operation-steps li { font-size: 13px; overflow-wrap: anywhere; }
     .operation-steps li[data-state="failed"] { color: var(--bad); }
     .operation-steps li[data-state="running"] { color: var(--accent); font-weight: 700; }
+    /* Current tasks reuse the operation surface; the journal serializes commands. */
+    .current-tasks { min-height: 110px; }
+    .current-tasks ul { list-style: none; padding: 0; margin: 10px 0 0; }
+    .current-tasks li { border-left: 3px solid var(--accent); padding-left: 12px; overflow-wrap: anywhere; }
+    .current-tasks strong { display: block; font-size: 14px; margin-bottom: 4px; }
+    .current-tasks .task-warning { color: var(--warn); margin-top: 8px; }
     .command-reference summary { cursor: pointer; font-size: 13px; color: var(--muted); }
     .command-reference code { display: block; padding: 4px 0; font-size: 12px; overflow-wrap: anywhere; }
 
@@ -1854,7 +1864,18 @@ function html() {
         transition-duration: .01ms !important;
       }
     }
-  </style>
+`;
+}
+
+function html(csrfToken = "") {
+  return String.raw`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Service Manager</title>
+  <style>${managerStyles()}</style>
 </head>
 <body>
   <div class="progress" aria-hidden="true"></div>
@@ -1869,6 +1890,7 @@ function html() {
         <span id="syncText">Connecting...</span>
       </div>
       <button class="button" type="button" id="refreshButton">Refresh</button>
+      <button class="button" type="button" id="logoutButton" lang="zh-CN">退出登录</button>
     </header>
 
     <section class="overview" id="overview" data-tone="pending" aria-labelledby="overviewTitle">
@@ -1896,6 +1918,11 @@ function html() {
     </section>
 
     <p class="action-readout" id="actionReadout" role="status" aria-live="polite"></p>
+    <section class="operation-panel current-tasks" aria-labelledby="currentTasksTitle" lang="zh-CN">
+      <h2 id="currentTasksTitle">当前任务</h2>
+      <div id="currentTasks" role="status" aria-live="polite" aria-atomic="true"><p>正在读取任务状态…</p></div>
+      <p id="taskConnectionStatus" class="task-warning" role="status" aria-live="polite"></p>
+    </section>
     <section class="operation-panel" id="operationPanel" aria-labelledby="operationTitle" hidden>
       <h2 id="operationTitle">Service operation</h2>
       <p id="operationSummary" role="status" aria-live="polite"></p>
@@ -2020,7 +2047,7 @@ function html() {
     const API_BASE = ${JSON.stringify(MANAGER_BASE_PATH)};
     const MUTATION_HEADERS = {
       "Content-Type": "application/json",
-      "X-Manager-CSRF": ${JSON.stringify(MANAGER_CSRF_TOKEN)}
+      "X-Manager-CSRF": ${JSON.stringify(csrfToken)}
     };
     const AUTO_REFRESH_INTERVAL_MS = 2000;
     const LOG_SOURCE_LABELS = Object.freeze({
@@ -2032,6 +2059,25 @@ function html() {
     });
     const ERROR_PATTERN = /error|fail|exception|fatal|unhandled|refused|traceback|panic|cannot find/i;
     const WARN_PATTERN = /warn|deprecat|retry|slow|pending/i;
+
+    async function managerFetch(url, options) {
+      const response = await fetch(url, options);
+      if (response.status === 401) {
+        // Session expiry changes only navigation; accepted service work continues.
+        location.replace(API_BASE + "/login");
+        throw new Error("登录已过期，请重新登录。");
+      }
+      if (response.status === 403) {
+        const data = await response.clone().json().catch(() => null);
+        if (data?.code === "MANAGER_CSRF_MISMATCH") {
+          // Reload the nonce for the current cookie; never retry a management
+          // POST automatically, since the operator must confirm the action again.
+          location.replace((API_BASE || "/") + "?session=updated");
+          throw new Error("登录状态已更新，正在重新加载管理页面。");
+        }
+      }
+      return response;
+    }
 
     const managerApp = document.getElementById("managerApp");
     const tally = document.getElementById("tally");
@@ -2125,12 +2171,40 @@ function html() {
       });
     }
 
+    function renderCurrentTasks(operation) {
+      // Use accepted journal records for all four services, including CLI commands
+      // and reloads. Completed/interrupted records stay in the detail panel only.
+      const names = { postgres: "PostgreSQL", cms: "CMS", api: "API", web: "web" };
+      const actions = { start: "启动", stop: "停止", restart: "重启", "rebuild-restart": "构建并重启" };
+      const labels = { "start-all": "启动全部服务", "stop-all": "停止全部服务", "restart-all": "重启全部服务", "refresh-app": "更新 API 和 web", "upload-tokens": "保存令牌并重启 API" };
+      const phases = { start: "启动并检查健康状态", stop: "停止并等待退出", build: "构建生产版本", "recovery-stop": "停止服务以恢复", "recovery-build": "重新构建原模式", "recovery-start": "恢复原模式" };
+      let markup = '<p>当前没有正在执行的任务</p>';
+      if (operation?.state === "running") {
+        const [service, action] = operation.label.split(":");
+        const task = labels[operation.label] || (service === "web-mode"
+          ? "切换 web 至" + (action === "production" ? "生产模式" : "开发模式")
+          : (actions[action] || action || "执行任务：") + (names[service] || service));
+        const phase = operation.steps.find(step => step.state === "running");
+        const detail = phase ? (names[phase.serviceId] || phase.serviceId) + " · " + (phases[phase.phase] || phase.phase) : "正在准备，请稍候…";
+        markup = '<ul aria-label="正在执行的任务"><li><strong>' + esc("当前正在" + task) + '</strong><p>' + esc(detail) + '</p></li></ul>';
+      }
+      const target = document.getElementById("currentTasks");
+      // Avoid repeating live announcements on every unchanged polling response.
+      if (target.innerHTML !== markup) target.innerHTML = markup;
+      document.getElementById("taskConnectionStatus").textContent = "";
+    }
+
     function renderOperation(operation) {
-      if (!operation) return;
+      if (!operation) {
+        // A pre-admission status request may arrive after a command was accepted.
+        if (!latestOperationStartedAt) renderCurrentTasks(null);
+        return;
+      }
       if (operation.startedAt < latestOperationStartedAt) return;
       latestOperationStartedAt = operation.startedAt || latestOperationStartedAt;
       // An older status request must not resurrect a completed operation.
       if (operation.state === "running" && finishedOperations.has(operation.id)) return;
+      renderCurrentTasks(operation);
       if (operation.state !== "running") {
         finishedOperations.add(operation.id);
         if (finishedOperations.size > 24) finishedOperations.delete(finishedOperations.values().next().value);
@@ -2186,7 +2260,7 @@ function html() {
       operationPollInFlight = true;
       const id = trackedOperationId;
       try {
-        const response = await fetch(apiPath("/api/operations/" + encodeURIComponent(id)), { cache: "no-store", signal: AbortSignal.timeout(10000) });
+        const response = await managerFetch(apiPath("/api/operations/" + encodeURIComponent(id)), { cache: "no-store", signal: AbortSignal.timeout(10000) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Operation status unavailable.");
         operationPollFailures = 0;
@@ -2195,6 +2269,7 @@ function html() {
         // Ignore an expired request for an operation that has been superseded.
         if (id !== trackedOperationId) return;
         operationPollFailures++;
+        document.getElementById("taskConnectionStatus").textContent = "任务状态暂时无法更新，以上为最后确认的状态。请刷新重新连接，勿重复提交。";
         setActionReadout("Cannot confirm the command result: " + error.message + ". The operation may still be running. Refresh to reconnect; do not resubmit.", "error");
       } finally {
         operationPollInFlight = false;
@@ -2208,7 +2283,7 @@ function html() {
       setBusy(true);
       setActionReadout(label + " · requesting operation...");
       try {
-        const response = await fetch(apiPath(url), { method: "POST", headers: MUTATION_HEADERS, signal: AbortSignal.timeout(15000) });
+        const response = await managerFetch(apiPath(url), { method: "POST", headers: MUTATION_HEADERS, signal: AbortSignal.timeout(15000) });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || "Command was not accepted.");
         // An older POST acknowledgement must not replace a newer operation
@@ -2493,7 +2568,7 @@ function html() {
         cards.querySelectorAll('.command-reference').forEach(item => { item.open = openCommands.has(item.closest('[data-card]').dataset.card); });
         if (focusKey) cards.querySelector(focusKey)?.focus({ preventScroll: true });
       }
-      if (data.operation) renderOperation(data.operation);
+      renderOperation(data.operation);
       syncActionControls();
       updateLogControls();
       renderUploadTokens(data.uploadTokens);
@@ -2523,7 +2598,7 @@ function html() {
       const generation = statusGeneration;
       refreshPromise = (async () => {
         try {
-          const response = await fetch(apiPath("/api/status"), { cache: "no-store", signal: AbortSignal.timeout(15000) });
+          const response = await managerFetch(apiPath("/api/status"), { cache: "no-store", signal: AbortSignal.timeout(15000) });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || "Status request failed");
           if (generation === statusGeneration) render(data);
@@ -2532,6 +2607,7 @@ function html() {
             statusAvailable = false;
             syncActionControls();
             setSyncState("offline", "Manager unreachable" + (lastSyncAt ? " · last data " + lastSyncAt.toLocaleTimeString() : ""));
+            document.getElementById("taskConnectionStatus").textContent = "无法连接 Manager，任务状态尚未确认。请刷新重试。";
           }
           if (!silent && generation === statusGeneration) {
             setActionReadout("Status refresh failed: " + error.message, "error");
@@ -2610,7 +2686,7 @@ function html() {
       setBusy(true);
       setActionReadout("Saving upload tokens and restarting the Upload API...");
       try {
-        const response = await fetch(apiPath("/api/upload-tokens"), {
+        const response = await managerFetch(apiPath("/api/upload-tokens"), {
           method: "POST",
           headers: MUTATION_HEADERS,
           body: JSON.stringify(payload)
@@ -2835,7 +2911,7 @@ function html() {
       updateLogControls();
 
       try {
-        const response = await fetch(apiPath("/api/logs/" + encodeURIComponent(id)), {
+        const response = await managerFetch(apiPath("/api/logs/" + encodeURIComponent(id)), {
           cache: "no-store",
           signal: controller.signal
         });
@@ -2988,10 +3064,27 @@ function html() {
       if (trackedOperationId) pollOperation();
       refresh();
     });
+    document.getElementById("logoutButton").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const response = await managerFetch(apiPath("/api/logout"), { method: "POST", headers: MUTATION_HEADERS, signal: AbortSignal.timeout(10000) });
+        if (!response.ok) throw new Error("退出失败，请重试。");
+        location.replace(API_BASE + "/login");
+      } catch (error) {
+        setActionReadout(error.message, "error");
+        button.disabled = false;
+      }
+    });
     log.addEventListener("scroll", updateFollowPill, { passive: true });
     // Do not advertise usable mutation controls before the first status response.
     syncActionControls();
     syncArticleTokenInput();
+    if (new URLSearchParams(location.search).get("session") === "updated") {
+      // Carry only recovery feedback across navigation, never form credentials.
+      setActionReadout("登录状态已更新。上次操作未执行，请重新确认后操作。");
+      history.replaceState(null, "", API_BASE || "/");
+    }
     refresh();
     selectLogSource(activeLogService).catch((error) => {
       lastLogError = "refresh failed: " + error.message;

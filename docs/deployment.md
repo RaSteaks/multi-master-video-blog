@@ -73,7 +73,7 @@ npm run health
 Manager controls PostgreSQL, Directus CMS, Upload API and Frontend Web. Its page
 and CLI share the same lifecycle functions and cross-process operation lock.
 The Manager itself is separate: update its code with `npm run manager:restart`,
-then reload the page to obtain the new CSRF nonce. Do this after any active
+then sign in again to obtain a new session and CSRF nonce. Do this after any active
 service operation finishes. These controls target the Windows deployment.
 
 | Service | Start | Stop | Restart | Inspect |
@@ -121,7 +121,12 @@ on failure, including partial stack results.
 
 The UI shows named per-service phases, keeps refresh/log viewing available, and
 disables duplicate mutations. Refreshing or closing the page does not cancel
-work. The latest bounded record is saved to `logs/service-operation.json`, so CLI
+work. The **当前任务** list covers PostgreSQL, CMS, API and Web commands, including
+stack actions, and shows the active service phase (for example, “当前正在重启web”).
+The shared lock allows one command at a time. Finished tasks leave this list;
+their result remains in the operation detail panel. Connection failures mark the
+displayed task state as unconfirmed instead of implying completion.
+The latest bounded record is saved to `logs/service-operation.json`, so CLI
 operations and page reloads share progress. The current process also retains up
 to 12 recent records. A controller crash without a recorded result is shown as
 interrupted once its lock is released/stale. An interrupted or unreachable
@@ -175,9 +180,43 @@ For production, replace the Directus admin credentials in API and frontend `.env
   Without a password, its HTTP interface returns 503. Local CLI service-control
   commands remain available. The public Nginx example denies `/manager/`; use a
   private administration endpoint if remote access is needed. If proxying it,
-  preserve `Host` and retain Manager authentication. Reload the page after a
-  Manager restart because its CSRF nonce changes. Every POST requires the page's
-  `X-Manager-CSRF` header and `Content-Type: application/json`.
+  preserve `Host` and retain Manager authentication. Browser visits redirect to
+  `/manager/login` (or `<MANAGER_BASE_PATH>/login`) and use the same configured
+  account and password. Basic authentication is disabled for all HTTP routes so
+  it cannot bypass login throttling. API clients must sign in at `/api/login`
+  with the login page's nonce and retain its cookie before reading the dashboard
+  mutation nonce. Local CLI service-control commands are unaffected.
+  The login creates a random, server-held session with an 8-hour lifetime in an
+  `HttpOnly; SameSite=Strict` cookie scoped to the Manager base path. HTTPS proxies
+  must replace `X-Forwarded-Proto` with `https` so the cookie also uses `Secure`.
+  Sessions are revoked on logout or Manager restart; at most 32 are retained.
+  Logout leaves accepted service operations running. Expired browser sessions
+  return to the login page. Ten failed login attempts within five minutes pause
+  login until that window ends; the budget is shared by this single-account
+  console, including behind a proxy.
+  Unauthenticated requests also share a limit of 120 per minute; `429` responses
+  include `Retry-After`. Existing sessions remain usable during anonymous request
+  throttling. These in-memory limits reset on Manager restart and are lightweight
+  abuse controls, not protection against network saturation or distributed attacks.
+  Login accepts only `username` (1–128 characters) and `password` (1–512 characters)
+  strings in a JSON body of at most 4096 bytes. No SQL or shell command is built
+  from credentials. Malformed JSON errors never echo submitted credential text.
+  Every POST requires the page's `X-Manager-CSRF` header and
+  `Content-Type: application/json`. The public login page uses a separate nonce
+  that cannot authorize service mutations; the dashboard nonce belongs to its
+  particular session and changes on each login. If another tab logs in and rotates
+  the shared cookie, an older page's next POST is rejected with `403` and
+  `MANAGER_CSRF_MISMATCH`. The page reloads its session nonce and asks the operator
+  to confirm the action again; it never automatically replays the rejected command.
+  Login errors preserve the account
+  name and do not distinguish an unknown account from an incorrect password.
+  HTML responses permit only their hashed inline script, deny framing and third-party
+  connections, and all responses disable MIME sniffing and request search-engine
+  exclusion. Header/body timeouts bound incomplete requests. Search-engine directives
+  are advisory; authentication and throttling enforce access on the server.
+  Browser breakpoints and modified responses cannot be prevented by a website and
+  never grant server permissions. Use HTTPS for remote administration: these checks
+  do not encrypt plain HTTP or protect a stolen valid session on a compromised device.
 - Film-scan originals, review previews and rollback journals now live in
   `MEDIA_ROOT/../.private-media/film-scans` by default. `FILM_SCAN_ROOT` can override
   this location but must resolve outside the public media tree. Back up the old
