@@ -58,7 +58,11 @@ const { createDirectusTokenCache } = require("./directus-auth.cjs");
 const { createTaskLimiter } = require("./task-limiter.cjs");
 const { createVideoUploadStore } = require("./video-upload-store.cjs");
 const { createCachedProbe } = require("./cached-probe.cjs");
-const { canReadAsset } = require("./asset-access.cjs");
+const { createAssetAuthorizer } = require("./asset-access.cjs");
+const { canReadMedia } = require("./media-access.cjs");
+const { createRequestBudget, requestAddress } = require("./request-budget.cjs");
+const { createAnalyticsRecorder } = require("./analytics-recorder.cjs");
+const { prepareCachedPreview } = require("./preview-cache.cjs");
 const { filmScanPath, filmScanStoredPath, prepareFilmScanStorage,
   publicMediaPath, assetSafetyHeaders } = require("./media-security.cjs");
 const {
@@ -158,6 +162,9 @@ const videoProcessingSlots = createTaskLimiter({
   maxPending: positiveInteger(env.VIDEO_PROCESS_MAX_PENDING, 4),
   waitMs: positiveInteger(env.VIDEO_PROCESS_QUEUE_TIMEOUT_MS, 60000)
 });
+// Reception has its own bound; slow clients do not hold an encoder slot.
+const legacyUploadSlots = createTaskLimiter({ concurrency: 2, maxPending: 0 });
+const MAX_LEGACY_UPLOAD_BYTES = positiveInteger(env.VIDEO_UPLOAD_MAX_BYTES, 8 * 1024 ** 3);
 let videoSdrFiltersPromise = null;
 
 const MASTER_TYPES = new Set(["sdr", "hdr10", "hlg", "dolby_vision", "custom"]);
@@ -182,6 +189,20 @@ const ASSET_PRESETS = new Set(
 );
 const PUBLIC_ASSET_IDS = new Set(String(env.PUBLIC_ASSET_IDS || "")
   .split(",").map(value => value.trim()).filter(Boolean));
+// Limits are process-wide as well as per client; spoofed visitor IDs cannot evade them.
+const TRUST_PROXY = env.TRUST_PROXY === "true";
+const assetBudget = createRequestBudget({ limit: 1200, perClient: 600 });
+const assetSlots = createTaskLimiter({ concurrency: 8, maxPending: 24, waitMs: 5000 });
+const analyticsBudget = createRequestBudget({ limit: 120, perClient: 30 });
+const analyticsRecorder = createAnalyticsRecorder({
+  maxEvents: positiveInteger(env.ANALYTICS_MAX_EVENTS, 1_000_000),
+  request: async (route, options) => directusRequest(route, await directusLogin(), options)
+});
+const PUBLIC_MEDIA_FILES = new Set(String(env.PUBLIC_MEDIA_FILES || "").split(",").map(v => v.trim()).filter(Boolean));
+const authorizeAsset = createAssetAuthorizer({
+  publicAssetIds: PUBLIC_ASSET_IDS,
+  request: async route => directusRequest(route, await directusLogin())
+});
 const JSON_COMPRESSION_MIN_BYTES = 1024;
 const COLOR_REQUIRED_FIELDS = [
   "colorPrimaries",
@@ -237,7 +258,7 @@ function positiveInteger(value, fallback) {
 function sendJson(res, statusCode, payload) {
   if (res.destroyed || res.writableEnded) return;
   if (res.headersSent) { res.destroy(); return; }
-  if (statusCode === 503) res.setHeader("Retry-After", "60");
+  if ([429, 503].includes(statusCode)) res.setHeader("Retry-After", "60");
   const body = JSON.stringify(payload);
   const bodyBuffer = Buffer.from(body);
   const acceptsGzip = acceptsEncoding(
@@ -274,7 +295,8 @@ function requireUploadAuth(req) {
   const bearer = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
   const uploadToken = req.headers["x-upload-token"] || "";
 
-  if (bearer === UPLOAD_API_TOKEN || uploadToken === UPLOAD_API_TOKEN) {
+  // Use the same constant-time credential comparison as album/article access.
+  if (tokenMatches(bearer, UPLOAD_API_TOKEN) || tokenMatches(uploadToken, UPLOAD_API_TOKEN)) {
     return;
   }
 
@@ -522,6 +544,8 @@ async function commandAvailable(command) {
 }
 
 async function parseMultipart(req) {
+  const declaredBytes = Number(req.headers["content-length"] || 0);
+  if (declaredBytes > MAX_LEGACY_UPLOAD_BYTES) throw httpError(413, "Video upload exceeds the request size limit.");
   const uploadId = crypto.randomUUID();
   const tempDir = path.join(ROOT, "tmp", uploadId);
   await fsp.mkdir(tempDir, { recursive: true });
@@ -533,15 +557,22 @@ async function parseMultipart(req) {
     const pendingCloses = [];
     let fileInfo = null;
     let uploadBytes = 0;
+    let requestBytes = 0;
+    const onData = chunk => {
+      requestBytes += chunk.length;
+      if (requestBytes > MAX_LEGACY_UPLOAD_BYTES) rejectOnce(httpError(413, "Video upload exceeds the request size limit."));
+    };
     let rejected = false;
     const interrupted = () => rejectOnce(httpError(400, "Video upload was interrupted."));
     const removeRequestListeners = () => {
       req.removeListener("aborted", interrupted);
+      req.removeListener("data", onData);
       req.removeListener("error", rejectOnce);
     };
 
     const files = {};
-    const busboy = createMultipartParser({
+    let busboy;
+    try { busboy = createMultipartParser({
       headers: req.headers,
       // Folder-upload references must survive multipart parsing for IMF/HLS.
       // Paths are validated/sanitized separately before touching the filesystem.
@@ -549,9 +580,13 @@ async function parseMultipart(req) {
       limits: {
         files: 500,
         fields: 64,
-        fileSize: MAX_UPLOAD_BYTES
+        fileSize: MAX_UPLOAD_BYTES, parts: 564
       }
-    });
+    }); } catch (error) {
+      // Even malformed boundaries own a newly-created temporary directory.
+      fsp.rm(tempDir, { recursive: true, force: true }).then(() => reject(error), reject);
+      return;
+    }
 
     function rejectOnce(error) {
       if (rejected) {
@@ -561,6 +596,7 @@ async function parseMultipart(req) {
       rejected = true;
       // An aborted IncomingMessage can emit its error after "aborted"; keep that listener until close.
       req.removeListener("aborted", interrupted);
+      req.removeListener("data", onData);
       req.unpipe(busboy);
       // Busboy may still parse the current chunk. Keep its error listener and
       // drain rejected parts; wait for file handles to close before deleting on Windows.
@@ -661,6 +697,9 @@ async function parseMultipart(req) {
       file.pipe(writeStream);
     });
 
+    busboy.on("filesLimit", () => rejectOnce(httpError(413, "Too many video files.")));
+    busboy.on("fieldsLimit", () => rejectOnce(httpError(413, "Too many metadata fields.")));
+    busboy.on("partsLimit", () => rejectOnce(httpError(413, "Too many multipart parts.")));
     busboy.on("error", rejectOnce);
     busboy.on("finish", async () => {
       if (rejected) {
@@ -690,6 +729,7 @@ async function parseMultipart(req) {
     });
 
     // Disconnects must close file handles and remove legacy multipart temporary files.
+    req.on("data", onData);
     req.once("aborted", interrupted);
     req.once("error", rejectOnce);
     req.once("close", removeRequestListeners);
@@ -3506,7 +3546,8 @@ async function directusRequest(pathname, token, options = {}) {
   try {
     response = await fetch(`${DIRECTUS_URL}${pathname}`, {
       ...requestOptions,
-      // CMS calls have a bounded wait; transport errors retain the existing uncertain-write handling.
+      // Only 401 refreshes credentials; a 403 is a durable permission denial.
+      // CMS calls have a bounded wait; transport errors retain uncertain-write handling.
       signal: requestOptions.signal || AbortSignal.timeout(30_000),
       headers: {
         "Content-Type": "application/json",
@@ -3525,7 +3566,7 @@ async function directusRequest(pathname, token, options = {}) {
   if (
     token &&
     !directusAuthRetried &&
-    [401, 403].includes(response.status)
+    response.status === 401
   ) {
     await response.arrayBuffer().catch(() => {});
     const refreshedToken = await refreshDirectusLogin(token);
@@ -3645,7 +3686,9 @@ async function directusUploadFile(token, file, title, options = {}) {
         headers: {
           Authorization: `Bearer ${accessToken}`
         },
-        body: form
+        body: form,
+        // Upload timeouts retain reconciliation for a possibly committed CMS write.
+        signal: AbortSignal.timeout(120_000)
       });
     } catch (cause) {
       throw directusTransportError("POST", "/files", cause);
@@ -3653,7 +3696,7 @@ async function directusUploadFile(token, file, title, options = {}) {
 
     if (
       !authRetried &&
-      [401, 403].includes(response.status)
+      response.status === 401
     ) {
       await response.arrayBuffer().catch(() => {});
       const refreshedToken = await refreshDirectusLogin(accessToken);
@@ -4210,17 +4253,16 @@ async function getAlbumPhoto(token, albumId, photoId) {
 }
 
 async function listAlbumPhotos(token, albumId) {
-  const params = new URLSearchParams({
-    "filter[album_id][_eq]": albumId,
-    fields: ALBUM_PHOTO_FIELDS,
-    sort: "sort_order,id",
-    limit: "-1"
-  });
-  const data = await directusRequest(
-    `/items/album_photos?${params.toString()}`,
-    token
-  );
-  return Array.isArray(data.data) ? data.data : [];
+  // Page only the selected album instead of expanding every album's entire gallery.
+  const params = new URLSearchParams({ "filter[album_id][_eq]": albumId,
+    fields: ALBUM_PHOTO_FIELDS, sort: "sort_order,id", limit: "100" });
+  const photos = [];
+  for (let offset = 0; ; offset += 100) {
+    params.set("offset", String(offset));
+    const rows = (await directusRequest(`/items/album_photos?${params}`, token)).data || [];
+    photos.push(...rows);
+    if (rows.length < 100) return photos;
+  }
 }
 
 function albumUploadTag(batchId, index, rendition) {
@@ -4318,24 +4360,32 @@ function serializeManagedAlbum(album) {
   };
 }
 
-async function handleAlbumManageList(res) {
+async function handleAlbumManageList(res, url) {
   const token = await directusLogin();
-  const fields = [
-    ALBUM_ITEM_FIELDS,
-    ...ALBUM_PHOTO_FIELDS.split(",").map((field) => `photos.${field}`)
-  ].join(",");
-  const params = new URLSearchParams({
-    fields,
-    sort: "-created_at,-id",
-    "deep[photos][_sort]": "sort_order,id",
-    limit: "-1"
-  });
-  const data = await directusRequest(`/items/albums?${params.toString()}`, token);
-  const albums = Array.isArray(data.data)
-    ? data.data.map(serializeManagedAlbum)
-    : [];
+  const page = Math.max(1, Math.min(100000, parseInteger(url?.searchParams.get("page")) || 1));
+  const params = new URLSearchParams({ fields: ALBUM_ITEM_FIELDS, sort: "-created_at,-id",
+    limit: "21", offset: String((page - 1) * 20) });
+  const rows = (await directusRequest(`/items/albums?${params}`, token)).data || [];
+  const albums = rows.slice(0, 20).map(serializeManagedAlbum);
+  if (albums.length) {
+    // Two groups per album replace every expanded photo/rendition in a picker response.
+    const counts = new URLSearchParams({ "filter[album_id][_in]": albums.map(a => a.id).join(","),
+      "aggregate[count]": "id,hdr_image", "groupBy[]": "album_id,published", limit: "-1" });
+    const groups = (await directusRequest(`/items/album_photos?${counts}`, token)).data || [];
+    for (const album of albums) for (const group of groups.filter(g => Number(g.album_id) === Number(album.id))) {
+      album.photoCount += Number(group.count?.id || 0);
+      album.hdrPhotoCount += Number(group.count?.hdr_image || 0);
+      if (parseBoolean(group.published)) album.publishedPhotoCount += Number(group.count?.id || 0);
+    }
+  }
+  sendJson(res, 200, { status: "ok", albums, hasMore: rows.length > 20 });
+}
 
-  sendJson(res, 200, { status: "ok", albums });
+async function handleAlbumManageGet(res, albumId) {
+  const token = await directusLogin();
+  const album = await getAlbumById(token, albumId);
+  album.photos = await listAlbumPhotos(token, albumId);
+  sendJson(res, 200, { status: "ok", album: serializeManagedAlbum(album) });
 }
 
 async function createUniqueAlbumSlug(token, title, requestedSlug) {
@@ -6319,9 +6369,16 @@ async function handleFilmScanCreate(req, res, albumId) {
   }
 }
 
-async function handleFilmScanGet(res, albumId, jobId) {
+async function handleFilmScanGet(res, albumId, jobId, progressOnly = false) {
   const token = await directusLogin();
   const job = await getFilmScanJobRecord(token, albumId, jobId);
+  // Progress polling does not need full source/frame lists on every tick.
+  if (progressOnly) {
+    const summary = serializeFilmScanJob(job);
+    delete summary.frames; delete summary.sources;
+    sendJson(res, 200, { status: "ok", job: summary });
+    return;
+  }
   const [sources, frames] = await Promise.all([
     listFilmScanSources(token, jobId),
     listFilmScanFrames(token, jobId)
@@ -6417,7 +6474,10 @@ async function renderReviewedFilmFrame(options) {
     ...options.adjustments,
     maskRgb: options.maskRgb || options.adjustments?.maskRgb || null
   });
-  const prepared = await prepareFilmFrameForRendering({
+  // Interactive adjustments reuse only a private, fingerprinted density intermediate.
+  const prepare = options.previewCache && options.filmType === "color-negative"
+    ? value => prepareCachedPreview(value, prepareFilmFrameForRendering) : prepareFilmFrameForRendering;
+  const prepared = await prepare({
     sourcePath: options.sourcePath,
     crop: options.crop,
     rotation: options.rotation,
@@ -6554,6 +6614,7 @@ async function renderFilmScanFramePreviewNow(token, job, frame, options = {}) {
     maskRgb: preview.adjustments.maskRgb,
     tempDir: path.dirname(previewPath),
     key: `preview-${frame.id}`,
+    previewCache: true,
     maximumDimension: 1400,
     quality: 88
   });
@@ -7529,7 +7590,7 @@ async function handleAlbumRouteNow(req, res, url) {
     const pathname = url.pathname;
 
     if (req.method === "GET" && pathname === "/albums/manage") {
-      await handleAlbumManageList(res);
+      await handleAlbumManageList(res, url);
       return;
     }
     if (req.method === "POST" && pathname === "/albums") {
@@ -7544,6 +7605,11 @@ async function handleAlbumRouteNow(req, res, url) {
       return;
     }
 
+    const managed = pathname.match(/^\/albums\/([^/]+)\/manage$/);
+    if (req.method === "GET" && managed) {
+      await handleAlbumManageGet(res, normalizeAlbumId(managed[1]));
+      return;
+    }
     let match = pathname.match(/^\/albums\/([^/]+)$/);
     if (req.method === "PATCH" && match) {
       await handleAlbumPatch(
@@ -7629,7 +7695,7 @@ async function handleAlbumRouteNow(req, res, url) {
       const albumId = normalizeAlbumId(decodeURIComponent(match[1]));
       const jobId = normalizeAlbumId(decodeURIComponent(match[2]), "job id");
       if (req.method === "GET") {
-        await handleFilmScanGet(res, albumId, jobId);
+        await handleFilmScanGet(res, albumId, jobId, url.searchParams.get("progressOnly") === "true");
       } else {
         await handleFilmScanJobPatch(req, res, albumId, jobId);
       }
@@ -7737,12 +7803,8 @@ function hashAnalyticsValue(value) {
 }
 
 function clientAddress(req) {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim()) {
-    return forwarded.split(",")[0].trim();
-  }
-
-  return req.socket.remoteAddress || "";
+  // Ignore user-supplied X-Forwarded-For; Nginx overwrites X-Real-IP when trusted.
+  return requestAddress(req, TRUST_PROXY);
 }
 
 function truncateText(value, maxLength) {
@@ -7791,141 +7853,28 @@ function normalizeAnalyticsEvent(body, req) {
 
 async function getAnalyticsItemRecord(token, event) {
   const collection = event.itemType === "post" ? "posts" : "video_projects";
-  const data = await directusRequest(
-    `/items/${collection}/${event.itemId}?fields=id,title,slug`,
-    token
-  );
-
-  return data.data;
-}
-
-async function syncAnalyticsItem(token, event, providedItem = null) {
-  const item = providedItem || await getAnalyticsItemRecord(token, event);
-  const itemKey = `${event.itemType}:${event.itemId}`;
-  const eventParams = new URLSearchParams({
-    "filter[item_key][_eq]": itemKey,
-    // Return at most one aggregate row per event type, regardless of history size.
-    "aggregate[count]": "id",
-    "aggregate[countDistinct]": "visitor_hash",
-    "aggregate[max]": "created_at",
-    "groupBy[]": "event_type"
-  });
-  const groups = (
-    await directusRequest(`/items/analytics_events?${eventParams.toString()}`, token)
-  ).data || [];
-  const views = groups.find((group) => group.event_type === "view");
-  const plays = groups.find((group) => group.event_type === "play");
-  const lastEventAt = groups
-    .map((group) => group.max?.created_at)
-    .filter(Boolean)
-    .sort()
-    .at(-1) || null;
-
-  const payload = {
-    item_type: event.itemType,
-    item_key: itemKey,
-    title: item.title,
-    slug: item.slug,
-    post_id: event.itemType === "post" ? item.id : null,
-    video_project_id: event.itemType === "video" ? item.id : null,
-    view_count: Number(views?.count?.id || 0),
-    visitor_count: Number(views?.countDistinct?.visitor_hash || 0),
-    play_count: Number(plays?.count?.id || 0),
-    player_count: Number(plays?.countDistinct?.visitor_hash || 0),
-    last_event_at: lastEventAt,
-    updated_at: new Date().toISOString()
-  };
-
-  const itemParams = new URLSearchParams({
-    "filter[item_key][_eq]": itemKey,
-    fields: "id",
-    limit: "1"
-  });
-  const existing = (
-    await directusRequest(`/items/analytics_items?${itemParams.toString()}`, token)
-  ).data?.[0];
-
-  if (existing) {
-    return (
-      await directusRequest(`/items/analytics_items/${existing.id}`, token, {
-        method: "PATCH",
-        body: payload
-      })
-    ).data;
-  }
-
-  return (
-    await directusRequest("/items/analytics_items", token, {
-      method: "POST",
-      body: payload
-    })
-  ).data;
-}
-
-const analyticsRefreshes = new Map();
-
-function scheduleAnalyticsRefresh(token, event, item) {
-  const key = `${event.itemType}:${event.itemId}`;
-  const existing = analyticsRefreshes.get(key);
-  if (existing) {
-    existing.latest = { token, event, item };
-    return existing.promise;
-  }
-  const state = { latest: { token, event, item }, promise: null };
-  // Serialize each item's writes. Events received during a query require one trailing refresh.
-  state.promise = Promise.resolve().then(async () => {
-    while (state.latest) {
-      // Batch bursts even when the database answers faster than incoming beacon requests.
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      const next = state.latest;
-      state.latest = null;
-      await syncAnalyticsItem(next.token, next.event, next.item);
+  const item = (await directusRequest(`/items/${collection}/${event.itemId}?fields=id,title,slug,published`, token)).data;
+  if (!item || !parseBoolean(item.published)) throw httpError(404, "Published analytics item not found.");
+  if (event.masterId) {
+    if (event.itemType !== "video" || event.eventType !== "play") throw httpError(400, "A master belongs to a video play event.");
+    const master = (await directusRequest(`/items/video_masters/${event.masterId}?fields=project_id,status,verification_status`, token)).data;
+    if (Number(master?.project_id) !== Number(item.id) || master?.status !== "ready" || master?.verification_status !== "ready") {
+      throw httpError(400, "Analytics master does not belong to this published video.");
     }
-  }).finally(() => analyticsRefreshes.delete(key));
-  analyticsRefreshes.set(key, state);
-  return state.promise;
+  }
+  return item;
 }
 
 async function handleAnalyticsEvent(req, res) {
   try {
+    // Admission occurs before parsing or any service-account CMS query.
+    analyticsBudget.consume(requestAddress(req, TRUST_PROXY));
     const event = normalizeAnalyticsEvent(await readJsonBody(req), req);
-    const token = await directusLogin();
-    const item = await getAnalyticsItemRecord(token, event);
-    const now = new Date().toISOString();
-    const itemKey = `${event.itemType}:${event.itemId}`;
-
-    const created = await directusRequest("/items/analytics_events", token, {
-      method: "POST",
-      body: {
-        event_type: event.eventType,
-        item_type: event.itemType,
-        item_key: itemKey,
-        post_id: event.itemType === "post" ? item.id : null,
-        video_project_id: event.itemType === "video" ? item.id : null,
-        video_master_id: event.masterId || null,
-        visitor_hash: event.visitorHash,
-        path: event.path,
-        referrer: event.referrer,
-        user_agent: event.userAgent,
-        created_at: now
-      }
-    });
-
-    sendJson(res, 202, {
-      status: "ok",
-      event: created.data.id
-    });
-    // Keep this request in the drain count until the post-response aggregate settles.
-    await scheduleAnalyticsRefresh(token, event, item).catch((error) => {
-      console.error(
-        `[analytics] Aggregate refresh failed for ${itemKey}: ${error.message}`
-      );
-    });
+    const item = await getAnalyticsItemRecord(await directusLogin(), event);
+    const recorded = await analyticsRecorder.record(event, item);
+    sendJson(res, 202, { status: "ok", event: recorded.id, duplicate: recorded.duplicate });
   } catch (error) {
-    sendJson(res, error.statusCode || 500, {
-      status: "error",
-      error: error.message
-    });
+    sendJson(res, error.statusCode || 500, { status: "error", error: error.message });
   }
 }
 
@@ -8266,10 +8215,13 @@ async function prepareImfPlayback(imf, metadata, sourceProbe, outputDir) {
 }
 
 async function handleUpload(req, res) {
-  let parsed;
+  let parsed, releaseReception, releaseReservation;
   try {
     requireUploadAuth(req);
-    // Receiving a slow upload must not occupy an FFmpeg/film-processing slot.
+    // Bound reception and reserve disk independently of later FFmpeg admission.
+    releaseReception = await legacyUploadSlots.acquire();
+    const declared = Number(req.headers["content-length"] || 0);
+    releaseReservation = await videoUploads.reserveLegacy(declared || MAX_LEGACY_UPLOAD_BYTES, path.join(ROOT, "tmp"));
     parsed = await parseMultipart(req);
     if (resourceLimits.enabled) {
       await withMediaRequest(req, res, () => handleUploadNow(req, res, { parsedInput: parsed }));
@@ -8278,6 +8230,8 @@ async function handleUpload(req, res) {
     sendJson(res, error.statusCode || 500, { status: "error", error: error.message });
   } finally {
     if (parsed?.tempDir) await fsp.rm(parsed.tempDir, { recursive: true, force: true }).catch(() => {});
+    releaseReservation?.();
+    releaseReception?.();
   }
 }
 
@@ -8465,7 +8419,10 @@ const getMediaHealth = createCachedProbe(() => Promise.all([
     commandAvailable(FFPROBE_PATH)
   ]));
 
-async function handleHealth(res) {
+async function handleHealth(res, detailed = false) {
+  // Public health checks do not disclose storage paths, credentials or topology.
+  res.setHeader?.("Cache-Control", "no-store");
+  if (!detailed) { sendJson(res, 200, { status: "ok" }); return; }
   const [ffmpegAvailable, ffprobeAvailable] = await getMediaHealth();
 
   sendJson(res, 200, {
@@ -8562,7 +8519,8 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/health") {
-    await handleHealth(res);
+    const detailed = assetAccess(req).media;
+    await handleHealth(res, detailed);
     return;
   }
 
@@ -8655,22 +8613,42 @@ const server = http.createServer({
   headersTimeout: 60000, keepAliveTimeout: 65000
 }, dispatchRequest);
 // Migrate every legacy task, including completed/review tasks, before any public listener starts.
-prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT).then(() => videoUploads.init()).then(() => {
+async function verifyApiSchema() {
+  // Refuse a partial rollout instead of silently accepting traffic with old counter fields.
+  const token = await directusLogin();
+  for (const route of [
+    "/items/analytics_events?fields=id,dedupe_key,first_visitor&limit=1",
+    "/items/analytics_items?fields=id,last_event_id&limit=1"
+  ]) await directusRequest(route, token);
+}
+verifyApiSchema().then(() => prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT)).then(() => videoUploads.init()).then(() => {
   server.listen(PORT, HOST, () => {
     console.log(`Upload API listening on http://${HOST}:${PORT}`);
     void recoverFilmScanQueue();
     void videoUploads.drain();
   });
 }).catch(error => {
-  console.error(`Private media storage is not ready: ${error.message}`);
+  console.error(`API storage/schema is not ready; run setup:cms-schema and verify service permissions: ${error.message}`);
   process.exitCode = 1;
 });
 
 async function handleMedia(req, pathname, res) {
+  res.setHeader("Cache-Control", "private, no-store");
   try {
     const filePath = await publicMediaPath(MEDIA_ROOT, FILM_SCAN_ROOT,
       pathname.replace(/^\/media\//, ""));
 
+    // Authorization precedes validators so unpublishing also revokes conditional/range reads.
+    const relative = path.relative(await fsp.realpath(MEDIA_ROOT), filePath).split(path.sep).join("/");
+    const access = assetAccess(req);
+    assetBudget.consume(requestAddress(req, TRUST_PROXY));
+    const release = await assetSlots.acquire();
+    try {
+      if (res.destroyed) return;
+      if (!await canReadMedia(relative, access, async route => directusRequest(route, await directusLogin()), PUBLIC_MEDIA_FILES)) {
+        throw httpError(404, "Media file not found.");
+      }
+    } finally { release(); }
     const stat = await fsp.stat(filePath);
     if (!stat.isFile()) {
       throw httpError(404, "Media file not found.");
@@ -8681,7 +8659,9 @@ async function handleMedia(req, pathname, res) {
     const responseHeaders = {
       "Content-Type": contentType(filePath),
       "Accept-Ranges": "bytes",
-      "Cache-Control": cacheControl(filePath),
+      "Cache-Control": access.media ? "private, no-store" : cacheControl(filePath),
+      Vary: "Authorization, X-Upload-Token, X-Article-Token",
+      "X-Content-Type-Options": "nosniff",
       ETag: etag,
       "Last-Modified": lastModified
     };
@@ -8724,12 +8704,13 @@ async function handleMedia(req, pathname, res) {
     const stream = fs.createReadStream(filePath, range
       ? { start: range.start, end: range.end }
       : undefined);
-    stream.on("error", (error) => res.destroy(error));
-    stream.pipe(res);
+    // Pipeline closes the file descriptor when the client cancels a download or range request.
+    await pipeline(stream, res);
   } catch (error) {
     sendJson(res, error.statusCode || 404, {
       status: "error",
-      error: error.message
+      // Filesystem errors can contain private absolute paths; never expose them here.
+      error: (error.statusCode || 404) === 404 ? "Media file not found." : "Media is temporarily unavailable."
     });
   }
 }
@@ -8757,7 +8738,7 @@ async function fetchDirectusAsset(
   });
   if (
     !authRetried &&
-    [401, 403].includes(response.status)
+    response.status === 401
   ) {
     await response.body?.cancel().catch(() => {});
     const refreshedToken = await refreshDirectusLogin(token);
@@ -8785,6 +8766,7 @@ function assetAccess(req) {
 }
 
 async function handleAsset(req, url, res) {
+  let release;
   // Denials and authenticated previews must never be cached as public media.
   res.setHeader("Cache-Control", "private, no-store");
   const controller = new AbortController();
@@ -8812,8 +8794,10 @@ async function handleAsset(req, url, res) {
     }
 
     const access = assetAccess(req);
+    assetBudget.consume(requestAddress(req, TRUST_PROXY));
+    release = await assetSlots.acquire({ signal: controller.signal });
     const token = await directusLogin();
-    if (!await canReadAsset(fileId, access, route => directusRequest(route, token), PUBLIC_ASSET_IDS)) {
+    if (!await authorizeAsset(fileId, access)) {
       throw httpError(404, "Asset not found.");
     }
     const assetUrl = new URL(
@@ -8828,8 +8812,12 @@ async function handleAsset(req, url, res) {
       req.headers,
       req.method,
       false,
-      controller.signal
+      AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)])
     );
+    // Bound authorization/upstream setup, not the client's download speed.
+    // A slow reader must not occupy every slot needed by other images or HLS checks.
+    release();
+    release = null;
 
     // Even a conditional request must recheck publication before emitting 304.
     const cacheHeader = access.media || access.article
@@ -8893,6 +8881,7 @@ async function handleAsset(req, url, res) {
       error: error.message
     });
   } finally {
+    release?.();
     res.removeListener("close", disconnect);
   }
 }
@@ -8918,8 +8907,7 @@ function contentType(filePath) {
   );
 }
 
-function cacheControl(filePath) {
-  return path.extname(filePath).toLowerCase() === ".m3u8"
-    ? "no-cache, must-revalidate"
-    : "public, max-age=604800, stale-while-revalidate=2592000";
+function cacheControl() {
+  // Revalidate every public media read so an owner can revoke publication immediately.
+  return "public, no-cache, must-revalidate";
 }

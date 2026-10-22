@@ -31,6 +31,8 @@ x-cms-environment: &cms-environment
   DB_SSL: "false"
   ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL}
   ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+  DIRECTUS_HEALTH_EMAIL: ${CMS_HEALTH_EMAIL:-}
+  DIRECTUS_HEALTH_PASSWORD: ${CMS_HEALTH_PASSWORD:-}
   STORAGE_LOCATIONS: local
   STORAGE_LOCAL_DRIVER: local
   STORAGE_LOCAL_ROOT: /directus/uploads
@@ -61,7 +63,7 @@ services:
       db: { condition: service_healthy }
     volumes: ["cms-uploads:/directus/uploads", "cms-extensions:/directus/extensions"]
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:8055/server/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: [CMD, node, /app/scripts/directus-health.cjs]
       interval: 30s
       timeout: 10s
       retries: 6
@@ -97,6 +99,8 @@ services:
       DIRECTUS_URL: http://cms:8055
       DIRECTUS_EMAIL: ${SERVICE_EMAIL:?Set SERVICE_EMAIL}
       DIRECTUS_PASSWORD: ${SERVICE_PASSWORD:?Set SERVICE_PASSWORD}
+      # Nginx overwrites X-Real-IP; only Nginx publishes a host port.
+      TRUST_PROXY: "true"
       UPLOAD_API_TOKEN: ${UPLOAD_API_TOKEN:?Set UPLOAD_API_TOKEN}
       ARTICLE_API_TOKEN: ${ARTICLE_API_TOKEN:?Set ARTICLE_API_TOKEN}
     depends_on:
@@ -129,6 +133,7 @@ services:
       NEXT_PUBLIC_SITE_URL: ${PUBLIC_URL:-http://localhost:8080}
       DIRECTUS_REVALIDATE: "30"
       REVALIDATE_SECRET: ${REVALIDATE_SECRET:?Set REVALIDATE_SECRET}
+      API_INTERNAL_URL: http://api:8060
     depends_on:
       cms: { condition: service_healthy }
       api: { condition: service_healthy }

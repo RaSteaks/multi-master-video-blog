@@ -19,7 +19,7 @@ async function directory(t) {
 // Extract actual server functions with isolated I/O; never start the user's API/CMS.
 async function fixture(names, deps = {}, declarations = "") {
   const source = await fs.readFile(path.join(__dirname, "../apps/api/src/server.cjs"), "utf8");
-  const context = vm.createContext({ Buffer, setTimeout, clearTimeout, setImmediate, AbortController,
+  const context = vm.createContext({ Buffer, path, ROOT: os.tmpdir(), setTimeout, clearTimeout, setImmediate, AbortController,
     mediaContext: new AsyncLocalStorage(), resourceLimits: resolveResourceProfile({ RESOURCE_PROFILE: "low-2gb" }),
     maintenanceMode: false, ...deps });
   vm.runInContext(declarations + names.map(name => {
@@ -76,13 +76,15 @@ test("video and film HTTP entries share admission and queued disconnects never s
   const entered = new Promise(resolve => { started = resolve; });
   let filmCalls = 0;
   const api = await fixture(["httpError", "withMediaRequest", "handleUpload", "handleAlbumRoute"], {
+    legacyUploadSlots: { acquire: async () => () => {} },
+    videoUploads: { reserveLegacy: async () => () => {} }, MAX_LEGACY_UPLOAD_BYTES: 1024,
     mediaProcessingSlots: slots, requireUploadAuth() {}, requireAlbumAuth() {}, sendJson() {},
     // Multipart reception now precedes shared processing admission.
     parseMultipart: async () => ({}),
     handleUploadNow: () => new Promise(resolve => { finish = resolve; started(); }),
     handleAlbumRouteNow: async () => { filmCalls++; }
   });
-  const video = api.handleUpload({}, new EventEmitter());
+  const video = api.handleUpload({ headers: {} }, new EventEmitter());
   await entered;
   const response = new EventEmitter();
   const film = api.handleAlbumRoute({ method: "POST" }, response, { pathname: "/albums/1/film-scans/1/commit" });
@@ -93,7 +95,7 @@ test("video and film HTTP entries share admission and queued disconnects never s
   await api.handleAlbumRoute({ method: "POST" }, new EventEmitter(), { pathname: "/albums/1/film-scans/1/commit" });
   assert.equal(filmCalls, 1); assert.equal(slots.snapshot().active, 0);
   api.maintenanceMode = true;
-  await api.handleUpload({}, new EventEmitter());
+  await api.handleUpload({ headers: {} }, new EventEmitter());
   assert.equal(slots.snapshot().active, 0);
 });
 
@@ -180,7 +182,9 @@ test("asset proxy cancellation propagates to the upstream fetch before headers a
     URL, ASSET_PRESETS: new Set(), DIRECTUS_URL: "http://cms.invalid",
     directusLogin: async () => "fixture", sendJson() {},
     assetAccess: () => ({ media: false, article: false }),
-    canReadAsset: async () => true, PUBLIC_ASSET_IDS: new Set(),
+    authorizeAsset: async () => true, PUBLIC_ASSET_IDS: new Set(),
+    assetBudget: { consume() {} }, assetSlots: { acquire: async () => () => {} },
+    requestAddress: () => "fixture", TRUST_PROXY: false, AbortSignal,
     fetchDirectusAsset: (...args) => new Promise((resolve, reject) => {
       upstreamSignal = args[5]; upstreamSignal.addEventListener("abort", () => reject(upstreamSignal.reason));
       requestStarted();

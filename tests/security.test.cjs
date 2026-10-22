@@ -20,7 +20,13 @@ const { createCachedProbe } = require("../apps/api/src/cached-probe.cjs");
 function apiFixture(names, extra = {}) {
   const context = vm.createContext({ fs, fsp, path, crypto, Buffer, URL, URLSearchParams,
     // Stream aborts and resource diagnostics are part of the combined API runtime.
-    Readable, Response, AbortController, pipeline, ...media, ...require("../apps/api/src/http-utils.cjs"), ...extra });
+    Readable, Response, AbortController, AbortSignal, pipeline, MAX_LEGACY_UPLOAD_BYTES: 8 * 1024 ** 3,
+    // Isolate admission from the separately tested ownership/stream policies.
+    assetSlots: { acquire: async () => () => {} }, assetBudget: { consume() {} },
+    requestAddress: () => "fixture", TRUST_PROXY: false,
+    assetAccess: () => ({}), canReadMedia: async () => true, PUBLIC_MEDIA_FILES: new Set(), ...media, ...require("../apps/api/src/http-utils.cjs"), ...extra });
+  context.authorizeAsset = async (id, access) => (extra.canReadAsset || canReadAsset)(id, access,
+    route => context.directusRequest(route, "service-token"), context.PUBLIC_ASSET_IDS);
   vm.runInContext(names.map(name => {
     const match = apiSource.match(new RegExp("^(?:async )?function " + name + "\\([\\s\\S]*?^}", "m"));
     assert.ok(match, name);
@@ -535,14 +541,14 @@ test("health requests share a short probe, cache failures and refresh once after
   const api = apiFixture(["commandAvailable", "handleHealth"], extra);
   vm.runInContext(apiSource.match(/^const getMediaHealth = createCachedProbe\([\s\S]*?^  \]\)\);/m)[0], api);
   const responses = Array.from({ length: 20 }, () => ({}));
-  const pending = responses.map(res => api.handleHealth(res));
+  const pending = responses.map(res => api.handleHealth(res, true));
   await Promise.resolve(); assert.equal(calls, 2); release(); await Promise.all(pending);
   assert.equal(responses[0].payload.ffmpeg.available, true);
-  await api.handleHealth({}); assert.equal(calls, 2);
+  await api.handleHealth({}, true); assert.equal(calls, 2);
   clock = 60001; succeed = false;
-  const res = {}; await Promise.all([api.handleHealth(res), api.handleHealth({})]);
+  const res = {}; await Promise.all([api.handleHealth(res, true), api.handleHealth({}, true)]);
   assert.equal(calls, 4); assert.equal(res.payload.ffmpeg.available, false);
-  await api.handleHealth({}); assert.equal(calls, 4);
+  await api.handleHealth({}, true); assert.equal(calls, 4);
 });
 
 test("draft image transport never sends a token to external or rewritten URLs", async () => {

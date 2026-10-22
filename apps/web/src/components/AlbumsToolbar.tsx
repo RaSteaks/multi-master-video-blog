@@ -16,6 +16,7 @@ import {
 import {
   albumApiRequest,
   fetchManagedAlbums,
+  fetchManagedAlbum,
   pairAlbumFileSelections,
   uploadAlbumFormData,
   type ManagedAlbum,
@@ -68,7 +69,10 @@ export function AlbumsToolbar({
   );
   const [loadingAlbums, setLoadingAlbums] = useState(false);
   const [notice, setNotice] = useState("");
+  const [managerError, setManagerError] = useState("");
   const [managedAlbumId, setManagedAlbumId] = useState<number | null>(null);
+  const managerLoad = useRef<AbortController | null>(null);
+  useEffect(() => () => managerLoad.current?.abort(), []);
 
   async function loadManaged() {
     if (!token.trim()) {
@@ -100,6 +104,8 @@ export function AlbumsToolbar({
   }
 
   function closeDialog() {
+    managerLoad.current?.abort();
+    setLoadingAlbums(false);
     setDialog(null);
     clearDialogQuery();
   }
@@ -172,6 +178,7 @@ export function AlbumsToolbar({
           onClose={closeDialog}
           wide
         >
+          <FormFeedback error={managerError} />
           <UploadAlbumPhotosForm
             publicAlbums={albums}
             managedAlbums={managedAlbums}
@@ -181,10 +188,21 @@ export function AlbumsToolbar({
             loadManaged={loadManaged}
             onManagedAlbums={setManagedAlbums}
             onCompleted={completed}
-            onOpenManager={(albumId) => {
-              clearDialogQuery();
-              setManagedAlbumId(albumId);
-              setDialog("manage");
+            onOpenManager={async (albumId) => {
+              // Keep the current dialog and its values until selected details arrive.
+              managerLoad.current?.abort();
+              const controller = new AbortController();
+              managerLoad.current = controller;
+              setManagerError("");
+              setLoadingAlbums(true);
+              try {
+                const album = await fetchManagedAlbum(token, albumId, controller.signal);
+                if (controller.signal.aborted) return;
+                updateManagedAlbum(album);
+                clearDialogQuery(); setManagedAlbumId(albumId); setDialog("manage");
+              } catch (cause) {
+                if (!controller.signal.aborted) setManagerError(cause instanceof Error ? cause.message : "相簿载入失败，请重试。");
+              } finally { if (managerLoad.current === controller) setLoadingAlbums(false); }
             }}
           />
         </AlbumModal>
@@ -613,6 +631,8 @@ function UploadAlbumPhotosForm({
             className="album-action-button"
             type="button"
             onClick={() => onOpenManager(selectedManagedAlbum.id)}
+            disabled={loadingAlbums}
+            aria-busy={loadingAlbums}
           >
             管理照片、封面与顺序
           </button>

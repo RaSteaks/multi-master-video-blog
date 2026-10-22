@@ -1,15 +1,21 @@
+const { directusHealth } = require("./directus-health.cjs");
+const { loadDirectusEnv } = require("./directus-db-utils.cjs");
+
 const checks = [
   ["frontend", "http://127.0.0.1:3000"],
   ["directus", "http://127.0.0.1:8055/server/health"],
   ["upload_api", "http://127.0.0.1:8060/health"],
-  ["test_hls", "http://127.0.0.1:3000/media/api-upload-test/sdr/master.m3u8"]
+  // Public media now requires an actual published owner; do not assume a fixture exists.
+  ...(process.env.HEALTH_HLS_URL ? [["hls", process.env.HEALTH_HLS_URL]] : [])
 ];
 
 async function check(name, url) {
   const started = Date.now();
 
   try {
-    const response = await fetch(url);
+    if (name === "directus") return { name, ...await directusHealth(loadDirectusEnv(), url.replace(/\/server\/health$/, "")), elapsed: Date.now() - started };
+    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    await response.body?.cancel();
     const elapsed = Date.now() - started;
 
     if (!response.ok) {

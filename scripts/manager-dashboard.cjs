@@ -1,3 +1,5 @@
+// CMS 12 health checks authenticate without exposing the service account to the UI.
+const { directusHealth } = require("./directus-health.cjs");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const http = require("node:http");
@@ -555,6 +557,10 @@ async function getPortProcessTree(port) {
 async function checkHttp(url, timeoutMs = 3000) {
   const started = Date.now();
   try {
+    if (url.endsWith("/server/health")) {
+      const health = await directusHealth(loadDirectusEnv(), url.replace(/\/server\/health$/, ""), timeoutMs);
+      return { ...health, elapsed: Date.now() - started };
+    }
     const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
     await response.body?.cancel();
     return {

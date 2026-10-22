@@ -25,7 +25,7 @@ Directus CMS 内容管理，支持 Windows、Linux systemd 和 Docker Compose �
 | **多母版视频** | 同一项目支持 SDR · HDR10 · HLG · Dolby Vision · Custom 任意切换 |
 | **HLS 自适应播放** | Shaka Player 驱动，浏览器端原生 HLS 流式播放 |
 | **自动转码** | 上传即触发 FFmpeg / FFprobe，自动生成 HLS 并提取技术元数据 |
-| **Headless CMS** | Directus 11，REST + GraphQL，结构化管理文章与视频项目 |
+| **Headless CMS** | Directus 12，REST + GraphQL，结构化管理文章与视频项目 |
 | **文章博客** | Markdown 正文、封面、标签、分类、草稿/发布状态 |
 | **站内写作台** | `/write` 直接编写与预览 Markdown，统一上传封面和正文图片后由 Directus 入库 |
 | **HDR 相簿** | `/albums` 页内新建相簿、批量配对 SDR 与 HDR AVIF；网格使用 SDR，HDR 设备的灯箱优先显示 PQ / HLG 原片 |
@@ -57,7 +57,7 @@ Directus CMS 内容管理，支持 Windows、Linux systemd 和 Docker Compose �
 
 | 技术 | 用途 |
 |------|------|
-| **Directus 11** | Headless CMS，提供 REST + GraphQL API 与可视化管理界面 |
+| **Directus 12** | Headless CMS，提供 REST + GraphQL API 与可视化管理界面 |
 | **PostgreSQL** | 主数据库|
 
 
@@ -89,7 +89,7 @@ multi-master-video-blog/
 
 ### 前置依赖
 
-- **Node.js** `>= 22`
+- **Node.js 22 LTS** `>= 22.12.0 < 23`
 - **FFmpeg** + **FFprobe**（加入系统 PATH 或通过 `.env` 指定路径）
 - **PostgreSQL**
 - **Windows 11** / Windows Server 或 **Linux**；生产安装见 [部署](#部署)
@@ -312,6 +312,9 @@ npm run manager                # 启动本地服务管理面板
 
 ## 部署
 
+从安全审查前的版本升级，请先阅读 [安全更新部署顺序](docs/security-remediation-2026-10-23.md)。
+Directus 12 涉及数据库迁移、认证健康检查和匿名 CMS 权限收口，不能只重启旧构建。
+
 | 部署方式 | 入口 | 适用环境 |
 |----------|------|----------|
 | Linux 原生服务 | [systemd 部署步骤](#deploy-linux) | 已有 PostgreSQL、Nginx，希望直接管理进程 |
@@ -416,7 +419,7 @@ CMS 监听 `127.0.0.1:8055`。远程安装时，在自己的电脑执行 `ssh -L
 
 ```bash
 sudo systemctl enable --now video-blog-api video-blog-web
-curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:8055/server/health
+CMS_ENV_FILE=/etc/video-blog/cms.env node scripts/directus-health.cjs
 curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:8060/health
 curl --fail --silent --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:3000/ > /dev/null
 ```

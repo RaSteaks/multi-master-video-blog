@@ -43,14 +43,16 @@ export default async function AlbumsPage({
             const coverId =
               album.cover_image || photos[0]?.sdr_image || null;
             const cover = assetUrl(coverId, "album-cover");
-            const hdrCount = photos.filter((photo) => photo.hdr_image).length;
+            // Counts are aggregated server-side; photos contains only the fallback cover.
+            const photoCount = album.photo_count ?? photos.length;
+            const hdrCount = album.hdr_photo_count ?? photos.filter((photo) => photo.hdr_image).length;
 
             return (
               <li key={album.id}>
                 <Link
                   className="album-card"
                   href={`/albums/${album.slug}`}
-                  aria-label={`打开相簿“${album.title}”，共 ${photos.length} 张照片`}
+                  aria-label={`打开相簿“${album.title}”，共 ${photoCount} 张照片`}
                 >
                   <div className="album-card-frame">
                     <span className="album-frame-index" aria-hidden="true">
@@ -80,7 +82,7 @@ export default async function AlbumsPage({
                   <div className="album-card-copy">
                     <div>
                       <p className="album-card-kicker">
-                        {photos.length} 张照片
+                        {photoCount} 张照片
                         {hdrCount ? ` · ${hdrCount} 组 HDR` : " · SDR"}
                       </p>
                       <h2>{album.title}</h2>

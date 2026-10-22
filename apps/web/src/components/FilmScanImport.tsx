@@ -145,22 +145,38 @@ export function FilmScanImport({
 
   useEffect(() => {
     if (!job || !["uploaded", "analyzing"].includes(job.status)) return;
-    const timer = window.setInterval(async () => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    // Start the next poll only after completion; stale jobs never overwrite newer state.
+    const poll = async () => {
+      if (controller.signal.aborted) return;
+      if (document.hidden) { timer = setTimeout(poll, 5000); return; }
       try {
         const response = await albumApiRequest<{ status: string; job: FilmJob }>(
-          `/api/albums/${job.albumId}/film-scans/${job.id}`,
-          token,
+          `/api/albums/${job.albumId}/film-scans/${job.id}?progressOnly=true`,
+          token, { signal: controller.signal },
         );
-        setJob(response.job);
+        if (controller.signal.aborted) return;
         if (response.job.status === "review_required") {
-          setPreviewRevision((value) => value + 1);
+          // Fetch frames once when analysis completes, not on every progress tick.
+          const detail = await albumApiRequest<{ status: string; job: FilmJob }>(
+            `/api/albums/${job.albumId}/film-scans/${job.id}`, token, { signal: controller.signal },
+          );
+          if (controller.signal.aborted) return;
+          setJob(detail.job);
+          setPreviewRevision(value => value + 1);
+          return;
         }
+        setJob(current => current?.id === response.job.id ? { ...current, ...response.job } : current);
       } catch (cause) {
+        if (controller.signal.aborted) return;
         setError(cause instanceof Error ? cause.message : "任务状态恢复失败。");
       }
-    }, 1400);
-    return () => window.clearInterval(timer);
-  }, [job, token]);
+      if (!controller.signal.aborted) timer = setTimeout(poll, 1400);
+    };
+    timer = setTimeout(poll, 1400);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [job?.id, job?.albumId, job?.status, token]);
 
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

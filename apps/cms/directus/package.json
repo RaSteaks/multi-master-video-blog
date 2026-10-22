@@ -3,11 +3,11 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "bootstrap": "directus bootstrap",
-    "dev": "directus start",
-    "start": "directus start"
+    "bootstrap": "node ../../../scripts/run-service.cjs bootstrap",
+    "dev": "node ../../../scripts/run-service.cjs cms",
+    "start": "node ../../../scripts/run-service.cjs cms"
   },
   "dependencies": {
-    "directus": "^11.17.4"
+    "directus": "12.5.0"
   }
 }

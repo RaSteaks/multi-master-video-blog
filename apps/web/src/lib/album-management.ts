@@ -125,6 +125,9 @@ export async function albumApiRequest<T>(
 ): Promise<T> {
   const response = await fetch(pathname, {
     ...init,
+    // A caller can cancel navigation/polling without losing the network deadline.
+    signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+    redirect: "error",
     headers: {
       Authorization: `Bearer ${token.trim()}`,
       ...(init.body instanceof FormData
@@ -196,9 +199,16 @@ export function uploadAlbumFormData<T>(
 }
 
 export async function fetchManagedAlbums(token: string) {
-  const response = await albumApiRequest<{
-    status: string;
-    albums: ManagedAlbum[];
-  }>("/api/albums/manage", token);
-  return response.albums;
+  // Picker metadata is paged and contains no expanded photos.
+  const albums: ManagedAlbum[] = [];
+  for (let page = 1; ; page++) {
+    const response = await albumApiRequest<{ albums: ManagedAlbum[]; hasMore: boolean }>(`/api/albums/manage?page=${page}`, token);
+    albums.push(...response.albums);
+    if (!response.hasMore) return albums;
+  }
+}
+
+export async function fetchManagedAlbum(token: string, id: number, signal?: AbortSignal) {
+  const response = await albumApiRequest<{ album: ManagedAlbum }>(`/api/albums/${id}/manage`, token, { signal });
+  return response.album;
 }

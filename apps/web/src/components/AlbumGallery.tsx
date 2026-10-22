@@ -15,7 +15,7 @@ import {
 } from "react";
 import {
   albumApiRequest,
-  fetchManagedAlbums,
+  fetchManagedAlbum,
   uploadAlbumFormData,
   type ManagedAlbum,
   type ManagedPhoto,
@@ -133,8 +133,8 @@ export function AlbumGallery({
     setAdminBusy(true);
     setAdminError("");
     try {
-      const albums = await fetchManagedAlbums(token);
-      const album = albums.find((item) => item.id === initialAlbum.id);
+      // Management fetches only the selected album, including draft photos.
+      const album = await fetchManagedAlbum(token, initialAlbum.id);
       if (!album) {
         throw new Error("管理列表中未找到当前相簿。");
       }
@@ -152,8 +152,7 @@ export function AlbumGallery({
   }
 
   async function refreshAdminAlbum() {
-    const albums = await fetchManagedAlbums(token);
-    const album = albums.find((item) => item.id === initialAlbum.id);
+    const album = await fetchManagedAlbum(token, initialAlbum.id);
     if (!album) throw new Error("管理列表中未找到当前相簿。");
     setManagedAlbum(album);
     onManagedAlbumChange?.(album);

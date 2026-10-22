@@ -1,6 +1,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
+const { directusHealth } = require("./directus-health.cjs");
 const { loadEnvironment, resolveResourceProfile } = require("../config/resource-profile.cjs");
 
 // One launcher applies identical budgets to native services and Docker images.
@@ -9,6 +10,13 @@ const service = process.argv[2];
 const directories = { api: "apps/api", web: "apps/web", build: "apps/web", cms: "apps/cms/directus", schema: "apps/cms/directus", bootstrap: "apps/cms/directus" };
 if (!directories[service]) throw new Error("Expected api, web, build, cms, bootstrap or schema.");
 const cwd = process.env.SERVICE_CWD || path.join(root, directories[service]);
+// Match Next's production env precedence/expansion before authenticated readiness.
+if (["web", "build"].includes(service)) process.env.NODE_ENV ||= "production";
+// Containers inject their environment and need no extra env-module lookup here.
+if (["web", "build"].includes(service) && [".env", ".env.local", ".env.production", ".env.production.local"].some(name => fs.existsSync(path.join(cwd, name)))) {
+  const nextEntry = require.resolve("next/dist/bin/next", { paths: [cwd, root] });
+  require("node:module").createRequire(nextEntry)("@next/env").loadEnvConfig(cwd, false);
+}
 const env = loadEnvironment(path.join(cwd, ".env"));
 const settings = resolveResourceProfile(env);
 const heap = settings.heap[["bootstrap", "schema"].includes(service) ? "cms" : service];
@@ -42,22 +50,29 @@ for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => {
   else process.exitCode = 1;
 });
 async function start() {
+  // Fail closed before a Directus 12 listener can expose legacy anonymous grants.
+  if (service === "cms") await require("./directus-public-access.cjs").directusPublicAccess(env);
   if (["api", "web", "schema"].includes(service)) {
     const deadline = Date.now() + 180000;
-    const url = `${(env.DIRECTUS_URL || "http://127.0.0.1:8055").replace(/\/$/, "")}/server/health`;
     while (!stopping) {
-      try { const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
-        await response.body?.cancel();
-        if (response.ok) break;
-      } catch { /* CMS may still be booting or unavailable briefly after restart. */ }
+      try { await directusHealth(env, env.DIRECTUS_URL || "http://127.0.0.1:8055", 5000); break; }
+      catch { /* CMS may still be booting; 403 is never treated as healthy. */ }
       if (Date.now() >= deadline) throw new Error("CMS did not become healthy within 180 seconds.");
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
   if (stopping) return;
   // Preserve unrelated NODE_OPTIONS; explicit heap flags win over its heap setting.
-  child = spawn(process.execPath, [...(heap ? [`--max-old-space-size=${heap}`] : []), ...args], { cwd, env, stdio: "inherit" });
+  // Directus isolated-vm requires Node snapshots disabled on Node 20 and newer.
+  const vmFlags = ["cms", "bootstrap"].includes(service) ? ["--no-node-snapshot"] : [];
+  child = spawn(process.execPath, [...vmFlags, ...(heap ? [`--max-old-space-size=${heap}`] : []), ...args], { cwd, env, stdio: "inherit" });
   child.on("error", error => { console.error(error.message); process.exitCode = 1; });
-  child.on("exit", (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
+  child.on("exit", async (code, signal) => {
+    process.exitCode = code ?? (signal ? 1 : 0);
+    if (code === 0 && service === "bootstrap") {
+      try { await require("./directus-public-access.cjs").directusPublicAccess(env, { apply: true }); }
+      catch (error) { console.error(error.message); process.exitCode = 1; }
+    }
+  });
 }
 start().catch(error => { console.error(error.message); process.exitCode = 1; });

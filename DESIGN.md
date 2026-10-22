@@ -82,12 +82,15 @@ corners and inset preview chips use 4px corners.
   clients use the same throttled login; operation nonces are bound to the session.
   Session rules live in `docs/deployment.md`.
 
-- `FilmScanImport` owns film job feedback. Resource-blocked jobs retain originals
+- `FilmScanImport` owns film job feedback. Progress polling is serialized, bounded,
+  canceled on navigation, and reduced while hidden; full frames load on review readiness. Resource-blocked jobs retain originals
   and use the existing inline status region and refresh action; they must not
   reuse the failed-job copy that says originals were removed. Runtime state and
   restart behavior are defined in `docs/linux-deployment.md`.
 
-- `AlbumGallery` owns both public and managed photo tiles. Its responsive CSS grid
+- `AlbumGallery` owns both public and managed photo tiles. Album pickers load bounded
+  summaries; management loads the selected album before switching dialogs, retains
+  the current form on failure, and ignores canceled responses. Its responsive CSS grid
   follows row order so number badges, keyboard focus, lightbox navigation, and the
   first three eager images agree. Images retain their natural aspect ratios;
   Directus display dimensions reserve their space in both modes. Named thumbnail
