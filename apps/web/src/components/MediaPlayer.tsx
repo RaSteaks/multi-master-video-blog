@@ -1,13 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { trackAnalyticsEvent } from "@/components/AnalyticsTracker";
 import type { VideoMaster } from "@/lib/directus";
 import { masterResolution, mediaUrl } from "@/lib/directus";
 import { getDefaultMaster, getSdrFallback, isPlayableMaster, isSdrMaster, playbackErrorMessage } from "@/lib/video-playback";
 import { isHdrVideo, selectAutomaticMaster } from "@/lib/video-capabilities";
 import { playbackFormat } from "@/lib/video-format";
+import {
+  LOADING_HINT_DELAY_MS,
+  captureVideoFrame,
+  masterShortcutIndex,
+  releaseCanvas,
+  waitForPresentedFrame,
+} from "@/lib/master-switch";
+import styles from "./MediaPlayer.module.css";
 
 type MediaPlayerProps = {
   masters: VideoMaster[];
@@ -17,6 +25,9 @@ type MediaPlayerProps = {
 };
 
 type PlaybackState = "idle" | "loading" | "ready" | "playing" | "paused" | "error";
+
+/** How long the "switched to …" confirmation stays after the new master is on screen. */
+const SWITCHED_HINT_MS = 1600;
 
 type PlaybackSnapshot = {
   targetMasterId: number;
@@ -67,8 +78,22 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
   const playbackErrorHandlerRef = useRef<(error: unknown) => Promise<void>>(async () => {});
   const manualSelectionRef = useRef(false);
   const [selectionReady, setSelectionReady] = useState(false);
+  // Switch feedback. Everything is tied to a load request id so an older request can never
+  // release a newer request's freeze frame or announce a switch that has not happened.
+  const freezeRef = useRef<HTMLCanvasElement | null>(null);
+  const freezeOwnerRef = useRef<number | null>(null);
+  const settlingRequestRef = useRef<number | null>(null);
+  const userSwitchRef = useRef<{ requestId: number; label: string } | null>(null);
+  const switchedTimerRef = useRef<number | null>(null);
+  const [switchTarget, setSwitchTarget] = useState<string | null>(null);
+  const [switchedLabel, setSwitchedLabel] = useState<string | null>(null);
+  const [loadingHint, setLoadingHint] = useState(false);
+  const [statusChip, setStatusChip] = useState<{ text: string; kind: "busy" | "done" } | null>(null);
 
   const [activeMasterId, setActiveMasterId] = useState(() => getDefaultMaster(playableMasters)?.id);
+  // The latest requested master, updated synchronously so several switches inside one event
+  // batch compare against each other rather than against the last rendered state.
+  const intendedMasterIdRef = useRef(activeMasterId);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [playbackNotice, setPlaybackNotice] = useState<string | null>(null);
@@ -187,6 +212,47 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
     [],
   );
 
+  /** Hold the outgoing SDR picture while `requestId` loads; HDR is never turned into an SDR still. */
+  const holdFreezeFrame = useCallback((requestId: number) => {
+    const canvas = freezeRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+    if (freezeOwnerRef.current !== null) {
+      // Already holding the last real picture: the newest request now owns it.
+      freezeOwnerRef.current = requestId;
+      return;
+    }
+    const outgoing = currentMasterRef.current;
+    // A load still in flight has no trustworthy frame to hold.
+    if (!outgoing || !isSdrMaster(outgoing) || settlingRequestRef.current !== null || video.error) return;
+    if (!captureVideoFrame(video, canvas)) return;
+    canvas.dataset.visible = "true";
+    freezeOwnerRef.current = requestId;
+  }, []);
+
+  /** Release the held picture; with a request id, only if that request still owns it. */
+  const releaseFreezeFrame = useCallback((requestId?: number) => {
+    if (requestId !== undefined && freezeOwnerRef.current !== requestId) return;
+    freezeOwnerRef.current = null;
+    const canvas = freezeRef.current;
+    if (!canvas) return;
+    delete canvas.dataset.visible;
+    releaseCanvas(canvas);
+  }, []);
+
+  const completeUserSwitch = useCallback((requestId: number) => {
+    const pending = userSwitchRef.current;
+    if (!pending || pending.requestId !== requestId) return;
+    userSwitchRef.current = null;
+    setSwitchTarget(null);
+    setSwitchedLabel(pending.label);
+    if (switchedTimerRef.current !== null) window.clearTimeout(switchedTimerRef.current);
+    switchedTimerRef.current = window.setTimeout(() => {
+      switchedTimerRef.current = null;
+      setSwitchedLabel(null);
+    }, SWITCHED_HINT_MS);
+  }, []);
+
   const handleFatalPlaybackError = useCallback(
     async (loadError: unknown) => {
       const failedMaster = currentMasterRef.current;
@@ -196,6 +262,11 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
 
       setPlaybackState("error");
       manualSelectionRef.current = true;
+      // Errors are shown at once: no held picture, no pending "switching" claim.
+      settlingRequestRef.current = null;
+      releaseFreezeFrame();
+      userSwitchRef.current = null;
+      setSwitchTarget(null);
 
       if (
         sdrFallback &&
@@ -217,7 +288,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
 
       setError(playbackErrorMessage(loadError));
     },
-    [capturePlaybackSnapshot, playableMasters],
+    [capturePlaybackSnapshot, playableMasters, releaseFreezeFrame],
   );
 
   useEffect(() => {
@@ -226,6 +297,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     mountedRef.current = true;
 
     async function loadMaster() {
@@ -246,6 +318,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
       lastLoadSnapshotRef.current = snapshot;
       currentMasterRef.current = activeMaster;
       loadingMasterRef.current = true;
+      settlingRequestRef.current = snapshot.requestId;
       if (mountedRef.current) {
         setPlaybackState("loading");
         setError(null);
@@ -297,7 +370,18 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
 
         // Capability checks used native HLS when available; use that same path for HDR playback.
         playerRef.current.configure({ streaming: { preferNativeHls: isHdrVideo(activeMaster) && detectCapabilities().nativeHls } });
-        await playerRef.current.load(source, snapshot.time > 0 ? snapshot.time : null);
+        // Native HLS can present its paused frame before load() resolves. Observe from
+        // this source's metadata event so a refused play() does not lose that evidence.
+        let firstPresented: ReturnType<typeof waitForPresentedFrame> | null = null;
+        const observeFirstFrame = () => {
+          firstPresented = waitForPresentedFrame(video, { signal: controller.signal });
+        };
+        video.addEventListener("loadedmetadata", observeFirstFrame, { once: true });
+        try {
+          await playerRef.current.load(source, snapshot.time > 0 ? snapshot.time : null);
+        } finally {
+          video.removeEventListener("loadedmetadata", observeFirstFrame);
+        }
         if (
           cancelled ||
           !mountedRef.current ||
@@ -307,20 +391,58 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
         }
         loadingMasterRef.current = false;
 
+        let correctedPosition = false;
         if (snapshot.time > 0 && Number.isFinite(snapshot.time)) {
           const nextTime = clampPlaybackTime(snapshot.time, video.duration);
           if (Math.abs(video.currentTime - nextTime) > 0.35) {
             video.currentTime = nextTime;
+            correctedPosition = true;
           }
         }
 
+        // Loaded is not shown: wait (bounded) until the new master presents a frame at the
+        // target time, independently of play(), which may be refused or stall.
+        const presented = !correctedPosition && firstPresented
+          ? firstPresented
+          : waitForPresentedFrame(video, { signal: controller.signal });
+
         if (snapshot.wasPlaying) {
-          await video
-            .play()
-            .then(() => setPlaybackState("playing"))
-            .catch(() => setPlaybackState("ready"));
-        } else {
+          // play() can stay pending during a stall. It must never block the bounded
+          // frame wait, and a late result from an abandoned load cannot update the UI.
+          const stillCurrent = () => !cancelled && mountedRef.current && snapshot.requestId === loadRequestIdRef.current;
+          void video.play().then(
+            () => { if (stillCurrent()) setPlaybackState(video.paused ? "ready" : "playing"); },
+            () => { if (stillCurrent()) setPlaybackState("ready"); },
+          );
+        }
+
+        let frame = await presented;
+        if (cancelled || !mountedRef.current || snapshot.requestId !== loadRequestIdRef.current) return;
+        // An early seek, issued before any media data is buffered, can land at 0 (seen in
+        // WebKit MSE). Check the presented position once and correct it before releasing.
+        if (snapshot.time > 0 && video.readyState >= 2 && !video.seeking) {
+          const target = clampPlaybackTime(snapshot.time, video.duration);
+          if (Math.abs(video.currentTime - target) > 0.35) {
+            video.currentTime = target;
+            frame = await waitForPresentedFrame(video, { signal: controller.signal });
+            if (cancelled || !mountedRef.current || snapshot.requestId !== loadRequestIdRef.current) return;
+          }
+        }
+        if (settlingRequestRef.current === snapshot.requestId) settlingRequestRef.current = null;
+        releaseFreezeFrame(snapshot.requestId);
+        // A second seek can also fail: a picture at the wrong time is not a completed
+        // switch. Release the hold without claiming success when position is unconfirmed.
+        const positionConfirmed = snapshot.time <= 0 ||
+          Math.abs(video.currentTime - clampPlaybackTime(snapshot.time, video.duration)) <= 0.35;
+        if ((frame === "frame" || frame === "ready") && positionConfirmed) {
           setPlaybackState(video.paused ? "ready" : "playing");
+          completeUserSwitch(snapshot.requestId);
+        } else if (userSwitchRef.current?.requestId === snapshot.requestId) {
+          userSwitchRef.current = null;
+          setSwitchTarget(null);
+          // A conservative timeout is not a success claim, but a decoded, settled
+          // paused image must not leave a permanent generic loading hint either.
+          if (video.readyState >= 2 && !video.seeking) setPlaybackState(video.paused ? "ready" : "playing");
         }
       } catch (loadError) {
         if (
@@ -332,32 +454,98 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
         }
 
         loadingMasterRef.current = false;
+        if (settlingRequestRef.current === snapshot.requestId) settlingRequestRef.current = null;
+        releaseFreezeFrame(snapshot.requestId);
         await handleFatalPlaybackError(loadError);
       }
     }
 
     void loadMaster();
-    return () => { cancelled = true; };
-  }, [activeMaster, capturePlaybackSnapshot, handleFatalPlaybackError, reloadNonce, selectionReady]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [activeMaster, capturePlaybackSnapshot, completeUserSwitch, handleFatalPlaybackError, releaseFreezeFrame, reloadNonce, selectionReady]);
 
   useEffect(() => {
     return () => {
       void playerRef.current?.destroy();
       playerRef.current = null;
+      releaseFreezeFrame();
+      if (switchedTimerRef.current !== null) window.clearTimeout(switchedTimerRef.current);
     };
-  }, []);
+  }, [releaseFreezeFrame]);
+
+  // Loading feedback only for loads that outlast the threshold; errors replace it at once.
+  useEffect(() => {
+    if (playbackState !== "loading") {
+      setLoadingHint(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setLoadingHint(true), LOADING_HINT_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [playbackState]);
+
+  const statusText = loadingHint
+    ? switchTarget ? `正在切换到 ${switchTarget}` : "正在加载"
+    : switchedLabel ? `已切换到 ${switchedLabel}` : null;
+  // Only switch progress is announced; buffering would make the live region chatty.
+  const announcement = loadingHint && switchTarget
+    ? `正在切换到 ${switchTarget}`
+    : !loadingHint && switchedLabel ? `已切换到 ${switchedLabel}` : "";
+
+  const statusKind = loadingHint ? "busy" : "done";
+  // Remember the last text so the chip can fade out with it; while visible it renders live.
+  useEffect(() => {
+    if (statusText) setStatusChip({ text: statusText, kind: statusKind });
+  }, [statusKind, statusText]);
+
+  useLayoutEffect(() => {
+    intendedMasterIdRef.current = activeMasterId;
+    // A burst of switches that ends on the master already on screen starts no load, so the
+    // held frame and pending hint are released here instead of by loadMaster.
+    // Retry and SDR fallback snapshots are left to loadMaster.
+    const pending = pendingPlaybackRef.current;
+    if (
+      !pending ||
+      userSwitchRef.current?.requestId !== pending.requestId ||
+      pending.targetMasterId !== activeMasterId ||
+      pending.targetMasterId !== currentMasterRef.current?.id ||
+      settlingRequestRef.current !== null
+    ) {
+      return;
+    }
+    pendingPlaybackRef.current = null;
+    releaseFreezeFrame(pending.requestId);
+    userSwitchRef.current = null;
+    setSwitchTarget(null);
+  });
 
   const switchMaster = useCallback((master: VideoMaster) => {
     // A slow automatic probe must never override an explicit user choice.
     manualSelectionRef.current = true;
     setSelectionReady(true);
-    if (master.id === activeMasterId) return;
+    if (master.id === intendedMasterIdRef.current) return;
+    intendedMasterIdRef.current = master.id;
 
     fallbackAttemptedRef.current = false;
     setPlaybackNotice(null);
-    pendingPlaybackRef.current = capturePlaybackSnapshot(master.id);
+    // Mid-switch, the element is between sources; keep the time and play intent of the
+    // request in flight rather than reading the half-loaded video.
+    const inFlight = settlingRequestRef.current !== null ? lastLoadSnapshotRef.current : null;
+    const snapshot = capturePlaybackSnapshot(master.id, inFlight);
+    pendingPlaybackRef.current = snapshot;
+    holdFreezeFrame(snapshot.requestId);
+    userSwitchRef.current = { requestId: snapshot.requestId, label: master.label };
+    setSwitchTarget(master.label);
+    setSwitchedLabel(null);
+    // A batched B→A→B while B is still loading leaves activeMasterId unchanged,
+    // but invalidates B's old request. Start its replacement even without an ID change.
+    if (master.id === currentMasterRef.current?.id && settlingRequestRef.current !== null) {
+      setReloadNonce((value) => value + 1);
+    }
     setActiveMasterId(master.id);
-  }, [activeMasterId, capturePlaybackSnapshot]);
+  }, [capturePlaybackSnapshot, holdFreezeFrame]);
 
   const retry = useCallback(() => {
     if (activeMaster) {
@@ -402,7 +590,17 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
   );
 
   return (
-    <section className="player-shell" aria-label="Video player">
+    <section
+      className="player-shell"
+      aria-label="Video player"
+      onKeyDown={(event) => {
+        // 1–3 pick a master while focus is inside the player; native video keys are untouched.
+        const shortcut = masterShortcutIndex(event.nativeEvent, playableMasters.length);
+        if (shortcut === null) return;
+        event.preventDefault();
+        switchMaster(playableMasters[shortcut]);
+      }}
+    >
       <div className="player-layout">
         <div className="player-main">
           <div className="player-frame" data-state={playbackState} data-vt="cover">
@@ -421,16 +619,29 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
                 new Error(videoRef.current?.error?.message || "Video decoding failed.")
               )}
             />
+            <canvas ref={freezeRef} className={styles.freeze} aria-hidden="true" />
+            <p
+              className={styles.status}
+              data-visible={Boolean(statusText)}
+              data-kind={statusText ? statusKind : statusChip?.kind}
+              aria-hidden="true"
+            >
+              {statusText ?? statusChip?.text}
+            </p>
           </div>
+          <p className={styles.srOnly} role="status" aria-live="polite">
+            {announcement}
+          </p>
 
           <div className="player-controls-row">
             <div className="master-bar" role="group" aria-label="Video master switcher">
-              {playableMasters.map((master) => (
+              {playableMasters.map((master, masterIndex) => (
                 <button
                   className={
                     master.id === activeMaster.id ? "master-button active" : "master-button"
                   }
                   key={master.id}
+                  aria-keyshortcuts={masterIndex < 3 ? String(masterIndex + 1) : undefined}
                   onClick={() => switchMaster(master)}
                   type="button"
                   aria-pressed={master.id === activeMaster.id}
