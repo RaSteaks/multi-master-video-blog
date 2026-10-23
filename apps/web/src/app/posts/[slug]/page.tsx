@@ -9,7 +9,9 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownImageComponent } from "@/components/MarkdownImage";
+import { ArticleAnchors } from "@/components/ArticleAnchors";
 import { ArticleToc } from "@/components/ArticleToc";
+import readingStyles from "@/components/ArticleReading.module.css";
 import { BackLink } from "@/components/BackLink";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
 import { GaussianSplatEmbed } from "@/components/GaussianSplatEmbed";
@@ -79,7 +81,10 @@ export default async function PostPage({ params }: PostPageProps) {
           aria-hidden="true"
         />
       ) : null}
-    <main className={hasToc ? "shell article-shell article-shell-with-toc" : "shell article-shell"}>
+    <main className={`${hasToc ? "shell article-shell article-shell-with-toc" : "shell article-shell"} ${readingStyles.scope}`}>
+      {/* A sibling of the glass surface keeps the fixed line outside its backdrop-filter containing block. */}
+      <div className={readingStyles.progress} aria-hidden="true" />
+      <ArticleAnchors />
       <BackLink href="/posts" label="返回文章" />
       {hasToc ? (
         <div className="article-content-grid">
@@ -114,7 +119,7 @@ export default async function PostPage({ params }: PostPageProps) {
               <h1 data-vt="title">{post.title}</h1>
             </header>
 
-            <article className="markdown-body">
+            <article className={`markdown-body ${readingStyles.body}`}>
               <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
                 {content}
               </ReactMarkdown>
@@ -141,7 +146,7 @@ export default async function PostPage({ params }: PostPageProps) {
             />
           ) : null}
 
-          <article className="markdown-body">
+          <article className={`markdown-body ${readingStyles.body}`}>
             <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
               {content}
             </ReactMarkdown>
@@ -215,7 +220,8 @@ function headingComponent(
     const id = slugHeading(text || `heading-${level}`);
 
     return (
-      <Tag id={id} {...props}>
+      // Programmatic anchor focus remains available after the mobile TOC collapses.
+      <Tag id={id} tabIndex={-1} {...props}>
         {children}
       </Tag>
     );
