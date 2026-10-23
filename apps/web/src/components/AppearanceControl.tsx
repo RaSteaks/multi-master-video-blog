@@ -12,6 +12,7 @@ import {
 } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { usePathname } from "next/navigation";
+import { animatePanelChange, cancelPanelMotion } from "@/lib/panel-motion";
 import type { SiteBackgroundImage } from "@/lib/directus";
 import {
   COLOR_CHECKER_PRESETS,
@@ -100,34 +101,6 @@ function handleTabKeyDown(
   nextTab?.click();
 }
 
-const PANEL_VT_NAME = "appearance-panel";
-
-// Runs `update` (state changes inside the panel) inside a view transition
-// that only involves the panel: it gets its own transition name, and the page
-// root is neutralised via `html.vt-panel` (globals.css) so the rest of the
-// page keeps rendering live. Falls back to a plain update.
-function runPanelTransition(panel: HTMLElement | null, update: () => void) {
-  if (
-    !panel ||
-    typeof document.startViewTransition !== "function" ||
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  ) {
-    update();
-    return;
-  }
-  const root = document.documentElement;
-  panel.style.setProperty("view-transition-name", PANEL_VT_NAME);
-  root.classList.add("vt-panel");
-  const transition = document.startViewTransition(() => {
-    flushSync(update);
-  });
-  const done = () => {
-    panel.style.removeProperty("view-transition-name");
-    root.classList.remove("vt-panel");
-  };
-  transition.finished.then(done, done);
-}
-
 function clampBlur(value: number) {
   return Math.min(MAX_BLUR, Math.max(MIN_BLUR, Math.round(value)));
 }
@@ -185,6 +158,7 @@ export function AppearanceControl({
   // The panel stays mounted after `open` turns false until its circular
   // collapse animation ends, so closing can animate too.
   const [panelMounted, setPanelMounted] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [mode, setModeState] = useState<BgMode | null>(null);
   const [blur, setBlurState] = useState(clampBlur(defaultBlur));
   const [hasUserBlur, setHasUserBlur] = useState(false);
@@ -368,6 +342,11 @@ export function AppearanceControl({
     if (open) setPanelMounted(true);
   }, [open]);
 
+  useEffect(() => {
+    const content = contentRef.current;
+    return () => cancelPanelMotion(content);
+  }, [open, pathname]);
+
   // The panel reveals as a circle growing from the toggle's centre. Measure
   // that centre and the distance to the panel's farthest corner so the circle
   // ends exactly when it covers the whole panel (any layout, any breakpoint).
@@ -388,11 +367,10 @@ export function AppearanceControl({
     panel.style.setProperty("--reveal-r", `${Math.ceil(radius)}px`);
   }, [open]);
 
-  // Switches inside the panel (tabs, colour picker, background mode, fold)
-  // run as a view transition scoped to the panel: old and new content
-  // cross-fade while the panel's size interpolates, like a page change.
-  function transitionPanel(update: () => void) {
-    runPanelTransition(panelRef.current, update);
+  // Local content motion keeps the header and category controls live and avoids
+  // competing with the document-level route transition or snapshotting media.
+  function transitionPanel(update: () => void, direction: -1 | 0 | 1 = 0) {
+    animatePanelChange(contentRef.current, () => flushSync(update), direction);
   }
 
   function selectMode(next: BgMode) {
@@ -550,7 +528,7 @@ export function AppearanceControl({
             className={appearanceView === "background" ? "active" : ""}
             onClick={() =>
               appearanceView !== "background" &&
-              transitionPanel(() => setAppearanceView("background"))
+              transitionPanel(() => setAppearanceView("background"), -1)
             }
             onKeyDown={handleTabKeyDown}
           >
@@ -566,7 +544,7 @@ export function AppearanceControl({
             className={appearanceView === "color" ? "active" : ""}
             onClick={() =>
               appearanceView !== "color" &&
-              transitionPanel(() => setAppearanceView("color"))
+              transitionPanel(() => setAppearanceView("color"), 1)
             }
             onKeyDown={handleTabKeyDown}
           >
@@ -574,6 +552,7 @@ export function AppearanceControl({
           </button>
         </div>
 
+        <div ref={contentRef} className="appearance-panel-content">
         {appearanceView === "color" ? (
           <section
             id={colorPanelId}
@@ -637,7 +616,7 @@ export function AppearanceControl({
               className={colorEditor === "presets" ? "active" : ""}
               onClick={() =>
                 colorEditor !== "presets" &&
-                transitionPanel(() => setColorEditor("presets"))
+                transitionPanel(() => setColorEditor("presets"), -1)
               }
               onKeyDown={handleTabKeyDown}
             >
@@ -652,7 +631,7 @@ export function AppearanceControl({
               tabIndex={colorEditor === "custom" ? 0 : -1}
               className={colorEditor === "custom" ? "active" : ""}
               onClick={() =>
-                colorEditor !== "custom" && transitionPanel(openCustomEditor)
+                colorEditor !== "custom" && transitionPanel(openCustomEditor, 1)
               }
               onKeyDown={handleTabKeyDown}
             >
@@ -844,7 +823,7 @@ export function AppearanceControl({
               className={effectiveMode === "image" ? "active" : ""}
               onClick={() =>
                 effectiveMode !== "image" &&
-                transitionPanel(() => selectMode("image"))
+                transitionPanel(() => selectMode("image"), -1)
               }
             >
               背景图片
@@ -856,7 +835,7 @@ export function AppearanceControl({
               className={effectiveMode === "liquid" ? "active" : ""}
               onClick={() =>
                 effectiveMode !== "liquid" &&
-                transitionPanel(() => selectMode("liquid"))
+                transitionPanel(() => selectMode("liquid"), 1)
               }
             >
               液体流动
@@ -920,6 +899,7 @@ export function AppearanceControl({
           </div>
           </section>
         )}
+        </div>
         </div>
       ) : null}
 

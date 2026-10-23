@@ -67,6 +67,25 @@ corners and inset preview chips use 4px corners.
 
 ## Components
 
+- Motion roles are owned by the `--motion-*` variables in `globals.css`: controls
+  130 ms, panel changes 260 ms / 12 px, media reveals 180 ms, emphasis 420 ms,
+  and reduced-motion fades 100 ms. These are role budgets rather than mandatory
+  effects on every element. Keep the reference-room identity; media comparison
+  surfaces must not receive decorative colour, luminance or blur changes.
+  `panel-motion.ts` reads the runtime tokens for live content transitions and
+  interruption cleanup. Appearance category controls remain usable immediately;
+  local transitions do not take document snapshots or compete with route motion.
+  The existing viewport-bounded panel and its anchor remain unchanged. Reduced
+  motion skips displacement and resizing and permits only a short fade.
+- `ArticleToc` owns the current-section marker and mobile collapse/anchor focus.
+  It changes colour without moving a marker and preserves router history state.
+  `ArticleReading.module.css` owns an optional article-only progress line; it is
+  omitted without scroll-timeline support and under reduced motion. The footer
+  and cover are not reading progress. `MarkdownAssetImage` adds a neutral, sized
+  loading surface and a decode-aware reveal while keeping cached, failed and
+  server-only images visible. Image metadata remains owned by the existing CMS
+  asset-dimensions path; no extra placeholder requests or colour extraction occur.
+
 - `scripts/manager-dashboard.cjs` owns the standalone Service Manager. Preserve
   its existing system-font, light/dark operational console and CSS variables;
   it is separate from the public site's reference-room theme. Service cards,
@@ -96,6 +115,26 @@ corners and inset preview chips use 4px corners.
   Directus display dimensions reserve their space in both modes. Named thumbnail
   parameters come from `config/directus-asset-presets.json`, shared with CMS setup
   and validation; no fixed skipped-content height is used for these tiles.
+  Its native-dialog lightbox keeps wrap-around paging and delegates browser
+  pinch zoom; single-pointer image gestures never intercept toolbar or rail
+  controls. `AlbumLightbox.module.css` owns the fading scrim while global
+  descendant image sizing remains shared. A ready SDR image may morph to/from
+  its visible tile; HDR, off-screen sources and reduced motion use the simple
+  fallback. Only different SDR photos may cross-fade; rendition comparisons
+  cut after the replacement has decoded. Public neighbour preloads are bounded;
+  authenticated management images never use speculative anonymous requests.
+  Closing and reduced-motion changes must also settle interrupted drag effects.
+
+- `MediaPlayer` owns delayed loading/switch feedback; globals.css owns only the
+  playback frame line. A single decoder retains time and play intent across
+  superseded requests. A verified SDR canvas hold is optional and must never
+  turn an HDR source into an SDR still. A confirmed replacement frame releases
+  the hold with a cut, without blending renditions. All pending waits are bounded
+  and cancellable, including a browser play request that never settles. Keyboard
+  shortcuts are scoped to the player and leave editable targets/IME alone.
+  Chinese action/status feedback follows the site locale; technical format names
+  remain the source labels. Screenshot tests do not certify HDR brightness or
+  physical touch behavior, which require device checks.
 
 - `UploadVideoForm` owns new-project, paired HDR/SDR, and existing-project uploads.
   `VideoProjectPicker` owns authenticated project search and explicit selection.

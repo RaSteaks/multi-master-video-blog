@@ -68,6 +68,16 @@
   --transition-base: 210ms ease;
   --transition-slow: 300ms ease;
 
+  /* Motion roles shared by panels, reading feedback and future media controls.
+     Keep CSS values canonical; WAAPI consumers read these same tokens. */
+  --motion-control-duration: 130ms;
+  --motion-panel-duration: 260ms;
+  --motion-media-duration: 180ms;
+  --motion-emphasis-duration: 420ms;
+  --motion-reduced-duration: 100ms;
+  --motion-panel-distance: 12px;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
   /* Typography */
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
@@ -205,7 +215,9 @@ a {
   *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    /* Fewer and gentler, not none: fades and colour changes still explain a
+       state change; movement, scaling and size changes snap instead. */
+    transition-property: opacity, color, background-color, border-color, outline-color, fill, stroke !important;
     scroll-behavior: auto !important;
   }
 
@@ -258,8 +270,10 @@ a {
   border-radius: 3px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
+@media (hover: hover) and (pointer: fine) {
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--muted);
+  }
 }
 
 /* ---- Skip-to-content ---- */
@@ -318,7 +332,15 @@ body:has(.orbital-home) .orbital-home {
 
 /* Header gains depth as the page scrolls (scroll-driven, zero JS) */
 @supports (animation-timeline: scroll()) {
-  .site-header {
+  /* The drop shadow is painted once on this layer; scrolling only scrubs its
+     opacity, so the shadow is composited rather than repainted per frame. */
+  .site-header::after {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    box-shadow: 0 14px 36px -16px rgba(0, 0, 0, 0.6);
+    content: "";
+    pointer-events: none;
     animation: header-elevate linear both;
     animation-timeline: scroll();
     animation-range: 0 120px;
@@ -327,13 +349,11 @@ body:has(.orbital-home) .orbital-home {
 
 @keyframes header-elevate {
   from {
-    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+    opacity: 0;
   }
 
   to {
-    box-shadow:
-      inset 0 -1px 0 rgba(255, 255, 255, 0.05),
-      0 14px 36px -16px rgba(0, 0, 0, 0.6);
+    opacity: 1;
   }
 }
 
@@ -345,8 +365,10 @@ body:has(.orbital-home) .orbital-home {
   transition: color var(--transition-fast);
 }
 
-.brand:hover {
-  color: var(--accent);
+@media (hover: hover) and (pointer: fine) {
+  .brand:hover {
+    color: var(--accent);
+  }
 }
 
 .site-header nav {
@@ -392,14 +414,16 @@ body:has(.orbital-home) .orbital-home {
 
 .site-header nav .nav-pill[data-ready="true"] {
   transition:
-    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
-    width 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 220ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 200ms ease;
 }
 
-.site-header nav a:hover {
-  color: var(--text);
-  background: var(--surface-raised);
+@media (hover: hover) and (pointer: fine) {
+  .site-header nav a:hover {
+    color: var(--text);
+    background: var(--surface-raised);
+  }
 }
 
 .site-header nav a:focus-visible {
@@ -570,14 +594,16 @@ html.route-transition-pending body::after {
   transition: translate var(--transition-fast);
 }
 
-.back-link:hover {
-  border-color: rgba(255, 255, 255, 0.24);
-  background: rgba(12, 14, 16, 0.72);
-  color: var(--text);
-}
+@media (hover: hover) and (pointer: fine) {
+  .back-link:hover {
+    border-color: rgba(255, 255, 255, 0.24);
+    background: rgba(12, 14, 16, 0.72);
+    color: var(--text);
+  }
 
-.back-link:hover svg {
-  translate: -2px 0;
+  .back-link:hover svg {
+    translate: -2px 0;
+  }
 }
 
 .back-link:active {
@@ -667,13 +693,15 @@ html.route-transition-pending body::after {
   transition: translate var(--transition-fast);
 }
 
-.page-action-link:hover {
-  border-color: var(--accent-readable);
-  background: var(--accent-hover);
-  box-shadow:
+@media (hover: hover) and (pointer: fine) {
+  .page-action-link:hover {
+    border-color: var(--accent-readable);
+    background: var(--accent-hover);
+    box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.18),
     0 13px 30px rgb(var(--accent-rgb) / 0.22);
-  translate: 0 -2px;
+    translate: 0 -2px;
+  }
 }
 
 .page-action-link:active {
@@ -794,12 +822,14 @@ h3 {
     transform var(--transition-base);
 }
 
-.content-card:hover {
-  border-color: var(--line-light);
-  box-shadow:
+@media (hover: hover) and (pointer: fine) {
+  .content-card:hover {
+    border-color: var(--line-light);
+    box-shadow:
     0 8px 32px -6px rgba(0, 0, 0, 0.55),
     0 0 0 1px rgb(var(--accent-rgb) / 0.18);
-  transform: translateY(-2px);
+    transform: translateY(-2px);
+  }
 }
 
 .content-card:focus-visible {
@@ -816,14 +846,16 @@ h3 {
   transition: transform 650ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.content-card:hover img,
-.content-card:hover .media-placeholder {
-  transform: scale(1.045);
+@media (hover: hover) and (pointer: fine) {
+  .content-card:hover img,
+  .content-card:hover .media-placeholder {
+    transform: scale(1.045);
+  }
 }
 
 .content-card:active {
-  transform: translateY(-1px);
-  transition-duration: 90ms;
+  transform: scale(0.985);
+  transition-duration: 100ms;
 }
 
 .media-placeholder {
@@ -913,18 +945,26 @@ h3 {
     transform var(--transition-base);
 }
 
-.list-panel a:hover::before,
 .list-panel a:focus-visible::before {
   opacity: 1;
   transform: scaleY(1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .list-panel a:hover::before {
+    opacity: 1;
+    transform: scaleY(1);
+  }
 }
 
 .list-panel a + a {
   border-top: 1px solid var(--line);
 }
 
-.list-panel a:hover {
-  background: var(--surface-raised);
+@media (hover: hover) and (pointer: fine) {
+  .list-panel a:hover {
+    background: var(--surface-raised);
+  }
 }
 
 .list-panel a:focus-visible {
@@ -1133,9 +1173,11 @@ h3 {
   -webkit-backdrop-filter: blur(22px) saturate(160%);
 }
 
-.glass-cards .content-card:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(20, 24, 29, 0.66);
+@media (hover: hover) and (pointer: fine) {
+  .glass-cards .content-card:hover {
+    border-color: rgba(255, 255, 255, 0.18);
+    background: rgba(20, 24, 29, 0.66);
+  }
 }
 
 .glass-cards .content-card p {
@@ -1179,9 +1221,11 @@ h3 {
     background var(--transition-fast);
 }
 
-.bg-control-toggle:hover {
-  color: var(--text);
-  background: var(--surface-raised);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-toggle:hover {
+    color: var(--text);
+    background: var(--surface-raised);
+  }
 }
 
 .bg-control-toggle.active {
@@ -1215,10 +1259,12 @@ h3 {
     0 6px 20px rgba(0, 0, 0, 0.35);
 }
 
-.bg-control-floating .bg-control-toggle:hover {
-  color: var(--text);
-  border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.11);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-floating .bg-control-toggle:hover {
+    color: var(--text);
+    border-color: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.11);
+  }
 }
 
 .bg-control-floating .bg-control-toggle.active {
@@ -1312,7 +1358,7 @@ h3 {
 
 .bg-control-panel.closing {
   pointer-events: none;
-  animation: bg-panel-conceal 300ms cubic-bezier(0.55, 0, 0.7, 0.2) forwards;
+  animation: bg-panel-conceal 300ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
 }
 
 @keyframes bg-panel-reveal {
@@ -1392,9 +1438,11 @@ h3 {
     color var(--transition-fast);
 }
 
-.appearance-panel-close:hover {
-  background: var(--surface-overlay);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .appearance-panel-close:hover {
+    background: var(--surface-overlay);
+    color: var(--text);
+  }
 }
 
 .appearance-panel-close:active {
@@ -1409,12 +1457,12 @@ h3 {
 /* Segmented controls (panel tabs, colour picker tabs, background mode): one
    pill slides between the two options, like the navigation pill. --i (0/1)
    is set inline; --seg-w is one segment's width (2 columns, 3px padding,
-   2px gap, 1px border excluded from the padding box). */
+   2px gap, 1px border excluded from the padding box). The pill moves by
+   translate, whose percentage is its own width, i.e. one segment. */
 .appearance-panel-tabs,
 .theme-editor-tabs,
 .bg-control-modes {
   --seg-w: calc((100% - 8px) / 2);
-  --seg-x: calc(3px + var(--i, 0) * (var(--seg-w) + 2px));
   position: relative;
 }
 
@@ -1425,10 +1473,11 @@ h3 {
   position: absolute;
   top: 3px;
   bottom: 3px;
-  left: var(--seg-x);
+  left: 3px;
   width: var(--seg-w);
   pointer-events: none;
-  transition: left 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform: translateX(calc(var(--i, 0) * (100% + 2px)));
+  transition: transform var(--motion-panel-duration) var(--motion-ease);
 }
 
 .appearance-panel-tabs button,
@@ -1472,9 +1521,11 @@ h3 {
     color var(--transition-fast);
 }
 
-.appearance-panel-tabs button:hover:not(.active) {
-  background: var(--surface-overlay);
-  color: var(--text-secondary);
+@media (hover: hover) and (pointer: fine) {
+  .appearance-panel-tabs button:hover:not(.active) {
+    background: var(--surface-overlay);
+    color: var(--text-secondary);
+  }
 }
 
 .appearance-panel-tabs button.active {
@@ -1527,9 +1578,11 @@ h3 {
     color var(--transition-fast);
 }
 
-.bg-control-modes button:hover:not(.active) {
-  color: var(--text);
-  background: var(--surface-overlay);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-modes button:hover:not(.active) {
+    color: var(--text);
+    background: var(--surface-overlay);
+  }
 }
 
 .bg-control-modes button.active {
@@ -1563,8 +1616,10 @@ h3 {
     box-shadow var(--transition-fast);
 }
 
-.bg-control-thumbs button:hover {
-  opacity: 1;
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-thumbs button:hover {
+    opacity: 1;
+  }
 }
 
 .bg-control-thumbs button.active {
@@ -1642,8 +1697,10 @@ h3 {
   transition: transform 120ms ease;
 }
 
-.bg-control input[type="range"]::-webkit-slider-thumb:hover {
-  transform: scale(1.15);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+  }
 }
 
 .bg-control input[type="range"]::-moz-range-thumb {
@@ -1679,10 +1736,12 @@ h3 {
     background var(--transition-fast);
 }
 
-.bg-control-reset:hover {
-  color: var(--text);
-  border-color: rgb(var(--accent-rgb) / 0.55);
-  background: var(--accent-soft);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-reset:hover {
+    color: var(--text);
+    border-color: rgb(var(--accent-rgb) / 0.55);
+    background: var(--accent-soft);
+  }
 }
 
 .bg-control-reset:active {
@@ -1822,49 +1881,31 @@ h3 {
     color var(--transition-fast);
 }
 
-.theme-editor-tabs button:hover:not(.active) {
-  background: var(--surface-overlay);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .theme-editor-tabs button:hover:not(.active) {
+    background: var(--surface-overlay);
+    color: var(--text);
+  }
 }
 
 .theme-editor-tabs button.active {
   color: var(--text);
 }
 
-/* Content swaps inside the panel: the incoming section fades and rises in
-   (same easing as page transitions); the panel's height morphs in JS. */
+/* Only the live content region resizes. The primary tabs remain independently
+   operable, and text is never scaled through a document-transition snapshot. */
+.appearance-panel-content {
+  min-width: 0;
+}
+
+.appearance-panel-content[data-panel-animating="true"] {
+  overflow: clip;
+}
+
 .appearance-swap {
   display: grid;
   gap: 10px;
   min-width: 0;
-}
-
-/* Content swaps inside the panel are cross-faded by the view transition (see
-   runPanelTransition); there is deliberately no CSS entrance animation here —
-   toggling one off during the transition would restart it when it ends. */
-
-/* Panel-scoped view transition: only the panel animates. The page root keeps
-   rendering live (old snapshot hidden, no cross-fade), the header keeps its
-   own name, and the panel group morphs size while clipping its images. */
-html.vt-panel::view-transition-old(root) {
-  animation: vt-hide 1ms both;
-}
-
-html.vt-panel::view-transition-new(root) {
-  animation: none;
-}
-
-::view-transition-group(appearance-panel) {
-  overflow: clip;
-  border-radius: 16px;
-  animation-duration: 340ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-::view-transition-old(appearance-panel),
-::view-transition-new(appearance-panel) {
-  animation-duration: 340ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .color-checker-picker {
@@ -1905,8 +1946,10 @@ html.vt-panel::view-transition-new(root) {
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.46));
 }
 
-.color-checker-grid button:hover {
-  filter: brightness(1.1) saturate(1.04);
+@media (hover: hover) and (pointer: fine) {
+  .color-checker-grid button:hover {
+    filter: brightness(1.1) saturate(1.04);
+  }
 }
 
 .color-checker-grid button.active {
@@ -2011,9 +2054,11 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.color-checker-fold:hover {
-  background: var(--accent-soft);
-  color: var(--accent-readable);
+@media (hover: hover) and (pointer: fine) {
+  .color-checker-fold:hover {
+    background: var(--accent-soft);
+    color: var(--accent-readable);
+  }
 }
 
 .color-checker-fold:focus-visible {
@@ -2061,7 +2106,9 @@ html.vt-panel::view-transition-new(root) {
 }
 .liquid-save-feedback { display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--text-secondary); font-size: 0.68rem; line-height: 1.5; }
 .liquid-save-feedback span { flex: 1; }
-.liquid-settings button:hover { border-color: var(--accent-readable); background-color: var(--surface-overlay); color: var(--text); }
+@media (hover: hover) and (pointer: fine) {
+  .liquid-settings button:hover { border-color: var(--accent-readable); background-color: var(--surface-overlay); color: var(--text); }
+}
 .liquid-settings button:active { background-color: var(--surface-raised); }
 .liquid-settings button:focus-visible,
 .sv-plane:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 2px; }
@@ -2365,9 +2412,11 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.article-toc a:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .article-toc a:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text);
+  }
 }
 
 .article-toc a:focus-visible {
@@ -2449,8 +2498,10 @@ html.vt-panel::view-transition-new(root) {
   transition: color var(--transition-fast);
 }
 
-.markdown-body a:hover {
-  color: var(--accent-hover);
+@media (hover: hover) and (pointer: fine) {
+  .markdown-body a:hover {
+    color: var(--accent-hover);
+  }
 }
 
 .markdown-body code {
@@ -2565,9 +2616,11 @@ html.vt-panel::view-transition-new(root) {
     filter var(--transition-slow);
 }
 
-.gaussian-splat-launch:hover > img {
-  filter: contrast(1.04) brightness(0.9);
-  scale: 1.035;
+@media (hover: hover) and (pointer: fine) {
+  .gaussian-splat-launch:hover > img {
+    filter: contrast(1.04) brightness(0.9);
+    scale: 1.035;
+  }
 }
 
 .gaussian-splat-grid {
@@ -2609,10 +2662,12 @@ html.vt-panel::view-transition-new(root) {
     transform var(--transition-fast);
 }
 
-.gaussian-splat-launch:hover .gaussian-splat-launch-copy {
-  border-color: rgba(200, 216, 226, 0.32);
-  background: rgba(18, 22, 25, 0.86);
-  transform: translateY(-2px);
+@media (hover: hover) and (pointer: fine) {
+  .gaussian-splat-launch:hover .gaussian-splat-launch-copy {
+    border-color: rgba(200, 216, 226, 0.32);
+    background: rgba(18, 22, 25, 0.86);
+    transform: translateY(-2px);
+  }
 }
 
 .gaussian-splat-launch-icon {
@@ -2742,10 +2797,12 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.gaussian-splat-toolbar button:hover {
-  border-color: rgba(202, 216, 226, 0.32);
-  background: rgba(20, 24, 27, 0.88);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .gaussian-splat-toolbar button:hover {
+    border-color: rgba(202, 216, 226, 0.32);
+    background: rgba(20, 24, 27, 0.88);
+    color: var(--text);
+  }
 }
 
 .gaussian-splat-toolbar svg {
@@ -2849,10 +2906,12 @@ html.vt-panel::view-transition-new(root) {
   text-decoration: none;
 }
 
-.gaussian-splat-error button:hover,
-.gaussian-splat-error a:hover {
-  border-color: var(--neutral-ref);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .gaussian-splat-error button:hover,
+  .gaussian-splat-error a:hover {
+    border-color: var(--neutral-ref);
+    color: var(--text);
+  }
 }
 
 .gaussian-splat-embed figcaption {
@@ -3026,15 +3085,8 @@ html.vt-panel::view-transition-new(root) {
   opacity: 0.70;
 }
 
-.player-frame[data-state="loading"]::before {
-  opacity: 0.3;
-  animation: loading-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes loading-pulse {
-  0%, 100% { opacity: 0.15; }
-  50% { opacity: 0.6; }
-}
+/* MediaPlayer owns delayed loading feedback; the frame line only marks playback.
+   Keep the loading state quiet instead of flashing a second, global indicator. */
 
 .video-player {
   width: 100%;
@@ -3081,10 +3133,16 @@ html.vt-panel::view-transition-new(root) {
   cursor: pointer;
 }
 
-.upload-source-file button:hover:not(:disabled),
 .upload-source-file button:focus-visible {
   color: var(--text);
   border-color: var(--text-secondary);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .upload-source-file button:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--text-secondary);
+  }
 }
 
 .upload-source-file button:disabled {
@@ -3163,10 +3221,12 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.master-add:hover {
-  border-color: var(--neutral-ref);
-  background: var(--surface);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .master-add:hover {
+    border-color: var(--neutral-ref);
+    background: var(--surface);
+    color: var(--text);
+  }
 }
 
 .master-add:focus-visible {
@@ -3174,10 +3234,12 @@ html.vt-panel::view-transition-new(root) {
   box-shadow: 0 0 0 3px var(--neutral-ref-glow);
 }
 
-.master-button:hover {
-  border-color: var(--line-light);
-  background: var(--surface-raised);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .master-button:hover {
+    border-color: var(--line-light);
+    background: var(--surface-raised);
+    color: var(--text);
+  }
 }
 
 .master-button:focus-visible {
@@ -3252,12 +3314,14 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.info-toggle:hover,
-.info-close:hover,
-.retry-button:hover {
-  border-color: var(--line-light);
-  background: var(--surface-raised);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .info-toggle:hover,
+  .info-close:hover,
+  .retry-button:hover {
+    border-color: var(--line-light);
+    background: var(--surface-raised);
+    color: var(--text);
+  }
 }
 
 .info-toggle.active {
@@ -3547,12 +3611,19 @@ html.vt-panel::view-transition-new(root) {
   opacity: 0;
 }
 
-.source-mode:hover,
 .source-mode.active,
 .source-mode:has(input:focus-visible) {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent-base) 9%, var(--surface-raised));
   box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .source-mode:hover {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-base) 9%, var(--surface-raised));
+    box-shadow: 0 0 0 1px var(--accent-glow);
+  }
 }
 
 .source-mode span {
@@ -3673,10 +3744,12 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.slug-input button:hover {
-  border-color: var(--line-light);
-  background: var(--surface-raised);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .slug-input button:hover {
+    border-color: var(--line-light);
+    background: var(--surface-raised);
+    color: var(--text);
+  }
 }
 
 .slug-input button:focus-visible {
@@ -3759,8 +3832,10 @@ html.vt-panel::view-transition-new(root) {
   transition: border-color var(--transition-fast);
 }
 
-.upload-checks label:hover {
-  border-color: var(--line-light);
+@media (hover: hover) and (pointer: fine) {
+  .upload-checks label:hover {
+    border-color: var(--line-light);
+  }
 }
 
 .upload-checks input {
@@ -3834,9 +3909,11 @@ html.vt-panel::view-transition-new(root) {
   transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
-.upload-actions button:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+@media (hover: hover) and (pointer: fine) {
+  .upload-actions button:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
 }
 
 .upload-actions button:disabled {
@@ -3897,6 +3974,56 @@ html.vt-panel::view-transition-new(root) {
   color: var(--accent);
 }
 
+/* Upload success: a rare moment, so it gets a one-time drawn check. The ring
+   draws first, the tick lands as it closes; ~560ms in total, all ease-out.
+   Reduced motion: the global rule collapses the animations to their end state. */
+.upload-status .upload-status-done {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.upload-done-mark {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  animation: upload-done-pop 360ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.upload-done-mark circle,
+.upload-done-mark path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.upload-done-mark circle {
+  transform: rotate(-90deg);
+  transform-origin: center;
+  animation: upload-done-draw 360ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
+.upload-done-mark path {
+  animation: upload-done-draw 260ms cubic-bezier(0.23, 1, 0.32, 1) 300ms forwards;
+}
+
+@keyframes upload-done-pop {
+  from {
+    opacity: 0;
+    scale: 0.92;
+  }
+}
+
+@keyframes upload-done-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
 /* ---- Upload page — follows the global semantic accent tokens ---- */
 .upload-page-header h1 {
   color: var(--text);
@@ -3948,9 +4075,11 @@ html.vt-panel::view-transition-new(root) {
   color: var(--on-accent);
 }
 
-.lang-switcher button:hover:not(.active) {
-  color: var(--text);
-  background: var(--surface-overlay);
+@media (hover: hover) and (pointer: fine) {
+  .lang-switcher button:hover:not(.active) {
+    color: var(--text);
+    background: var(--surface-overlay);
+  }
 }
 
 /* ---- Panel header accent ---- */
@@ -3992,10 +4121,16 @@ html.vt-panel::view-transition-new(root) {
   outline: none;
 }
 
-.file-drop-zone:hover,
 .file-drop-zone:focus-within {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent-base) 5%, var(--surface-raised));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .file-drop-zone:hover {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-base) 5%, var(--surface-raised));
+  }
 }
 
 .file-drop-zone.drag-active {
@@ -4019,10 +4154,16 @@ html.vt-panel::view-transition-new(root) {
   pointer-events: none;
 }
 
-.file-drop-zone:hover .file-drop-zone-icon,
 .file-drop-zone.drag-active .file-drop-zone-icon {
   color: var(--accent);
   transform: translateY(-3px);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .file-drop-zone:hover .file-drop-zone-icon {
+    color: var(--accent);
+    transform: translateY(-3px);
+  }
 }
 
 .file-drop-zone.has-file .file-drop-zone-icon {
@@ -4217,9 +4358,6 @@ html.vt-panel::view-transition-new(root) {
   min-height: 100dvh;
   padding: 42px 24px 72px;
   place-items: center;
-  transition:
-    padding var(--home-motion-duration) var(--home-motion-ease),
-    min-height var(--home-motion-duration) var(--home-motion-ease);
 }
 
 .orbital-stage {
@@ -4231,12 +4369,6 @@ html.vt-panel::view-transition-new(root) {
   pointer-events: auto;
   transform: translate3d(0, 0, 0) scale(1);
   transform-origin: center;
-  transition:
-    width var(--home-motion-duration) var(--home-motion-ease),
-    min-height var(--home-motion-duration) var(--home-motion-ease),
-    gap var(--home-motion-duration) var(--home-motion-ease),
-    grid-template-columns var(--home-motion-duration) var(--home-motion-ease),
-    grid-template-rows var(--home-motion-duration) var(--home-motion-ease);
 }
 
 
@@ -4340,12 +4472,14 @@ html.vt-panel::view-transition-new(root) {
     transform var(--transition-fast);
 }
 
-.github-link:hover,
-.profile-about-link:hover {
-  border-color: rgb(var(--accent-rgb) / 0.6);
-  background: var(--accent-soft);
-  color: var(--text);
-  transform: translateY(-1px);
+@media (hover: hover) and (pointer: fine) {
+  .github-link:hover,
+  .profile-about-link:hover {
+    border-color: rgb(var(--accent-rgb) / 0.6);
+    background: var(--accent-soft);
+    color: var(--text);
+    transform: translateY(-1px);
+  }
 }
 
 /* ==========================================================================
@@ -4374,32 +4508,28 @@ html.vt-panel::view-transition-new(root) {
     scale(var(--motion-scale));
   transition:
     transform var(--home-motion-duration) var(--home-motion-ease),
-    width var(--home-motion-duration) var(--home-motion-ease),
-    height var(--home-motion-duration) var(--home-motion-ease),
-    min-height var(--home-motion-duration) var(--home-motion-ease),
-    max-width var(--home-motion-duration) var(--home-motion-ease),
-    padding var(--home-motion-duration) var(--home-motion-ease),
-    border-radius var(--home-motion-duration) var(--home-motion-ease),
     box-shadow var(--transition-base),
     border-color var(--transition-base),
     background var(--transition-base);
   will-change: transform;
 }
 
-.floating-widget:hover {
-  transform:
+@media (hover: hover) and (pointer: fine) {
+  .floating-widget:hover {
+    transform:
     translate3d(
       var(--motion-x),
       calc(var(--motion-y) + var(--wy, 0px) + var(--home-hover-lift, -5px)),
       0
     )
     scale(var(--motion-scale));
-  box-shadow:
+    box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.20),
     0 16px 44px rgba(0, 0, 0, 0.34),
     0 4px 10px rgba(0, 0, 0, 0.20);
-  border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.096);
+    border-color: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.096);
+  }
 }
 
 /* Profile hub: deeper blur + deeper shadow for visual prominence */
@@ -4493,9 +4623,11 @@ html.vt-panel::view-transition-new(root) {
     background var(--transition-fast);
 }
 
-.collection-links a:hover {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.08);
+@media (hover: hover) and (pointer: fine) {
+  .collection-links a:hover {
+    border-color: rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.08);
+  }
 }
 
 .collection-links span {
@@ -4529,8 +4661,10 @@ html.vt-panel::view-transition-new(root) {
   text-align: center;
 }
 
-.orbit-upload:hover {
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .orbit-upload:hover {
+    color: var(--text);
+  }
 }
 
 .orbit-blog-upload {
@@ -4618,9 +4752,11 @@ html.vt-panel::view-transition-new(root) {
   line-height: 1;
 }
 
-.github-widget:hover,
-.bilibili-widget:hover {
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .github-widget:hover,
+  .bilibili-widget:hover {
+    color: var(--text);
+  }
 }
 
 /* Desktop: the stage stacks a positioning canvas (profile card + collection
@@ -5531,10 +5667,12 @@ html.vt-panel::view-transition-new(root) {
     translate var(--transition-fast);
 }
 
-.album-action-button:hover:not(:disabled) {
-  border-color: rgba(215, 160, 82, 0.44);
-  background: var(--album-amber-soft);
-  translate: 0 -1px;
+@media (hover: hover) and (pointer: fine) {
+  .album-action-button:hover:not(:disabled) {
+    border-color: rgba(215, 160, 82, 0.44);
+    background: var(--album-amber-soft);
+    translate: 0 -1px;
+  }
 }
 
 .album-action-button--primary {
@@ -5546,9 +5684,11 @@ html.vt-panel::view-transition-new(root) {
   color: #17110a;
 }
 
-.album-action-button--primary:hover:not(:disabled) {
-  border-color: #efbd78;
-  background: #e2ad62;
+@media (hover: hover) and (pointer: fine) {
+  .album-action-button--primary:hover:not(:disabled) {
+    border-color: #efbd78;
+    background: #e2ad62;
+  }
 }
 
 .album-action-button:disabled,
@@ -5611,12 +5751,14 @@ html.vt-panel::view-transition-new(root) {
   right: 8px;
 }
 
-.album-card:hover {
-  border-color: rgba(215, 160, 82, 0.4);
-  box-shadow:
+@media (hover: hover) and (pointer: fine) {
+  .album-card:hover {
+    border-color: rgba(215, 160, 82, 0.4);
+    box-shadow:
     0 24px 64px rgba(0, 0, 0, 0.32),
     0 0 0 1px rgba(215, 160, 82, 0.1);
-  translate: 0 -3px;
+    translate: 0 -3px;
+  }
 }
 
 .album-card:focus-visible {
@@ -5643,9 +5785,11 @@ html.vt-panel::view-transition-new(root) {
     filter 260ms ease;
 }
 
-.album-card:hover .album-card-frame img {
-  filter: saturate(1.05) contrast(1.02);
-  scale: 1.025;
+@media (hover: hover) and (pointer: fine) {
+  .album-card:hover .album-card-frame img {
+    filter: saturate(1.05) contrast(1.02);
+    scale: 1.025;
+  }
 }
 
 .album-card-placeholder {
@@ -5713,6 +5857,29 @@ html.vt-panel::view-transition-new(root) {
   color: #73d8ee;
 }
 
+/* HDR displays only: the "HDR" label is painted from a 4x4 BT.2020/PQ PNG
+   (cICP-tagged, ~350-460 nits, about 2.5x SDR reference white), so it renders
+   brighter than any SDR white on the page. Where the image is tone-mapped it
+   is a pale cyan; where it cannot be decoded the background colour shows
+   through the text instead. Static on purpose: the badge is seen on every
+   visit to the album list. */
+@media (dynamic-range: high) {
+  :root {
+    --hdr-glow-swatch: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAEEAIAAAB2A9VqAAAABGNJQ1AJEAABTSMj/gAAABRJREFUeNpjWGy1Ina1GibJQD0JAHuEKzG8QhY/AAAAAElFTkSuQmCC");
+  }
+
+  .album-hdr-badge {
+    dynamic-range-limit: no-limit;
+  }
+
+  .album-hdr-glow {
+    background: var(--hdr-glow-swatch) center / cover, #e9f8ff;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
 .album-card-copy {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -5762,9 +5929,11 @@ html.vt-panel::view-transition-new(root) {
     translate var(--transition-fast);
 }
 
-.album-card:hover .album-card-arrow {
-  color: var(--album-amber);
-  translate: 2px -2px;
+@media (hover: hover) and (pointer: fine) {
+  .album-card:hover .album-card-arrow {
+    color: var(--album-amber);
+    translate: 2px -2px;
+  }
 }
 
 .album-empty-state {
@@ -5869,10 +6038,12 @@ html.vt-panel::view-transition-new(root) {
   color: var(--text-secondary);
 }
 
-.album-icon-button:hover {
-  border-color: rgba(255, 255, 255, 0.23);
-  background: rgba(255, 255, 255, 0.09);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .album-icon-button:hover {
+    border-color: rgba(255, 255, 255, 0.23);
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--text);
+  }
 }
 
 .album-form {
@@ -6014,9 +6185,11 @@ html.vt-panel::view-transition-new(root) {
   font-weight: 700;
 }
 
-.album-text-button:hover:not(:disabled) {
-  border-color: var(--album-amber);
-  color: #f0bf7c;
+@media (hover: hover) and (pointer: fine) {
+  .album-text-button:hover:not(:disabled) {
+    border-color: var(--album-amber);
+    color: #f0bf7c;
+  }
 }
 
 .album-upload-context {
@@ -6303,8 +6476,10 @@ html.vt-panel::view-transition-new(root) {
   transition: color var(--transition-fast);
 }
 
-.album-back-link:hover {
-  color: var(--album-amber);
+@media (hover: hover) and (pointer: fine) {
+  .album-back-link:hover {
+    color: var(--album-amber);
+  }
 }
 
 .album-detail-header {
@@ -6461,10 +6636,12 @@ html.vt-panel::view-transition-new(root) {
     translate var(--transition-base);
 }
 
-.album-photo-tile:hover {
-  border-color: rgba(255, 255, 255, 0.2);
-  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.3);
-  translate: 0 -2px;
+@media (hover: hover) and (pointer: fine) {
+  .album-photo-tile:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 20px 52px rgba(0, 0, 0, 0.3);
+    translate: 0 -2px;
+  }
 }
 
 .album-photo-grid > li.is-draft .album-photo-tile {
@@ -6496,9 +6673,11 @@ html.vt-panel::view-transition-new(root) {
     filter 220ms ease;
 }
 
-.album-photo-open:hover img {
-  filter: saturate(1.06);
-  scale: 1.025;
+@media (hover: hover) and (pointer: fine) {
+  .album-photo-open:hover img {
+    filter: saturate(1.06);
+    scale: 1.025;
+  }
 }
 
 .album-photo-open:focus-visible {
@@ -6590,14 +6769,16 @@ html.vt-panel::view-transition-new(root) {
   font-weight: 700;
 }
 
-.album-photo-controls button:hover:not(:disabled) {
-  border-color: rgba(215, 160, 82, 0.34);
-  color: var(--album-amber);
-}
+@media (hover: hover) and (pointer: fine) {
+  .album-photo-controls button:hover:not(:disabled) {
+    border-color: rgba(215, 160, 82, 0.34);
+    color: var(--album-amber);
+  }
 
-.album-photo-controls button.is-danger:hover:not(:disabled) {
-  border-color: rgba(212, 82, 82, 0.4);
-  color: #ed8a7d;
+  .album-photo-controls button.is-danger:hover:not(:disabled) {
+    border-color: rgba(212, 82, 82, 0.4);
+    color: #ed8a7d;
+  }
 }
 
 .album-photo-edit-dialog {
@@ -6743,7 +6924,7 @@ html.vt-panel::view-transition-new(root) {
 }
 
 .album-lightbox-rail ol.is-animated {
-  transition: transform 560ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -6788,10 +6969,16 @@ html.vt-panel::view-transition-new(root) {
   letter-spacing: 0.06em;
 }
 
-.album-rail-thumb:hover,
 .album-rail-thumb:focus-visible {
   border-color: rgba(255, 255, 255, 0.34);
   opacity: 0.92;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .album-rail-thumb:hover {
+    border-color: rgba(255, 255, 255, 0.34);
+    opacity: 0.92;
+  }
 }
 
 .album-rail-thumb.active {
@@ -6855,10 +7042,12 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.album-version-button:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.23);
-  background: rgba(255, 255, 255, 0.075);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .album-version-button:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.23);
+    background: rgba(255, 255, 255, 0.075);
+    color: var(--text);
+  }
 }
 
 .album-version-button.active {
@@ -6906,6 +7095,13 @@ html.vt-panel::view-transition-new(root) {
 .album-version-dot.is-hdr {
   background: #48b8d7;
   box-shadow: 0 0 12px rgba(72, 184, 215, 0.46);
+}
+
+@media (dynamic-range: high) {
+  .album-version-dot.is-hdr {
+    dynamic-range-limit: no-limit;
+    background: var(--hdr-glow-swatch) center / cover, #48b8d7;
+  }
 }
 
 .album-lightbox figure {
@@ -6979,9 +7175,11 @@ html.vt-panel::view-transition-new(root) {
   font-size: 0.76rem;
 }
 
-.album-lightbox-navigation button:hover {
-  border-color: rgba(215, 160, 82, 0.36);
-  background: rgba(215, 160, 82, 0.08);
+@media (hover: hover) and (pointer: fine) {
+  .album-lightbox-navigation button:hover {
+    border-color: rgba(215, 160, 82, 0.36);
+    background: rgba(215, 160, 82, 0.08);
+  }
 }
 
 @media (max-width: 900px) {
@@ -7420,11 +7618,18 @@ html.vt-panel::view-transition-new(root) {
   appearance: none;
 }
 
-.film-stock-toggle:hover,
 .film-stock-toggle:focus-visible {
   background: rgba(214, 157, 88, 0.12);
   color: #e4b675;
   outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .film-stock-toggle:hover {
+    background: rgba(214, 157, 88, 0.12);
+    color: #e4b675;
+    outline: none;
+  }
 }
 
 .film-stock-toggle > span {
@@ -7925,9 +8130,11 @@ html.vt-panel::view-transition-new(root) {
     opacity var(--transition-fast);
 }
 
-.film-contact-frame:hover {
-  border-color: rgba(214,157,88,.5);
-  transform: translateY(-2px);
+@media (hover: hover) and (pointer: fine) {
+  .film-contact-frame:hover {
+    border-color: rgba(214,157,88,.5);
+    transform: translateY(-2px);
+  }
 }
 
 .film-contact-frame:focus-visible {
@@ -8153,9 +8360,11 @@ html.vt-panel::view-transition-new(root) {
   cursor: pointer;
 }
 
-.film-frame-actions button:hover:not(:disabled) {
-  border-color: rgba(214,157,88,.42);
-  color: #e4b675;
+@media (hover: hover) and (pointer: fine) {
+  .film-frame-actions button:hover:not(:disabled) {
+    border-color: rgba(214,157,88,.42);
+    color: #e4b675;
+  }
 }
 
 .film-commit-bar {
