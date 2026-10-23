@@ -75,7 +75,7 @@ export default async function AlbumsPage({
                     )}
                     {hdrCount ? (
                       <span className="album-hdr-badge">
-                        HDR <b>{hdrCount}</b>
+                        <span className="album-hdr-glow">HDR</span> <b>{hdrCount}</b>
                       </span>
                     ) : null}
                   </div>

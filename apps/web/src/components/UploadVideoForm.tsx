@@ -1078,7 +1078,16 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
           }
           role="status"
         >
-          <p>{statusMessage}</p>
+          {/* Drawn once, only when upload and processing both finished without a partial failure. */}
+          {state === "success" && !result?.processingInterrupted && result?.sdrDerivative?.status !== "failed" && result?.companionSdr?.status !== "failed" ? (
+            <p className="upload-status-done">
+              <svg className="upload-done-mark" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" pathLength={1} />
+                <path d="m7.5 12.5 3 3 6-6.5" pathLength={1} />
+              </svg>
+              <span>{statusMessage}</span>
+            </p>
+          ) : <p>{statusMessage}</p>}
           {result?.sourceFormat ? <VideoFormatInfo source={result.sourceFormat} lang={lang}
             playback={state === "success" ? ({ hdr10: "HDR10", sdr: "SDR", hlg: "HLG", dolby_vision: "Dolby Vision" } as Record<string, string>)[result.master?.type || ""] || result.colorContract?.hlsVideoRange : null} /> : null}
           {/* Name the actual delivery format even when the uploaded archive contains Dolby metadata. */}
