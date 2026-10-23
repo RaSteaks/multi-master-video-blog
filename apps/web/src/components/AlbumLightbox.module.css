@@ -1,0 +1,108 @@
+/* Album lightbox motion layers. Durations and easing come from the globals.css
+   motion tokens (read by AlbumGallery's WAAPI code); this file only owns the
+   layering, the gesture surface and the state a gesture writes per frame
+   (--lb-dismiss, 0..1, set inline on the dialog). */
+
+/* The dark surface moves from the dialog box to .scrim so it can fade on the
+   compositor during opening, closing and pull-to-dismiss. */
+.dialog:global(.album-lightbox) {
+  background: transparent;
+}
+
+/* Only where ::backdrop inherits custom properties; elsewhere it stays opaque. */
+.dialog:global(.album-lightbox)::backdrop {
+  opacity: calc(1 - var(--lb-dismiss, 0) * 0.85);
+}
+
+.dialog[data-closing="true"] .content {
+  pointer-events: none;
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgba(3, 4, 5, 0.96);
+  opacity: calc(1 - var(--lb-dismiss, 0) * 0.85);
+  pointer-events: none;
+}
+
+.content {
+  position: relative;
+  z-index: 1;
+}
+
+/* Toolbar, rail, caption and paging buttons recede while the photo is pulled. */
+.chrome {
+  opacity: calc(1 - var(--lb-dismiss, 0) * 1.6);
+}
+
+/* Gesture surface: photo area only. Browser pinch-zoom stays available; pans are
+   ours until the page itself is zoomed, when the browser gets them back. */
+.photoStage {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  /* One cell the size of the stage, so a photo wider than it stays centred like before. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  justify-self: stretch;
+  place-items: center;
+  touch-action: pinch-zoom;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.photoStage[data-page-zoomed="true"] {
+  touch-action: auto;
+}
+
+/* Every rendition (shown, incoming, outgoing) shares one centred grid cell. */
+.layer {
+  grid-area: 1 / 1;
+  transform-origin: center;
+}
+
+.layer img {
+  -webkit-user-drag: none;
+}
+
+/* Incoming files load and decode invisibly; the current photo stays until then. */
+.layer[data-role="incoming"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.layer[data-role="outgoing"] {
+  pointer-events: none;
+}
+
+.loading {
+  z-index: 1;
+  grid-area: 1 / 1;
+  align-self: end;
+  justify-self: start;
+  margin: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 999px;
+  background: rgba(3, 4, 5, 0.78);
+  padding: 4px 9px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--motion-control-duration) var(--motion-ease);
+}
+
+.loading[data-visible="true"] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading {
+    transition-duration: var(--motion-reduced-duration);
+  }
+}
