@@ -189,7 +189,7 @@ npm run dev:api                # 上传 API 开发模式
 npm run dev:cms                # 启动 Directus
 npm run setup:cms-schema       # 创建 / 修复 CMS 内容模型
 npm run migrate:cms:postgres   # SQLite → PostgreSQL 迁移入口
-npm run test:api               # 检查 API 语法
+npm run test:api               # API 语法与单元、媒体回归测试
 npm run test:album-api         # 对运行中的 API / Directus 执行相簿集成测试并清理测试数据
 npm run test:db                # 检查 Directus 数据库（SQLite / PostgreSQL）
 npm run test:cms-schema        # 检查 CMS 表、字段、关系

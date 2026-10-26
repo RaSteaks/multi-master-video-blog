@@ -15,6 +15,7 @@ const { createAnalyticsRecorder } = require("../apps/api/src/analytics-recorder.
 const { createVideoUploadStore } = require("../apps/api/src/video-upload-store.cjs");
 const { prepareCachedPreview } = require("../apps/api/src/preview-cache.cjs");
 const { sqliteBatches } = require("../scripts/sqlite-batches.cjs");
+const { createDirectusClient } = require("../apps/api/src/directus-client.cjs");
 const apiSource = fs.readFileSync(path.join(__dirname, "../apps/api/src/server.cjs"), "utf8");
 
 // Execute production handlers with disposable files and controlled network effects.
@@ -240,12 +241,14 @@ test("analytics baselines an old failed summary once before advancing its new cu
 
 test("403 is not retried as an expired token and public health hides diagnostics", async () => {
   let calls = 0;
-  const api = apiFixture(["directusRequest", "httpError", "directusTransportError", "isDirectusMutationMethod", "handleHealth"], {
-    DIRECTUS_URL: "http://fixture", fetch: async () => { calls++; return new Response('{"errors":[{"message":"Forbidden"}]}', { status: 403 }); },
-    refreshDirectusLogin: () => { throw new Error("Must not refresh a forbidden credential"); },
+  const client = createDirectusClient({
+    url: "http://fixture",
+    fetch: async () => { calls++; return new Response('{"errors":[{"message":"Forbidden"}]}', { status: 403 }); }
+  });
+  const api = apiFixture(["handleHealth"], {
     sendJson: (res, status, body) => { res.status = status; res.body = body; }
   });
-  await assert.rejects(api.directusRequest("/items/restricted", "valid"), { directusHttpStatus: 403 });
+  await assert.rejects(client.directusRequest("/items/restricted", "valid"), { directusHttpStatus: 403 });
   assert.equal(calls, 1);
   const res = {}; await api.handleHealth(res); assert.equal(JSON.stringify(res.body), '{"status":"ok"}');
 });

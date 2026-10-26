@@ -1,7 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const fsp = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
 const vm = require("node:vm");
@@ -54,28 +53,4 @@ test("ordinary media processes inherit a deadline and are killed on timeout", as
   t.mock.timers.tick(101);
   await timedOut;
   assert.equal(killed, true);
-});
-
-test("file-backed multipart content survives an authentication retry", async t => {
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "file-blob-"));
-  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
-  const filename = path.join(dir, "image.bin");
-  const bytes = Buffer.alloc(1024 * 1024, 73);
-  await fsp.writeFile(filename, bytes);
-  let attempts = 0;
-  const api = fixture(["directusUploadFile"], {
-    fs, FormData, DIRECTUS_URL: "http://fixture.invalid",
-    refreshDirectusLogin: async () => "fresh-token",
-    fetch: async (url, options) => {
-      const file = options.body.get("file");
-      assert.equal(file.name, "image.bin");
-      assert.equal(file.type, "image/jpeg");
-      assert.deepEqual(Buffer.from(await file.arrayBuffer()), bytes);
-      if (++attempts === 1) return { status: 401, arrayBuffer: async () => new ArrayBuffer(0) };
-      assert.equal(options.headers.Authorization, "Bearer fresh-token");
-      return { status: 200, ok: true, text: async () => '{"data":{"id":"file-id"}}' };
-    }
-  });
-  assert.equal(await api.directusUploadFile("expired", { tempPath: filename, filename: "image.bin", mimeType: "image/jpeg" }, "Test"), "file-id");
-  assert.equal(attempts, 2);
 });

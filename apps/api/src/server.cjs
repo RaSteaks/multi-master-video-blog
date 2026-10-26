@@ -54,7 +54,7 @@ const {
   sha256File: sha256FilmScanFile,
   validateFilmScanUpload
 } = require("./film-scan-utils.cjs");
-const { createDirectusTokenCache } = require("./directus-auth.cjs");
+const { createDirectusClient } = require("./directus-client.cjs");
 const { createTaskLimiter } = require("./task-limiter.cjs");
 const { createVideoUploadStore } = require("./video-upload-store.cjs");
 const { createCachedProbe } = require("./cached-probe.cjs");
@@ -97,6 +97,18 @@ const PORT = Number(env.PORT || 8060);
 const DIRECTUS_URL = stripTrailingSlash(env.DIRECTUS_URL || "http://127.0.0.1:8055");
 const DIRECTUS_EMAIL = env.DIRECTUS_EMAIL || "admin@example.com";
 const DIRECTUS_PASSWORD = env.DIRECTUS_PASSWORD || "change-this-local-password";
+// Keep CMS transport separate from routing so it can be exercised without starting services.
+const {
+  directusLogin,
+  directusRequest,
+  directusUploadFile,
+  findDirectusFileByUploadTag,
+  fetchDirectusAsset
+} = createDirectusClient({
+  url: DIRECTUS_URL,
+  email: DIRECTUS_EMAIL,
+  password: DIRECTUS_PASSWORD
+});
 const UPLOAD_API_TOKEN_PLACEHOLDER = "__REPLACE_WITH_RANDOM_UPLOAD_TOKEN__";
 const configuredUploadApiToken = String(env.UPLOAD_API_TOKEN || "").trim();
 const UPLOAD_API_TOKEN =
@@ -3536,284 +3548,6 @@ function inferBitDepth(probe, masterType) {
   return defaultBitDepth(masterType);
 }
 
-async function directusRequest(pathname, token, options = {}) {
-  const {
-    directusAuthRetried = false,
-    ...requestOptions
-  } = options;
-  const method = String(requestOptions.method || "GET").toUpperCase();
-  let response;
-  try {
-    response = await fetch(`${DIRECTUS_URL}${pathname}`, {
-      ...requestOptions,
-      // Only 401 refreshes credentials; a 403 is a durable permission denial.
-      // CMS calls have a bounded wait; transport errors retain uncertain-write handling.
-      signal: requestOptions.signal || AbortSignal.timeout(30_000),
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(requestOptions.headers || {})
-      },
-      body:
-        requestOptions.body && typeof requestOptions.body !== "string"
-          ? JSON.stringify(requestOptions.body)
-          : requestOptions.body
-    });
-  } catch (cause) {
-    throw directusTransportError(method, pathname, cause);
-  }
-
-  if (
-    token &&
-    !directusAuthRetried &&
-    response.status === 401
-  ) {
-    await response.arrayBuffer().catch(() => {});
-    const refreshedToken = await refreshDirectusLogin(token);
-    return directusRequest(pathname, refreshedToken, {
-      ...requestOptions,
-      directusAuthRetried: true
-    });
-  }
-
-  let text;
-  try {
-    text = await response.text();
-  } catch (cause) {
-    if (!response.ok) {
-      const error = httpError(
-        response.status,
-        `Directus ${method} ${pathname} failed: ${response.statusText}`
-      );
-      error.directusHttpStatus = response.status;
-      error.directusRequestSent = true;
-      error.cause = cause;
-      throw error;
-    }
-    const error = directusTransportError(method, pathname, cause);
-    error.directusResponseStatus = response.status;
-    throw error;
-  }
-
-  let data = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch (cause) {
-      if (!response.ok) {
-        const error = httpError(
-          response.status,
-          `Directus ${method} ${pathname} failed: ${text || response.statusText}`
-        );
-        error.directusHttpStatus = response.status;
-        error.directusRequestSent = true;
-        throw error;
-      }
-
-      const error = httpError(502, `Directus ${method} ${pathname} returned invalid JSON.`);
-      error.directusRequestSent = true;
-      error.directusResponseStatus = response.status;
-      error.directusAmbiguous = isDirectusMutationMethod(method);
-      error.cause = cause;
-      throw error;
-    }
-  }
-
-  if (!response.ok) {
-    const message = data?.errors?.[0]?.message || text || response.statusText;
-    const error = httpError(
-      response.status,
-      `Directus ${method} ${pathname} failed: ${message}`
-    );
-    error.directusHttpStatus = response.status;
-    error.directusRequestSent = true;
-    throw error;
-  }
-
-  if (!text && method !== "DELETE" && method !== "HEAD") {
-    const error = httpError(502, `Directus ${method} ${pathname} returned an empty response.`);
-    error.directusRequestSent = true;
-    error.directusResponseStatus = response.status;
-    error.directusAmbiguous = isDirectusMutationMethod(method);
-    throw error;
-  }
-
-  return data;
-}
-
-function isDirectusMutationMethod(method) {
-  return ["POST", "PATCH", "PUT"].includes(method);
-}
-
-function directusTransportError(method, pathname, cause) {
-  const error = httpError(502, `Directus ${method} ${pathname} did not return a response.`);
-  error.directusRequestSent = true;
-  error.directusAmbiguous = isDirectusMutationMethod(method);
-  error.cause = cause;
-  return error;
-}
-
-async function directusUploadFile(token, file, title, options = {}) {
-  if (!file) {
-    return null;
-  }
-
-  // A file-backed Blob streams multipart data without duplicating the entire image in RAM.
-  // Callers keep this immutable temporary file until the upload and any auth retry finish.
-  const blob = await fs.openAsBlob(file.tempPath, {
-    type: file.mimeType || "application/octet-stream"
-  });
-  const reconciliationTag = String(options.reconciliationTag || "").trim();
-
-  async function upload(accessToken, authRetried = false) {
-    const form = new FormData();
-    if (title) {
-      form.append("title", title);
-    }
-    if (reconciliationTag) {
-      form.append("description", reconciliationTag);
-    }
-    form.append(
-      "file",
-      blob,
-      file.filename
-    );
-
-    let response;
-    try {
-      response = await fetch(`${DIRECTUS_URL}/files`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        },
-        body: form,
-        // Upload timeouts retain reconciliation for a possibly committed CMS write.
-        signal: AbortSignal.timeout(120_000)
-      });
-    } catch (cause) {
-      throw directusTransportError("POST", "/files", cause);
-    }
-
-    if (
-      !authRetried &&
-      response.status === 401
-    ) {
-      await response.arrayBuffer().catch(() => {});
-      const refreshedToken = await refreshDirectusLogin(accessToken);
-      return upload(refreshedToken, true);
-    }
-
-    let text;
-    try {
-      text = await response.text();
-    } catch (cause) {
-      const error = directusTransportError("POST", "/files", cause);
-      error.directusResponseStatus = response.status;
-      throw error;
-    }
-
-    let data = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch (cause) {
-      const error = httpError(502, "Directus file upload returned invalid JSON.");
-      error.directusRequestSent = true;
-      error.directusResponseStatus = response.status;
-      error.directusAmbiguous = response.ok;
-      error.cause = cause;
-      throw error;
-    }
-
-    if (!response.ok) {
-      const message = data?.errors?.[0]?.message || text || response.statusText;
-      const error = httpError(response.status, `Directus file upload failed: ${message}`);
-      error.directusHttpStatus = response.status;
-      error.directusRequestSent = true;
-      throw error;
-    }
-
-    if (!data?.data?.id) {
-      const error = httpError(
-        502,
-        "Directus file upload response did not include a file id."
-      );
-      error.directusRequestSent = true;
-      error.directusResponseStatus = response.status;
-      error.directusAmbiguous = true;
-      throw error;
-    }
-
-    return data.data.id;
-  }
-
-  try {
-    return await upload(token);
-  } catch (error) {
-    if (error.directusAmbiguous && reconciliationTag) {
-      try {
-        const reconciledFileId = await findDirectusFileByUploadTag(
-          token,
-          reconciliationTag
-        );
-        if (reconciledFileId) {
-          return reconciledFileId;
-        }
-      } catch (reconciliationError) {
-        error.reconciliationError = reconciliationError;
-      }
-    }
-    throw error;
-  }
-}
-
-const DIRECTUS_TOKEN_SAFETY_MARGIN_MS = 30_000;
-const DIRECTUS_TOKEN_FALLBACK_TTL_MS = 5 * 60_000;
-const directusTokenCache = createDirectusTokenCache({
-  login: async () => {
-    const data = await directusRequest("/auth/login", null, {
-      method: "POST",
-      body: {
-        email: DIRECTUS_EMAIL,
-        password: DIRECTUS_PASSWORD
-      }
-    });
-    return {
-      token: data?.data?.access_token,
-      expiresIn: data?.data?.expires
-    };
-  },
-  safetyMarginMs: DIRECTUS_TOKEN_SAFETY_MARGIN_MS,
-  fallbackTtlMs: DIRECTUS_TOKEN_FALLBACK_TTL_MS
-});
-
-function normalizeDirectusLoginError(error) {
-  if ([401, 403].includes(error.directusHttpStatus || error.statusCode)) {
-    const upstreamError = httpError(
-      502,
-      "Directus service authentication failed."
-    );
-    upstreamError.cause = error;
-    return upstreamError;
-  }
-  return error;
-}
-
-async function directusLogin() {
-  try {
-    return await directusTokenCache.get();
-  } catch (error) {
-    throw normalizeDirectusLoginError(error);
-  }
-}
-
-async function refreshDirectusLogin(failedToken) {
-  try {
-    return await directusTokenCache.refresh(failedToken);
-  } catch (error) {
-    throw normalizeDirectusLoginError(error);
-  }
-}
-
 async function findPostBySlug(token, slug) {
   const params = new URLSearchParams({
     "filter[slug][_eq]": slug,
@@ -4267,23 +4001,6 @@ async function listAlbumPhotos(token, albumId) {
 
 function albumUploadTag(batchId, index, rendition) {
   return `album-upload:${batchId}:${index}:${rendition}`;
-}
-
-async function findDirectusFileByUploadTag(token, reconciliationTag) {
-  const params = new URLSearchParams({
-    "filter[description][_eq]": reconciliationTag,
-    fields: "id,description",
-    limit: "2"
-  });
-  const data = await directusRequest(`/files?${params.toString()}`, token);
-  const files = Array.isArray(data.data) ? data.data : [];
-  if (files.length > 1) {
-    throw httpError(
-      409,
-      `Multiple Directus files use reconciliation tag ${reconciliationTag}.`
-    );
-  }
-  return directusFileId(files[0]?.id);
 }
 
 async function findAlbumPhotoBySdrFile(token, albumId, sdrFileId) {
@@ -8713,45 +8430,6 @@ async function handleMedia(req, pathname, res) {
       error: (error.statusCode || 404) === 404 ? "Media file not found." : "Media is temporarily unavailable."
     });
   }
-}
-
-async function fetchDirectusAsset(
-  assetUrl,
-  token,
-  requestHeaders = {},
-  method = "GET",
-  authRetried = false,
-  signal
-) {
-  const response = await fetch(assetUrl, {
-    method,
-    signal,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(requestHeaders["if-none-match"]
-        ? { "If-None-Match": requestHeaders["if-none-match"] }
-        : {}),
-      ...(requestHeaders["if-modified-since"]
-        ? { "If-Modified-Since": requestHeaders["if-modified-since"] }
-        : {})
-    }
-  });
-  if (
-    !authRetried &&
-    response.status === 401
-  ) {
-    await response.body?.cancel().catch(() => {});
-    const refreshedToken = await refreshDirectusLogin(token);
-    return fetchDirectusAsset(
-      assetUrl,
-      refreshedToken,
-      requestHeaders,
-      method,
-      true,
-      signal
-    );
-  }
-  return response;
 }
 
 function assetAccess(req) {

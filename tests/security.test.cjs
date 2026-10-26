@@ -14,6 +14,7 @@ const apiSource = fs.readFileSync(path.join(root, "apps/api/src/server.cjs"), "u
 const media = require("../apps/api/src/media-security.cjs");
 const { canReadAsset } = require("../apps/api/src/asset-access.cjs");
 const { createCachedProbe } = require("../apps/api/src/cached-probe.cjs");
+const { createDirectusClient } = require("../apps/api/src/directus-client.cjs");
 
 // Exercise real request handlers with isolated storage and fake CMS/process effects.
 // No server listener, publishing credential, database or production media is used.
@@ -387,11 +388,15 @@ test("lazy image changes cancel observers and stale requests without revealing o
 test("asset handler checks authorization before bytes/304 and isolates old active content", async () => {
   const data = { posts: [{ published: false, cover_image: "draft" }, { published: true, cover_image: "public" }] };
   let fetches = 0, type = "image/jpeg";
-  const api = apiFixture(["handleAsset", "assetAccess", "tokenMatches", "fetchDirectusAsset", "httpError", "sendJson"], {
+  const client = createDirectusClient({
+    url: "http://cms.invalid",
+    fetch: async () => { fetches++; return new Response("bytes", { headers: { "content-type": type, etag: '"same"' } }); }
+  });
+  const api = apiFixture(["handleAsset", "assetAccess", "tokenMatches", "httpError", "sendJson"], {
     UPLOAD_API_TOKEN: "upload-token", ARTICLE_API_TOKEN: "article-token", DIRECTUS_URL: "http://cms.invalid",
     ASSET_PRESETS: new Set(["album-thumb"]), PUBLIC_ASSET_IDS: new Set(), canReadAsset, directusLogin: async () => "service-token",
     directusRequest: cms(data), JSON_COMPRESSION_MIN_BYTES: Infinity,
-    fetch: async () => { fetches++; return new Response("bytes", { headers: { "content-type": type, etag: '"same"' } }); }
+    fetchDirectusAsset: client.fetchDirectusAsset
   });
   async function get(id, headers = {}, method = "GET") {
     const res = new Reply();
