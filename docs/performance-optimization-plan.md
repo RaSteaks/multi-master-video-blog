@@ -56,7 +56,7 @@ const cacheOptions =
 
 当前以下图片已经声明了尺寸和加载策略：
 
-- 首页头像：`apps/web/src/app/page.tsx`
+- 首页头像：`apps/web/src/app/(home)/page.tsx`
 - 文章列表、视频列表、相簿列表卡片：对应列表 `page.tsx`
 - 文章详情封面与目录封面：`apps/web/src/app/posts/[slug]/page.tsx`
 - 相簿画廊缩略图：`apps/web/src/components/AlbumGallery.tsx`

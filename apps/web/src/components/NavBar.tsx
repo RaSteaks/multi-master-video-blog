@@ -45,6 +45,10 @@ const NAV_LINKS = [
     href: "/about",
     activeHrefs: ["/about"],
     label: "关于",
+    // /about is dynamic with no loading boundary, so the default prefetch
+    // skips it and every click waits on a server round trip. A full prefetch
+    // of this one small page lets the click show the real content at once.
+    prefetch: true,
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="10" />
@@ -156,10 +160,11 @@ export function NavBar() {
   return (
     <nav aria-label="主要导航" ref={navRef}>
       <span ref={pillRef} className="nav-pill" aria-hidden="true" />
-      {NAV_LINKS.map(({ href, activeHrefs, label, icon }) => (
+      {NAV_LINKS.map(({ href, activeHrefs, label, icon, prefetch }) => (
         <Link
           key={href}
           href={href}
+          prefetch={prefetch}
           data-active={href === targetHref ? "true" : undefined}
           aria-current={isActive(activeHrefs, pathname) ? "page" : undefined}
         >
