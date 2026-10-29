@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeReadiness } from "./route-transition";
+import { routeReadiness, wipeDirection } from "./route-transition";
 
 describe("route readiness", () => {
   const base = { committed: true, loading: false, coverReady: null, expired: false };
@@ -23,5 +23,31 @@ describe("route readiness", () => {
     expect(routeReadiness({ ...base, loading: true, expired: true })).toBe("skip");
     expect(routeReadiness({ ...base, committed: false, expired: true })).toBe("skip");
     expect(routeReadiness({ ...base, committed: false, coverReady: false, expired: true })).toBe("skip");
+  });
+});
+
+describe("wipe direction", () => {
+  it("follows the nav order between sections", () => {
+    expect(wipeDirection("/videos", "/posts")).toBe("forward");
+    expect(wipeDirection("/about", "/albums")).toBe("back");
+    expect(wipeDirection("/", "/about")).toBe("forward");
+    expect(wipeDirection("/posts/a", "/")).toBe("back");
+  });
+
+  it("treats sub-sections as their nav section", () => {
+    expect(wipeDirection("/write", "/videos")).toBe("back");
+    expect(wipeDirection("/upload", "/posts")).toBe("forward");
+    expect(wipeDirection("/write", "/posts")).toBe("forward");
+  });
+
+  it("goes forward into a detail page and back up to its list", () => {
+    expect(wipeDirection("/posts", "/posts/a")).toBe("forward");
+    expect(wipeDirection("/posts/a", "/posts")).toBe("back");
+    expect(wipeDirection("/posts/a", "/posts/b")).toBe("forward");
+  });
+
+  it("falls back to depth for unknown sections", () => {
+    expect(wipeDirection("/internal", "/posts")).toBe("forward");
+    expect(wipeDirection("/internal/x", "/posts")).toBe("back");
   });
 });

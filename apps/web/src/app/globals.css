@@ -77,6 +77,18 @@
   --motion-reduced-duration: 100ms;
   --motion-panel-distance: 12px;
   --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Slow enough to follow the divider across a wide screen. The symmetric
+     sine-like in-out moves the film like a transport motor: soft start and
+     stop, near-even speed between, peaking at ~1.6× the average (an
+     asymmetric curve such as 0.4, 0, 0.2, 1 rushes 78% of the way in half
+     the time, then crawls). */
+  --motion-wipe-duration: 1200ms;
+  --motion-wipe-ease: cubic-bezier(0.37, 0, 0.63, 1);
+  /* The wipe edge leans with its travel: like "/" moving left → right, like
+     "\" (mirrored) moving right → left. --wipe-run is how far its top and
+     bottom sit either side of its midpoint (half the viewport height × tan). */
+  --wipe-slant: 8deg;
+  --wipe-run: calc(50vh * tan(var(--wipe-slant)));
 
   /* Typography */
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
@@ -513,17 +525,121 @@ html.route-transition-pending body::after {
   }
 }
 
-::view-transition-old(root),
+/* Navigation wipe: like the comparison slider between two masters, a divider
+   sweeps across and reveals the new page over the old one (forward: left →
+   right; back: right → left, set by PageTransition as data-vt-direction).
+   Both snapshots stay opaque, so blending is turned off: the default
+   plus-lighter cross-fade would brighten where they overlap. The divider is a
+   thin lit line (.route-wipe-line) present only in the new state; its group
+   travels with the clip edge. Snapshots are flat images, so clipping them
+   never affects the live page's backdrop-filter panels. */
+::view-transition-old(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
 ::view-transition-new(root) {
-  animation-duration: 320ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation: vt-wipe-reveal var(--motion-wipe-duration) var(--motion-wipe-ease) both;
+  mix-blend-mode: normal;
+}
+
+::view-transition-group(route-wipe-line) {
+  animation: vt-wipe-line var(--motion-wipe-duration) var(--motion-wipe-ease) both;
+}
+
+/* The line is sheared to the edge's slant (around the viewport's vertical
+   middle, where the edge crosses its own midpoint); a shear, unlike a
+   rotation, keeps its top end level with the header's lower edge. */
+::view-transition-new(route-wipe-line) {
+  animation: none;
+  transform: skewX(calc(-1 * var(--wipe-slant)));
+  transform-origin: 50% calc(50vh - var(--wipe-top, 0px));
+}
+
+html[data-vt-direction="back"]::view-transition-new(root) {
+  animation-name: vt-wipe-reveal-back;
+}
+
+html[data-vt-direction="back"]::view-transition-group(route-wipe-line) {
+  animation-name: vt-wipe-line-back;
+}
+
+/* Mirrored slant for the right → left wipe: the top leans left. */
+html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
+  transform: skewX(var(--wipe-slant));
+}
+
+/* The slanted edge's midpoint travels from -run to 100% + run (forward) or
+   back again, so it starts and ends fully off screen; top and bottom stay
+   2 × run apart throughout. Forward the top leads (on the right); back the
+   top leads too (on the left), mirroring the slant. */
+@keyframes vt-wipe-reveal {
+  from { clip-path: polygon(0 0, 0 0, calc(-2 * var(--wipe-run)) 100%, 0 100%); }
+  to { clip-path: polygon(0 0, calc(100% + 2 * var(--wipe-run)) 0, 100% 100%, 0 100%); }
+}
+
+@keyframes vt-wipe-reveal-back {
+  from {
+    clip-path: polygon(
+      100% 0, calc(100% + 2 * var(--wipe-run)) 0,
+      calc(100% + 2 * var(--wipe-run)) 100%, calc(100% + 2 * var(--wipe-run)) 100%
+    );
+  }
+  to {
+    clip-path: polygon(
+      calc(-2 * var(--wipe-run)) 0, calc(100% + 2 * var(--wipe-run)) 0,
+      calc(100% + 2 * var(--wipe-run)) 100%, 0 100%
+    );
+  }
+}
+
+/* `translate`, not `transform`: the browser places the group with its
+   `transform`, and overriding that would drop the line's own offset. The
+   line tracks the edge's midpoint. */
+@keyframes vt-wipe-line {
+  from { translate: calc(-1 * var(--wipe-run)) 0; }
+  to { translate: calc(100vw + var(--wipe-run)) 0; }
+}
+
+@keyframes vt-wipe-line-back {
+  from { translate: calc(100vw + var(--wipe-run)) 0; }
+  to { translate: calc(-1 * var(--wipe-run)) 0; }
+}
+
+/* The divider: a thin lit line with a soft glow. It runs from --wipe-top
+   (the header's lower edge, set by PageTransition on the root so the
+   transition pseudo-elements can read it too) to the bottom, leaving the
+   navigation alone. The box is wider than the line so the snapshot holds the
+   glow; its centre sits on the viewport's left edge. */
+.route-wipe-line {
+  position: fixed;
+  top: var(--wipe-top, 0px);
+  bottom: 0;
+  left: -12px;
+  z-index: 300;
+  width: 24px;
+  pointer-events: none;
+  view-transition-name: route-wipe-line;
+}
+
+.route-wipe-line::before {
+  position: absolute;
+  inset: 0 auto 0 11.25px;
+  width: 1.5px;
+  background: color-mix(in srgb, var(--text) 90%, transparent);
+  box-shadow:
+    0 0 6px color-mix(in srgb, var(--accent-readable) 55%, transparent),
+    0 0 1px var(--text);
+  content: "";
 }
 
 /* Shared cover/title morph ("Morph"-style): the group interpolates position
-   and size between the card and the detail page. */
+   and size between the card and the detail page. It lasts as long as the
+   wipe, so the cover does not settle over the old page before the divider
+   has revealed its destination. */
 ::view-transition-group(vt-cover),
 ::view-transition-group(vt-title) {
-  animation-duration: 420ms;
+  animation-duration: var(--motion-wipe-duration);
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -541,6 +657,7 @@ html.route-transition-pending body::after {
     animation: none !important;
   }
 }
+
 
 @keyframes route-progress {
   from { transform: scaleX(.06); }

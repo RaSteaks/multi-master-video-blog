@@ -3,7 +3,11 @@
 import type { ReactNode } from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { routeReadiness, type RouteReadiness } from "@/lib/route-transition";
+import {
+  routeReadiness,
+  wipeDirection,
+  type RouteReadiness,
+} from "@/lib/route-transition";
 
 const animatedSections = new Set([
   "home",
@@ -42,10 +46,12 @@ const VEIL_EASING = "cubic-bezier(.22, 1, .36, 1)";
  * the capture phase and routed through it instead (see onClickCapture). Each
  * navigation gets one enter animation, chosen when its wait ends (see
  * routeReadiness):
- *   - content and the decoded cover are on screen: the browser cross-fades the
- *     page and morphs elements marked `data-vt` (cover, title) between the
- *     clicked card and the destination
- *   - content is on screen but the cover is not decoded: plain cross-fade
+ *   - content and the decoded cover are on screen: a divider wipes the new
+ *     page over the old one, like a comparison slider between two masters
+ *     (direction follows the nav order, see wipeDirection), and elements
+ *     marked `data-vt` (cover, title) morph between the clicked card and the
+ *     destination
+ *   - content is on screen but the cover is not decoded: the wipe alone
  *   - still a skeleton or not committed: the transition is skipped and handed
  *     to the veil, which plays once the real content replaces the skeleton
  * The veil also remains the fallback for unsupported browsers.
@@ -253,12 +259,18 @@ export function PageTransition({ children }: { children: ReactNode }) {
       event.stopPropagation();
       const id = beginNavigation();
       viewTransitionNavRef.current = id;
-      // A superseded transition's names would duplicate this one's and abort it.
+      // A superseded transition's names would duplicate this one's and abort
+      // it, and its wipe line must not be captured in the old state.
       clearSharedElementNames();
+      wipeLine().remove();
       const sharedKinds = markSharedElements(anchor);
 
       const fromPathname = pathnameRef.current;
       const isCurrent = () => navIdRef.current === id;
+      document.documentElement.dataset.vtDirection = wipeDirection(
+        fromPathname,
+        url.pathname,
+      );
       const transition = document.startViewTransition(async () => {
         router.push(`${url.pathname}${url.search}${url.hash}`);
         const readiness = await waitForRouteReady(
@@ -269,6 +281,13 @@ export function PageTransition({ children }: { children: ReactNode }) {
         );
         // Superseded: the newer navigation owns all shared state.
         if (!isCurrent()) return;
+        if (readiness !== "skip") {
+          // The divider exists only in the new state, so it enters with the
+          // wipe and leaves when the transition ends. Its top is set on the
+          // root, so the transition pseudo-elements can read it too.
+          document.documentElement.style.setProperty("--wipe-top", `${contentTop()}px`);
+          document.body.append(wipeLine());
+        }
         if (readiness === "shared") {
           // Only the first match per kind: a destination that is itself a list
           // (e.g. nav → /videos) has many [data-vt] elements, and duplicate
@@ -289,9 +308,15 @@ export function PageTransition({ children }: { children: ReactNode }) {
       });
       const done = () => {
         if (viewTransitionNavRef.current === id) viewTransitionNavRef.current = null;
-        if (isCurrent()) clearSharedElementNames();
+        if (!isCurrent()) return;
+        clearSharedElementNames();
+        wipeLine().remove();
+        delete document.documentElement.dataset.vtDirection;
+        document.documentElement.style.removeProperty("--wipe-top");
       };
       transition.finished.then(done, done);
+      // A skipped transition rejects `ready`; skipping is an expected outcome.
+      transition.ready.catch(() => {});
     }
 
     // Listen at the end of the bubbling phase. The editor's unsaved-change
@@ -500,6 +525,27 @@ function clearTimer(timer: RefLikeTimer) {
 }
 
 type RefLikeTimer = { current: number | null };
+
+// The divider of the navigation wipe (globals.css "Navigation wipe"). One
+// element is reused: it is appended in the new state of each transition and
+// removed when that transition ends.
+let wipeLineElement: HTMLDivElement | null = null;
+
+// Where the content area starts: the header's lower edge, or the top of the
+// viewport where the header is hidden (home page).
+function contentTop() {
+  const header = document.querySelector(".site-header");
+  return Math.max(0, header?.getBoundingClientRect().bottom ?? 0);
+}
+
+function wipeLine() {
+  if (!wipeLineElement) {
+    wipeLineElement = document.createElement("div");
+    wipeLineElement.className = "route-wipe-line";
+    wipeLineElement.setAttribute("aria-hidden", "true");
+  }
+  return wipeLineElement;
+}
 
 function setNavigationPending(pending: boolean) {
   document.documentElement.classList.toggle(pendingClass, pending);

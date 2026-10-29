@@ -69,7 +69,7 @@ corners and inset preview chips use 4px corners.
 
 - Motion roles are owned by the `--motion-*` variables in `globals.css`: controls
   130 ms, panel changes 260 ms / 12 px, media reveals 180 ms, emphasis 420 ms,
-  and reduced-motion fades 100 ms. These are role budgets rather than mandatory
+  route wipes 1200 ms, and reduced-motion fades 100 ms. These are role budgets rather than mandatory
   effects on every element. Keep the reference-room identity; media comparison
   surfaces must not receive decorative colour, luminance or blur changes.
   `panel-motion.ts` reads the runtime tokens for live content transitions and
