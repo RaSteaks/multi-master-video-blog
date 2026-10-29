@@ -1372,7 +1372,12 @@ export function ArticleEditor() {
                 <span>实时预览</span>
                 <small>{deferredContent !== content ? "正在排版…" : "GFM"}</small>
               </div>
-              <div className={styles.previewScroller}>
+              <div
+                className={styles.previewScroller}
+                role="region"
+                aria-label="文章预览"
+                tabIndex={0}
+              >
                 {/* CSS hiding alone still parses Markdown and creates image elements while typing. */}
                 {viewMode !== "write" ? (
                   <ArticlePreview content={deferredContent} images={images} token={token} />
