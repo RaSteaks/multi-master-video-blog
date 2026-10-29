@@ -188,6 +188,7 @@ npm run dev:web                # 前端开发模式
 npm run dev:api                # 上传 API 开发模式
 npm run dev:cms                # 启动 Directus
 npm run setup:cms-schema       # 创建 / 修复 CMS 内容模型
+npm run repair:cms-insights    # 只读检查部署环境中缺少聚合函数的 Insights 折线图
 npm run migrate:cms:postgres   # SQLite → PostgreSQL 迁移入口
 npm run test:api               # API 语法与单元、媒体回归测试
 npm run test:album-api         # 对运行中的 API / Directus 执行相簿集成测试并清理测试数据
