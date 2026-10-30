@@ -44,11 +44,13 @@ function createAuthorSessions({ token, now = Date.now, trustProxy = false }) {
     }
   }
 
-  function cookies(req, res, id, maxAge) {
+  function cookies(req, res, id, maxAge, forgetDevice = false) {
     const attributes = `; SameSite=Strict; Max-Age=${maxAge}${protocol(req) === "https:" ? "; Secure" : ""}`;
     res.setHeader("Set-Cookie", [
       `author_session=${id}; Path=/api; HttpOnly${attributes}`,
-      `author_hint=${id ? "1" : ""}; Path=/${attributes}`
+      `author_hint=${id ? "1" : ""}; Path=/${attributes}`,
+      // Display hint only: expiry/logout retain it unless the device is explicitly forgotten.
+      ...(id || forgetDevice ? [`author_device=${id ? "1" : ""}; Path=/; SameSite=Strict; Max-Age=${id ? 31536000 : 0}${protocol(req) === "https:" ? "; Secure" : ""}`] : [])
     ]);
   }
 
@@ -110,10 +112,13 @@ function createAuthorSessions({ token, now = Date.now, trustProxy = false }) {
       cookies(req, res, "", 0);
       return { author: false };
     },
-    signOut(req, res) {
-      requireSession(req);
+    signOut(req, res, forgetDevice = false) {
+      // An expired session may still forget this non-authorizing display hint.
+      requireOrigin(req);
+      prune();
+      if (sessions.has(sessionKey(req))) requireSession(req);
       sessions.delete(sessionKey(req));
-      cookies(req, res, "", 0);
+      cookies(req, res, "", 0, forgetDevice);
       return { author: false };
     }
   };

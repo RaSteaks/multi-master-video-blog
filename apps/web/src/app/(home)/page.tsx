@@ -1,14 +1,14 @@
 import type { CSSProperties } from "react";
 import Link from "next/link";
 import { LiquidBackground } from "@/components/LiquidBackground";
-import { getCounts } from "@/lib/directus";
+import { getCounts, getFeaturedProjects } from "@/lib/directus";
 import {
   homeLayout,
   type HomeWidgetLayout,
 } from "@/lib/home-layout";
 import { siteConfig } from "@/lib/site-config";
 
-type UploadWidgetProps = {
+type ProjectWidgetProps = {
   className: string;
   href: string;
   title: string;
@@ -17,11 +17,15 @@ type UploadWidgetProps = {
 type HomeWidgetStyle = CSSProperties & Record<`--${string}`, string | number>;
 
 export default async function Home() {
+  const [counts, projects] = await Promise.all([
+    getCounts().catch(() => ({ posts: 0, videos: 0, albums: 0 })),
+    getFeaturedProjects(3),
+  ]);
   const {
     posts: postCount,
     videos: videoCount,
     albums: albumCount,
-  } = await getCounts();
+  } = counts;
 
   return (
     <>
@@ -45,23 +49,13 @@ export default async function Home() {
           </div>
 
           <div className="home-action-row">
-            <UploadWidget
-              className="floating-widget home-free-widget orbit-card orbit-upload orbit-blog-upload"
-              href="/upload"
-              title="上传视频"
-            />
-
-            <UploadWidget
-              className="floating-widget home-free-widget orbit-card orbit-upload orbit-album-upload"
-              href={siteConfig.home.albumUploadHref}
-              title="上传照片"
-            />
-
-            <UploadWidget
-              className="floating-widget home-free-widget orbit-card orbit-upload orbit-post-upload"
-              href={siteConfig.home.postUploadHref}
-              title="写文章"
-            />
+            {["blog", "album", "post"].map((position, index) => {
+              const project = projects[index];
+              return <ProjectWidget key={position}
+                className={`floating-widget home-free-widget orbit-card orbit-upload orbit-${position}-upload`}
+                href={project ? project.open_mode === "external" ? project.url : `/project#project-${project.id}` : "/project"}
+                title={project?.title || "进入实验室"} />;
+            })}
 
             <GitHubWidget />
             <BilibiliWidget />
@@ -157,20 +151,20 @@ function CollectionCard({
   );
 }
 
-function UploadWidget({ className, href, title }: UploadWidgetProps) {
+function ProjectWidget({ className, href, title }: ProjectWidgetProps) {
   const isExternal = href.startsWith("http");
   const content = <strong>{title}</strong>;
 
   if (isExternal) {
     return (
-      <a className={className} href={href} target="_blank" rel="noreferrer">
+      <a className={className} href={href} target="_blank" rel="noopener noreferrer" aria-label={title}>
         {content}
       </a>
     );
   }
 
   return (
-    <Link className={className} href={href}>
+    <Link className={className} href={href} aria-label={title}>
       {content}
     </Link>
   );

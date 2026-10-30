@@ -8270,7 +8270,7 @@ async function handleRequest(req, res) {
       const status = authorSessions.status(req, res);
       sendJson(res, 200, status.author ? { ...status, article: ARTICLE_USES_UPLOAD_TOKEN } : status);
     }
-    else if (req.method === "DELETE") sendJson(res, 200, authorSessions.signOut(req, res));
+    else if (req.method === "DELETE") sendJson(res, 200, authorSessions.signOut(req, res, url.searchParams.get("forget") === "1"));
     else if (req.method === "POST") {
       authorSessions.requireOrigin(req);
       if (String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase() !== "application/json") {

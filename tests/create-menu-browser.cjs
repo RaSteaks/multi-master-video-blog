@@ -18,14 +18,15 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     page = await context.newPage();
     page.on("pageerror", error => report.errors.push(error.message));
-    const tools = page.getByRole("button", { name: "页面工具", exact: true });
-    const menu = page.locator(".create-menu");
+    const tools = page.getByRole("button", { name: "工具", exact: true });
+    const publicTools = page.getByRole("button", { name: "页面工具", exact: true });
+    const menu = page.locator(".author-menu");
     await page.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
     assert.equal((await context.request.get(`${fixture.url}/api/author/tasks`)).status(), 401);
-    await tools.click();
-    assert.equal(await menu.getByRole("link", { name: "上传照片", exact: true }).count(), 0);
+    assert.equal(await tools.count(), 0);
+    assert.equal(await publicTools.count(), 0, "An unscrolled list has no page tools.");
     await page.screenshot({ path: path.join(fixture.output, "guest-desktop.png") });
-    await menu.getByRole("button", { name: "作者登录", exact: true }).click();
+    await page.keyboard.press("Control+Shift+L");
     const dialog = page.getByRole("dialog", { name: "作者登录", exact: true });
     await dialog.getByLabel("上传令牌", { exact: true }).fill("wrong");
     await dialog.getByRole("button", { name: "登录", exact: true }).click();
@@ -42,6 +43,9 @@ async function main() {
     });
     const cookies = await context.cookies();
     const cookie = cookies.find(cookie => cookie.name === "author_session");
+    const device = cookies.find(cookie => cookie.name === "author_device");
+    assert.equal(device.httpOnly, false); assert.equal(device.path, "/"); assert.equal(device.sameSite, "Strict");
+    assert.ok(device.expires * 1000 - Date.now() > 364 * 86400_000);
     assert.equal(cookie.httpOnly, true); assert.equal(cookie.path, "/api"); assert.equal(cookie.sameSite, "Strict");
     assert.ok(cookies.every(cookie => !cookie.value.includes(fixture.token)));
     assert.equal(await page.evaluate(token => [...Object.values(localStorage), ...Object.values(sessionStorage)].some(value => value.includes(token)), fixture.token), false);
@@ -50,12 +54,12 @@ async function main() {
 
     fixture.collections.film_scan_jobs = [{ id: 1, status: "analyzing", progress: 40, film_stock: "验收胶片" }];
     await menu.getByText("正在分帧 · 40%", { exact: true }).waitFor();
-    assert.equal(await menu.locator(".create-menu-progress circle").getAttribute("stroke-dasharray"), "40 100");
+    assert.equal(await menu.locator(".author-task-dot").count(), 1);
     await page.screenshot({ path: path.join(fixture.output, "task-progress.png") });
     fixture.collections.film_scan_jobs[0].status = "review_required";
     fixture.collections.film_scan_jobs[0].progress = 100;
     await menu.getByText("任务已完成", { exact: true }).waitFor();
-    await page.locator(".create-menu-progress.is-complete").waitFor({ state: "attached" });
+
     pass("session-protected task summaries show measured progress and bounded completion feedback");
 
     for (const [label, query] of [["上传照片", "upload"], ["新建相簿", "create"], ["导入胶片扫描", "film"]]) {
@@ -71,10 +75,11 @@ async function main() {
 
     await page.goto(`${fixture.url}/posts/fixture-post`, { waitUntil: "networkidle" });
     await page.keyboard.press("n");
-    assert.equal(await tools.getAttribute("aria-expanded"), "true");
-    await menu.getByRole("button", { name: "本页目录", exact: true }).click();
-    assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest(".article-toc"))), true);
-    await page.keyboard.press("n");
+    assert.equal(await publicTools.getAttribute("aria-expanded"), "true");
+    assert.equal(await page.locator(".create-menu").getByRole("link").count(), 0);
+    await page.locator(".create-menu").getByRole("button", { name: "本页目录", exact: true }).click();
+    await page.waitForFunction(() => Boolean(document.activeElement?.closest(".article-toc")));
+    await tools.click();
     await page.keyboard.press("v");
     await page.waitForURL(`${fixture.url}/upload`);
     await page.getByText("已作为作者登录", { exact: true }).waitFor();
@@ -85,8 +90,8 @@ async function main() {
     await page.mouse.wheel(0, 400);
     await page.locator(".create-menu--retreated").waitFor();
     await page.waitForFunction(() => !document.querySelector(".create-menu--retreated"));
-    assert.equal(await menu.evaluate(element => getComputedStyle(element).viewTransitionName), "create-menu");
-    pass("article TOC focus, N/V keyboard navigation, downward-scroll retreat and stable view-transition identity");
+    assert.equal(await page.locator(".create-menu").evaluate(element => getComputedStyle(element).viewTransitionName), "create-menu");
+    pass("public TOC/N, separate author V shortcut, scroll retreat and stable transition identity");
 
     const videoPath = path.join(fixture.temp, "playback.mp4");
     execFileSync(process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=160x90:r=10", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv", "-chroma_sample_location", "left", videoPath]);
@@ -130,7 +135,7 @@ async function main() {
       await uploader.getByText(file.name, { exact: true }).waitFor();
       await page.waitForLoadState("networkidle");
       assert.equal(page.url(), `${fixture.url}/albums/fixture-album`);
-      assert.equal(await page.locator(".create-menu--dragging").count(), 0);
+      assert.equal(await page.locator(".author-drop-layer").count(), 0);
     }
     await uploader.getByRole("heading", { name: "1 张 SDR · 1 组 HDR", exact: true }).waitFor();
     assert.equal(await page.getByRole("dialog", { name: "上传照片", exact: true }).count(), 0);
@@ -146,7 +151,7 @@ async function main() {
     ]) {
       const dropPage = await context.newPage();
       await dropPage.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
-      await dropPage.getByRole("button", { name: "页面工具", exact: true }).click();
+      await dropPage.getByRole("button", { name: "工具", exact: true }).click();
       await dropPage.getByRole("button", { name: "退出", exact: true }).waitFor();
       await dropPage.keyboard.press("Escape");
       await dropPage.evaluate(entry => {
@@ -230,11 +235,10 @@ async function main() {
     const other = await browser.newContext();
     const otherPage = await other.newPage();
     await otherPage.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
-    await otherPage.getByRole("button", { name: "页面工具", exact: true }).click();
-    await otherPage.getByRole("button", { name: "作者登录", exact: true }).waitFor();
+    assert.equal(await otherPage.getByRole("button", { name: "工具", exact: true }).count(), 0);
     const sibling = await context.newPage();
     await sibling.goto(`${fixture.url}/posts`, { waitUntil: "networkidle" });
-    await sibling.getByRole("button", { name: "页面工具", exact: true }).click();
+    await sibling.getByRole("button", { name: "工具", exact: true }).click();
     await sibling.getByRole("button", { name: "退出", exact: true }).waitFor();
     await sibling.getByRole("button", { name: "退出", exact: true }).click();
     await page.bringToFront();
@@ -261,7 +265,17 @@ async function main() {
     await page.reload({ waitUntil: "networkidle" }); await tools.click();
     await menu.getByRole("button", { name: "作者登录", exact: true }).waitFor();
     assert.equal((await context.cookies()).some(cookie => cookie.name === "author_hint"), false);
-    pass("CSRF and cross-origin rejection; API restart and forged hints return to guest without caching");
+    assert.equal((await context.cookies()).some(cookie => cookie.name === "author_device"), true);
+    await menu.getByRole("button", { name: "上传视频", exact: true }).click();
+    await dialog.getByLabel("上传令牌", { exact: true }).fill(fixture.token);
+    await dialog.getByRole("button", { name: "登录", exact: true }).click();
+    await page.waitForURL(`${fixture.url}/upload`);
+    await page.getByText("已作为作者登录", { exact: true }).waitFor();
+    await page.waitForLoadState("networkidle");
+    await page.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
+    await tools.click();
+    await menu.getByRole("button", { name: "退出", exact: true }).click();
+    pass("CSRF/cross-origin rejection, persistent device hint and expired action continuation");
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.emulateMedia({ reducedMotion: "reduce" });

@@ -66,7 +66,7 @@ export function AlbumsToolbar({
   const router = useRouter();
   useAuthorSession();
   const [dialog, setDialog] = useState<AlbumDialogName>(initialDialog);
-  // The create menu opens these dialogs through ?dialog=, also while this
+  // The author menu opens these dialogs through ?dialog=, also while this
   // page is already showing, so follow later requests too (closing a dialog
   // clears the query, which resets the request to null).
   const [requestedDialog, setRequestedDialog] = useState(initialDialog);

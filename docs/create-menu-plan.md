@@ -50,7 +50,7 @@
   - HDR 优先，SDR 必须可用。
   - 低配置主机和普通设备上必须可用。
 - **视觉系统**（`DESIGN.md`、`globals.css` 的 `:root`）：只使用已有的 token，包括 `--surface-*`、`--line*`、`--text*`、`--accent*`、`--accent-2`（D65 钢蓝），以及 `--motion-*`、`--transition-*`。界面文案使用简体中文。
-- **毛玻璃写法**：必须先写 `-webkit-backdrop-filter`，再写 `backdrop-filter`。反过来写时，构建会合并掉无前缀那条，Chrome 里就没有模糊。全站已有 9 处存在这个问题，这次不在范围内，但新代码不能再犯。
+- **毛玻璃写法**：必须先写 `-webkit-backdrop-filter`，再写 `backdrop-filter`。反过来写时，构建会合并掉无前缀那条，Chrome 里就没有模糊。第 6 阶段已按作者要求修正全站 9 处顺序，模糊强度不变。
 - **减少动态效果**：遵守 `globals.css` 里已有的全局 `prefers-reduced-motion` 规则。位移、缩放瞬间完成；透明度和颜色允许保留过渡。
 - **页面缓存**：根布局和页面组件中不得读取 cookie 或 headers，否则整站会变成动态渲染。身份判断只能在客户端完成。
 - **令牌安全**（`docs/deployment.md` 的 "Upload API Security"）：`UPLOAD_API_TOKEN` 不得出现在 `NEXT_PUBLIC_*`、URL、cookie 或任何浏览器存储中。
@@ -355,3 +355,35 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
 5. 手机端：iPhone 沉浸模式、Android 横屏、竖屏吸顶、横屏自动沉浸。
 6. 首页 project 入口。
 7. 更新 `tests/create-menu-browser.cjs`（作者项已迁出悬浮按钮）、`DESIGN.md`、`docs/deployment.md`。
+
+### 8.9 Review 修复清单（2026-10-31）
+
+审查范围是 `13a0e52` 之后的第 6 阶段改动。按顺序修复。
+
+**作者已决定：**
+
+- 作者入口保留钢笔图标，不用更换。
+- 任务完成后，小点多停留几秒：`useAuthorTasks` 中 `completed` 的保持时间从 2500ms 改为 6000ms；`AuthorMenu` 的触发按钮在 `tasks.length > 0 || completed` 时都显示小点。完成状态下小点颜色为 `--success`，尺寸仍为 6px，不加动画、文字或数字。
+
+**P1，必须修复：**
+
+1. `apps/web/src/lib/player-viewing.ts:78`：鼠标点击视频后焦点落在 `<video>` 上，退场计时被直接跳过，界面永远不淡出。改为只在键盘焦点时阻止退场，鼠标点击视频不阻止。在 `tests/phase6-browser.cjs` 中补一条真实点击视频的用例；现有用例用程序调用 `play()`，覆盖不到。
+2. `apps/web/src/lib/player-viewing.ts:85-93`：横屏自动沉浸没有记住用户已手动退出，退出全屏时的 `resize` 或再次播放都会重新进入。增加"本次横屏已手动退出"的标记，转回竖屏时清除；并加屏幕高度限制（例如 `max-height: 500px`），不影响平板。
+
+**P2，建议修复：**
+
+3. `⌘⇧L` 是 Safari"显示侧边栏"的快捷键。换一个不冲突的组合，并在 Safari 实测；同步修改第 8.2 节和 `docs/deployment.md`。
+4. `apps/web/src/app/albums/page.tsx:113`：空相簿提示还指向已移除的"＋"，访客也能看到。改成中性文案，参照 `AlbumGallery.tsx` 中"整理中"的写法。
+5. `apps/web/src/app/(home)/page.tsx:21`：删除 `getCounts()` 的 `.catch`，让生成失败时保留上一版缓存，避免把"0 篇"写进缓存。`getFeaturedProjects` 的错误处理改为只影响 project 卡片，同样不能把 CMS 故障时的结果写进长期缓存。
+6. `scripts/setup-revalidate-flows.cjs:23`：在集合列表中加入 `external_projects`，并更新 `docs/deployment.md` 中手动添加的说明。
+7. `apps/web/src/lib/author-navigation.ts:3`：用 `new URL` 规范化后再校验，拒绝规范化后以 `//` 开头的路径（如 `/.//evil.com`、`/%2e//evil.com`），并补单元测试。
+8. `apps/web/src/lib/directus.ts:56`：`getFeaturedProjects` 逐行校验，一条错误数据不能让全部卡片退回兜底。
+9. `apps/web/src/components/MediaPlayer.tsx:320`：`linkTimeConsumed` 改为加载成功后再标记，避免重试时丢失 `?t=`。
+10. `apps/web/src/components/PageTools.tsx:44`：`navigator.clipboard` 不存在时走已有的失败提示，不抛未捕获错误。
+11. `DESIGN.md`：恢复被删除但仍然有效的规则：6 小时会话与跨标签页行为、快捷键不干扰输入和弹窗、媒体像素不加装饰、指向 `docs/upload-api.md` 的说明。
+12. `apps/web/src/lib/player-viewing.ts:149-152`：组件卸载时不要恢复滚动位置，否则离开页面后下一页会跳动。
+13. `.master-add`、`.info-toggle` 在触屏上提高到 44px。
+14. `apps/web/src/components/AuthorMenu.tsx:50`：`notice` 在路由变化时清除。
+15. **任务失败没有提示（默认方案，作者尚未确认）：** `author-tasks.ts` 只跟踪进行中和已完成的状态，失败的任务直接从列表消失。失败时保留小点（颜色 `--danger`），直到作者打开面板查看。
+
+**修复后的验证：** 在有视频数据的环境里实际运行退场、全屏、Esc 恢复、`?t=` 和 0.35 倍速；运行 `tests/phase6-browser.cjs`、`tests/create-menu-browser.cjs` 和 `next build`，确认首页仍是静态页面。运行 `npm run test:api` 时设置 `FFMPEG_PATH`、`FFPROBE_PATH`、`VK_ICD_FILENAMES`，指向 `cms/bin/`；用系统 ffmpeg 会有 15 项媒体测试失败。

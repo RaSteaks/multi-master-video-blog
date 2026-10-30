@@ -172,8 +172,44 @@ The author menu exchanges this token for a fixed six-hour in-memory session.
 Only a random session ID is sent in the HttpOnly `author_session` cookie
 (`Path=/api`); the API stores its SHA-256 digest. The readable `author_hint`
 cookie is only a client-side hint and never grants access. Session responses
-are `no-store`; public page rendering does not read either cookie. Up to 16
+are `no-store`; public page rendering does not read session or device cookies. Up to 16
 devices may be signed in; another login evicts the oldest session.
+
+Successful login also writes `author_device=1` server-side with `Path=/`,
+`SameSite=Strict`, `Max-Age=31536000` and `Secure` on HTTPS, without HttpOnly.
+This non-secret hint only reveals the client-rendered author icon; it grants no
+API permission. Expiry and ordinary logout retain it. “退出并忘记此设备” clears
+it, including after session expiry. New devices sign in through `/studio` or
+Cmd/Ctrl+Shift+L; `/studio?next=/albums` resumes a local path after login.
+External and protocol-relative return URLs are ignored. The studio route is
+noindex and omitted from navigation/sitemap. Keep it reachable through Nginx.
+
+Public PageTools no longer contain login/upload actions. The author icon lives
+beside Appearance (home: to its left), and the global file-drop layer is enabled
+only with a valid session. Page management affordances use the same device hint.
+
+Homepage project links use cached published `external_projects`, ordered by
+`sort_order,-id`, with three laboratory fallbacks. Add `external_projects` to the
+Directus create/update/delete webhook for `/internal/revalidate`; it invalidates
+`projects:list`. `CMS_RUNTIME_ONLY=true` continues to opt deployments into runtime
+rendering intentionally; normal builds with positive cache revalidation retain a
+static homepage. The former home upload-link environment overrides are removed.
+
+Whole-player fullscreen retains master controls. Standard native-video fullscreen
+is promoted to the whole player when the browser permits; Firefox's stacked
+fullscreen elements are unwound together on exit. Firefox's native controls use a
+privileged double-click handler ([Mozilla implementation](https://github.com/mozilla/gecko-dev/blob/master/toolkit/content/widgets/videocontrols.js)),
+so interception alone is insufficient. If promotion is refused, or iOS uses its
+native video-only API, that fallback remains synchronized but cannot show master
+controls; the site's fullscreen button retains the complete player. iPhone falls back to
+page immersion, Android attempts landscape locking, and touch landscape playback
+uses immersion. Physical device rotation, safe areas and HDR output require device
+validation. These modes pause the liquid background without changing saved speed.
+Run `npm run test:create-menu-browser` for author/upload regressions and
+`npm run test:phase6-browser` for public tools, homepage and playback checks.
+Both use disposable localhost fixtures and headless WebKit;
+`PHASE6_BROWSER=firefox npm run test:phase6-browser` selects headless Firefox.
+Evidence is saved under `test-results/create-menu` and `test-results/phase6-<browser>`.
 
 API process termination revokes every author session. Manager saves token
 settings before restarting the API: if it reports `restartOk: false`, confirm
@@ -183,7 +219,7 @@ out revokes only the current browser session (shared by its tabs).
 For proxied browser login, enable `TRUST_PROXY=true` only while the API is
 private. Nginx must overwrite `X-Forwarded-Host` (including the public port)
 and `X-Forwarded-Proto`; the supplied templates do this, and Next rewrites
-preserve the original host. HTTPS adds `Secure` to both cookies. Login requires
+preserve the original host. HTTPS adds `Secure` to all author cookies. Login requires
 a same-origin JSON request; logout also requires the session's `X-Author-CSRF`.
 Tokens are never logged, persisted by the site, or returned to the browser.
 Video, album, photo and film-scan requests accept either the original token or

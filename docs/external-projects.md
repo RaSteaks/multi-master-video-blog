@@ -28,9 +28,9 @@ The API stores URLs and never fetches them or proxies arbitrary website HTML.
 
 ## Author workflow and endpoints
 
-The existing Page Tools menu (`CreateMenu`) owns **添加网站**, prioritized on
-`/project`; it opens `/project?dialog=create`. It appears only after the existing
-author sign-in. No second login system or per-project token is introduced.
+The header author menu (`AuthorMenu`) owns **添加网站** and opens
+`/project?dialog=create`. The non-authorizing `author_device` hint reveals its
+entry; expired sessions sign in and then continue the selected action. No second login system or per-project token is introduced.
 The page's author-only **管理网站** control shows published records and drafts.
 Its per-card menu edits or changes publication. Sorting is edited in the form.
 

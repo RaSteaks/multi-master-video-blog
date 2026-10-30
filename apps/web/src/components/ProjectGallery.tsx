@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useAuthorSession } from "@/lib/author-session";
+import { requestAuthorSignIn, useAuthorDevice, useAuthorSession } from "@/lib/author-session";
 import { projectRequest, readProjectList, readSavedProject, type WebsiteProject } from "@/lib/external-projects";
 import { ActionMenu } from "./ActionMenu";
 import { ProjectEditor } from "./ProjectEditor";
@@ -15,6 +15,7 @@ type ProjectList = { projects: WebsiteProject[]; hasMore: boolean; unavailable: 
 export function ProjectGallery({ initial, createRequested }: { initial: ProjectList; createRequested: boolean }) {
   const router = useRouter();
   const session = useAuthorSession();
+  const device = useAuthorDevice();
   const [managed, setManaged] = useState(false);
   const management = managed && session.author;
   const [list, setList] = useState(initial);
@@ -131,9 +132,9 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
   return <>
     <header className={styles.heading}>
       <div><h1>实验室</h1><p>我制作的一些网页与视觉实验。</p></div>
-      {session.author ? <button type="button" className={styles.manageButton} aria-pressed={management} onClick={() => setManaged(value => !value)}>{management ? "返回公开展示" : "管理网站"}</button> : null}
+      {device ? <button type="button" className={styles.manageButton} aria-pressed={management} onClick={() => session.author ? setManaged(value => !value) : requestAuthorSignIn(() => setManaged(true))}>{management ? "返回公开展示" : "管理网站"}</button> : null}
     </header>
-    {management ? <p className={styles.note}>草稿仅作者可见。通过右下角“页面工具 → 添加网站”创建，编辑网站可调整排序。</p> : null}
+    {management ? <p className={styles.note}>草稿仅作者可见。通过页头工具中的“添加网站”创建，编辑网站可调整排序。</p> : null}
     <p className={styles.notice} role="status">{notice}</p>
     {error || list.unavailable ? <div className={styles.failure} role="alert">
       <p>{error || "项目暂时无法载入，请稍后重试。"}</p>
@@ -142,10 +143,10 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     </div> : null}
     {!projects.length && !list.unavailable && !busy && !error ? <div className={styles.empty}>
       <span aria-hidden="true">◇</span><h2>{management ? "还没有网站项目" : "作品整理中"}</h2>
-      <p>{session.author ? "从右下角页面工具添加第一个网站。" : "新的网页实验将在这里展出。"}</p>
+      <p>{session.author ? "从页头工具添加第一个网站。" : "新的网页实验将在这里展出。"}</p>
     </div> : null}
     <ol ref={galleryRef} className={styles.grid} aria-label="网站作品">
-      {projects.map(project => <li key={project.id} className={styles.card}
+      {projects.map(project => <li key={project.id} id={`project-${project.id}`} className={styles.card}
         data-preview-id={project.preview_enabled ? project.id : undefined}
         onPointerEnter={event => { if (event.pointerType === "mouse") preview(project); }} onPointerLeave={stopPreview}>
         {project.open_mode === "external" ? <a className={styles.cardEntry} href={project.url} target="_blank" rel="noopener noreferrer"

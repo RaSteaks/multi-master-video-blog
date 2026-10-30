@@ -7,6 +7,7 @@ const guest: AuthorSession = { author: false };
 let session: AuthorSession = guest;
 const listeners = new Set<() => void>();
 let initialized = false;
+let device = false;
 let channel: BroadcastChannel | undefined;
 let expiryTimer: ReturnType<typeof setTimeout> | undefined;
 let revision = 0;
@@ -22,6 +23,7 @@ export function hasAuthorHint() {
 
 function publish(next: AuthorSession) {
   session = next;
+  device = document.cookie.split(";").some(cookie => cookie.trim() === "author_device=1");
   clearTimeout(expiryTimer);
   if (next.author) expiryTimer = setTimeout(() => invalidateAuthorSession(), Math.max(0, next.expiresAt - Date.now()));
   listeners.forEach(listener => listener());
@@ -44,8 +46,8 @@ function readSession(value: unknown): AuthorSession {
   throw new Error("登录状态响应无效，请重试。");
 }
 
-async function request(method: string, token?: string) {
-  const response = await fetch("/api/author/session", {
+async function request(method: string, token?: string, forgetDevice = false) {
+  const response = await fetch(`/api/author/session${forgetDevice ? "?forget=1" : ""}`, {
     method, credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(15_000),
     headers: { ...(token !== undefined ? { "Content-Type": "application/json" } : {}),
       ...(method === "DELETE" && session.author ? { "X-Author-CSRF": session.csrf } : {}) },
@@ -84,9 +86,9 @@ export async function signIn(token: string) {
   channel?.postMessage("changed");
 }
 
-export async function signOut() {
+export async function signOut(forgetDevice = false) {
   revision++;
-  try { await request("DELETE"); }
+  try { await request("DELETE", undefined, forgetDevice); }
   catch (error) {
     if (!(error instanceof AuthorSessionError) || error.status !== 401) {
       if (error instanceof AuthorSessionError && error.status === 403) await refreshStatus();
@@ -101,6 +103,8 @@ function initialize() {
   initialized = true;
   function check() {
     if (document.visibilityState === "hidden") return;
+    // Device visibility must not wait for a slow/offline session endpoint.
+    publish(session);
     if (!hasAuthorHint()) { revision++; publish(guest); return; }
     // Temporary network errors do not revoke a still-valid server session.
     void refreshStatus().catch(() => {});
@@ -141,4 +145,14 @@ export function observeAuthorResponse(status: number, token: string) {
   if (status === 401) invalidateAuthorSession();
   // Refresh a rotated nonce for the next explicit attempt; never replay a write.
   if (status === 403) void refreshStatus().catch(() => {});
+}
+
+/** A non-secret display preference; every mutation still requires server authorization. */
+export function useAuthorDevice() {
+  useEffect(initialize, []);
+  return useSyncExternalStore(subscribe, () => device, () => false);
+}
+
+export function requestAuthorSignIn(onSuccess: () => void) {
+  window.dispatchEvent(new CustomEvent("author-sign-in", { detail: onSuccess }));
 }

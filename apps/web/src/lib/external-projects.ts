@@ -60,7 +60,7 @@ export async function projectRequest(path: string, options: RequestInit = {}, ma
   if (managed) observeAuthorResponse(response.status, "");
   const data: unknown = await response.json();
   if (!response.ok) {
-    if (response.status === 401) throw new Error("登录已过期，请从页面工具重新登录。");
+    if (response.status === 401) throw new Error("登录已过期，请从页头工具重新登录。");
     if (response.status === 403) throw new Error("当前登录状态无权执行此操作，请重新登录。");
     const message = data && typeof data === "object" && "error" in data && typeof data.error === "string" ? data.error : "请求失败。";
     throw new Error(response.status >= 500 ? "网站服务暂不可用，请检查 API 和 CMS 后重试。" : message);

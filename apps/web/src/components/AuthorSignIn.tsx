@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { signIn } from "@/lib/author-session";
 
-export function AuthorSignIn({ onClose }: { onClose: () => void }) {
+export function AuthorSignIn({ onClose, onSuccess }: { onClose: () => void; onSuccess?: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const id = useId();
@@ -13,7 +13,7 @@ export function AuthorSignIn({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState("");
   useEffect(() => {
     const target = document.activeElement;
-    const fallback = document.querySelector<HTMLElement>(".create-menu .action-menu-trigger");
+    const fallback = document.querySelector<HTMLElement>(".author-menu .action-menu-trigger");
     dialog.current?.showModal();
     input.current?.focus();
     return () => { (target instanceof HTMLElement && target.isConnected ? target : fallback)?.focus(); };
@@ -29,7 +29,7 @@ export function AuthorSignIn({ onClose }: { onClose: () => void }) {
     setToken("");
     // Clear the DOM too before yielding; credentials live only in this request.
     if (input.current) input.current.value = "";
-    try { await signIn(submitted); onClose(); }
+    try { await signIn(submitted); if (onSuccess) onSuccess(); else onClose(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "登录失败，请重试。"); input.current?.focus(); }
     finally { setBusy(false); }
   }

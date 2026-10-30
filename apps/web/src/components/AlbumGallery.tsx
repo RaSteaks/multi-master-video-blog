@@ -22,7 +22,7 @@ import {
   type ManagedPhoto,
 } from "@/lib/album-management";
 import { ActionMenu } from "@/components/ActionMenu";
-import { canAuthorize, useAuthorSession } from "@/lib/author-session";
+import { canAuthorize, requestAuthorSignIn, useAuthorDevice, useAuthorSession } from "@/lib/author-session";
 import { AuthorCredential } from "@/components/AuthorCredential";
 import { AlbumPhotoUploader, UploadIcon } from "@/components/AlbumPhotoUploader";
 import { albumThumbSrcSet, assetUrl } from "@/lib/asset-url";
@@ -114,6 +114,7 @@ export function AlbumGallery({
 }) {
   const router = useRouter();
   const author = useAuthorSession();
+  const device = useAuthorDevice();
   const [adminOpen, setAdminOpen] = useState(Boolean(initialManagedAlbum));
   const [token, setToken] = useState(initialToken);
   const [managedAlbum, setManagedAlbum] = useState<ManagedAlbum | null>(
@@ -393,7 +394,7 @@ export function AlbumGallery({
                 <UploadIcon />
                 上传照片
               </button>
-            ) : (
+            ) : device ? (
               <ActionMenu
                 label="管理此相簿"
                 triggerClassName="album-action-button"
@@ -407,17 +408,17 @@ export function AlbumGallery({
                 groups={[
                   {
                     items: [
-                      { label: "上传照片", icon: <UploadIcon />, onSelect: openUpload },
+                      { label: "上传照片", icon: <UploadIcon />, onSelect: () => author.author ? openUpload() : requestAuthorSignIn(openUpload) },
                       {
                         label: adminOpen ? "退出管理模式" : "进入管理模式",
                         icon: <SlidersIcon />,
-                        onSelect: toggleAdmin,
+                        onSelect: () => author.author ? toggleAdmin() : requestAuthorSignIn(toggleAdmin),
                       },
                     ],
                   },
                 ]}
               />
-            )}
+            ) : null}
           </div>
         </div>
       </header>
@@ -634,7 +635,7 @@ export function AlbumGallery({
           </span>
           <div>
             <h2>这个相簿还没有公开照片</h2>
-            <p>打开标题区的“管理”，选择“上传照片”加入第一批照片。</p>
+            <p>{device ? "打开标题区的“管理”，选择“上传照片”加入第一批照片。" : "照片整理中。"}</p>
           </div>
         </section>
       )}

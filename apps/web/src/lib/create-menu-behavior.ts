@@ -6,16 +6,19 @@ import { useEffect, useState } from "react";
 export function useCreateMenuBehavior(open: boolean) {
   const [hidden, setHidden] = useState(false);
   const [retreated, setRetreated] = useState(false);
+  const [videoAvailable, setVideoAvailable] = useState(false);
   useEffect(() => {
     function mediaChanged() {
+      setVideoAvailable(Boolean(document.querySelector(".player-shell video")));
       const playing = Array.from(document.querySelectorAll("video")).some(video => !video.paused && !video.ended);
-      setHidden(Boolean(document.fullscreenElement || document.querySelector(".album-lightbox[open], .project-viewer[open]") || playing));
+      setHidden(Boolean(document.documentElement.dataset.watching === "fullscreen" || document.fullscreenElement || document.querySelector(".album-lightbox[open], .project-viewer[open]") || playing));
     }
     for (const event of ["play", "pause", "ended", "emptied", "fullscreenchange"]) document.addEventListener(event, mediaChanged, true);
     // Dialogs and players mount after client navigation; observe only structural
     // changes/open attributes, never animation styles or scroll positions.
     const observer = new MutationObserver(mediaChanged);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["open"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-watching"] });
     mediaChanged();
     return () => {
       observer.disconnect();
@@ -46,5 +49,5 @@ export function useCreateMenuBehavior(open: boolean) {
     if (open) restore();
     return () => { clearTimeout(timer); window.removeEventListener("scroll", scroll); window.removeEventListener("pointermove", pointer); document.removeEventListener("focusin", focus); };
   }, [open]);
-  return { hidden, retreated };
+  return { hidden, retreated, videoAvailable };
 }

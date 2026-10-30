@@ -336,8 +336,8 @@ body:has(.orbital-home) .orbital-home {
   /* Experiment B (docs/performance-optimization-plan.md §6.1): 24px/150%
      keeps the frosted look at a fraction of the scroll-time GPU cost of
      48px/200%. Re-run visual regression before changing further. */
-  backdrop-filter: blur(24px) saturate(150%) brightness(1.06);
   -webkit-backdrop-filter: blur(24px) saturate(150%) brightness(1.06);
+  backdrop-filter: blur(24px) saturate(150%) brightness(1.06);
   box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.05);
   transition: border-color var(--transition-base);
 }
@@ -971,10 +971,7 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
   }
 }
 
-/* ---- Create menu (CreateMenu.tsx) ----
-   One floating entry for every create and upload action, bottom right on all
-   pages except home (which keeps its upload cards), /write and /upload. While
-   open it takes the appearance toggle's active state. */
+/* ---- Public page tools (PageTools.tsx), separate from author controls ---- */
 .create-menu {
   position: fixed;
   right: max(20px, calc(env(safe-area-inset-right) + 14px));
@@ -987,24 +984,13 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
 ::view-transition-group(create-menu), ::view-transition-new(create-menu) { animation: none; }
 ::view-transition-old(create-menu) { animation: vt-hide 1ms both; }
 .create-menu--hidden { opacity: 0; pointer-events: none; }
-.create-menu--dragging .action-menu-trigger { scale: 1.15; border-color: var(--accent-readable); }
-.create-menu-drop-label { position: absolute; right: 0; bottom: calc(100% + 12px); white-space: nowrap; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-strong); color: var(--text); }
 .create-menu--retreated:not(:focus-within) { opacity: 0.55; }
 .create-menu--retreated:not(:focus-within) .action-menu-trigger { scale: 0.7692; }
 .create-menu .action-menu-panel { max-width: calc(100vw - 40px); max-height: calc(100dvh - 100px); overflow-y: auto; }
-.create-menu-frame { position: absolute; pointer-events: none; z-index: 81; right: 15px; bottom: 15px; width: 22px; height: 22px; color: var(--text-secondary); transition: width 300ms cubic-bezier(0.23, 1, 0.32, 1), height 300ms cubic-bezier(0.23, 1, 0.32, 1), right 300ms cubic-bezier(0.23, 1, 0.32, 1), bottom 300ms cubic-bezier(0.23, 1, 0.32, 1); }
-.create-menu[data-open="true"] .create-menu-frame { right: 0; bottom: calc(100% + 10px); width: var(--menu-width); height: var(--menu-height); color: var(--accent-readable); transition-duration: 460ms; transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1); }
-.create-menu-corner { position: absolute; width: 8px; height: 8px; fill: none; stroke: currentColor; stroke-width: 1.5; }
-.corner-0 { left: 0; top: 0; }.corner-1 { right: 0; top: 0; rotate: 90deg; }.corner-2 { right: 0; bottom: 0; rotate: 180deg; }.corner-3 { left: 0; bottom: 0; rotate: 270deg; }
-.create-menu-progress { position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px); pointer-events: none; rotate: -90deg; fill: none; stroke: var(--accent-readable); stroke-width: 1.5; }
-.create-menu-progress.is-complete { stroke: var(--success); }
-.create-menu-progress.is-indeterminate { animation: create-menu-working 2s linear infinite; }
-@keyframes create-menu-working { to { transform: rotate(360deg); } }
-.create-menu-tasks { border-bottom: 1px solid var(--line); padding: 8px 12px; display: grid; gap: 8px; max-width: 300px; }
-.create-menu-tasks p { margin: 0; color: var(--text-secondary); font-size: 0.72rem; }
-.create-menu-tasks > div { display: grid; gap: 3px; color: var(--text); font-size: 0.8rem; overflow-wrap: anywhere; }
-.create-menu-tasks small { color: var(--text-secondary); font-size: 0.7rem; }
-@media (prefers-reduced-motion: reduce) { .create-menu-frame { transition: none; }.create-menu-progress.is-indeterminate { animation: none; } }
+.author-tasks { border-bottom: 1px solid var(--line); padding: 8px 12px; display: grid; gap: 8px; max-width: 300px; }
+.author-tasks p { margin: 0; color: var(--text-secondary); font-size: 0.72rem; }
+.author-tasks > div { display: grid; gap: 3px; color: var(--text); font-size: 0.8rem; overflow-wrap: anywhere; }
+.author-tasks small { color: var(--text-secondary); font-size: 0.7rem; }
 
 .create-menu .action-menu-trigger {
   appearance: none;
@@ -1057,7 +1043,6 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
     height: 48px;
   }
   .create-menu--retreated:not(:focus-within) .action-menu-trigger { scale: 0.8333; }
-  .create-menu-frame { right: 13px; bottom: 13px; }
 }
 
 @media print {
@@ -1491,8 +1476,8 @@ h3 {
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 20px;
   background: rgba(16, 19, 23, 0.52);
-  backdrop-filter: blur(28px) saturate(160%);
   -webkit-backdrop-filter: blur(28px) saturate(160%);
+  backdrop-filter: blur(28px) saturate(160%);
   padding: clamp(24px, 5vw, 48px);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
@@ -1521,8 +1506,8 @@ h3 {
 .glass-cards .content-card {
   border-color: rgba(255, 255, 255, 0.10);
   background: rgba(16, 19, 23, 0.55);
-  backdrop-filter: blur(22px) saturate(160%);
   -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1538,8 +1523,8 @@ h3 {
 
 .glass-cards .empty-state {
   background: rgba(16, 19, 23, 0.55);
-  backdrop-filter: blur(22px) saturate(160%);
   -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
   color: var(--text-secondary);
 }
 
@@ -1603,8 +1588,8 @@ h3 {
   height: 44px;
   border: 1px solid rgba(255, 255, 255, 0.13);
   background: rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(24px) saturate(170%);
   -webkit-backdrop-filter: blur(24px) saturate(170%);
+  backdrop-filter: blur(24px) saturate(170%);
   color: var(--text-secondary);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
@@ -2718,8 +2703,8 @@ h3 {
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 16px;
   background: rgba(14, 17, 21, 0.58);
-  backdrop-filter: blur(24px) saturate(160%);
   -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
   padding: 16px 14px;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
@@ -4618,48 +4603,48 @@ h3 {
   background: radial-gradient(circle at 40% 40%,
     rgb(var(--liquid-blob-1, 130 134 138) / 0.18), transparent 64%);
   top: -20%; left: -15%;
-  animation: float-blob-1 var(--liquid-duration-1, 20s) ease-in-out infinite;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-1 calc(var(--liquid-duration-1, 20s) / var(--liquid-route-scale, 1)) ease-in-out infinite;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-2 {
   width: 50vw; height: 50vw; max-width: 750px; max-height: 750px;
   background: radial-gradient(circle at 55% 40%,
     rgb(var(--liquid-blob-2, 108 112 116) / 0.16), transparent 64%);
   top: 30%; right: -16%;
-  animation: float-blob-2 var(--liquid-duration-2, 23s) ease-in-out infinite;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-2 calc(var(--liquid-duration-2, 23s) / var(--liquid-route-scale, 1)) ease-in-out infinite;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-3 {
   width: 46vw; height: 46vw; max-width: 700px; max-height: 700px;
   background: radial-gradient(circle at 50% 50%,
     rgb(var(--liquid-blob-3, 118 122 126) / 0.15), transparent 64%);
   bottom: -22%; left: 20%;
-  animation: float-blob-3 var(--liquid-duration-3, 22s) ease-in-out infinite;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-3 calc(var(--liquid-duration-3, 22s) / var(--liquid-route-scale, 1)) ease-in-out infinite;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-4 {
   width: 44vw; height: 44vw; max-width: 660px; max-height: 660px;
   background: radial-gradient(circle at 50% 50%,
     rgb(var(--liquid-blob-2, 108 112 116) / 0.14), transparent 64%);
   top: -15%; right: 8%;
-  animation: float-blob-2 var(--liquid-duration-2, 23s) ease-in-out infinite reverse;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-2 calc(var(--liquid-duration-2, 23s) / var(--liquid-route-scale, 1)) ease-in-out infinite reverse;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-5 {
   width: 42vw; height: 42vw; max-width: 630px; max-height: 630px;
   background: radial-gradient(circle at 50% 50%,
     rgb(var(--liquid-blob-3, 118 122 126) / 0.13), transparent 64%);
   top: 43%; left: -10%;
-  animation: float-blob-3 var(--liquid-duration-3, 22s) ease-in-out infinite reverse;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-3 calc(var(--liquid-duration-3, 22s) / var(--liquid-route-scale, 1)) ease-in-out infinite reverse;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-6 {
   width: 40vw; height: 40vw; max-width: 600px; max-height: 600px;
   background: radial-gradient(circle at 50% 50%,
     rgb(var(--liquid-blob-1, 130 134 138) / 0.14), transparent 64%);
   bottom: -10%; right: -7%;
-  animation: float-blob-1 var(--liquid-duration-1, 20s) ease-in-out infinite reverse;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-1 calc(var(--liquid-duration-1, 20s) / var(--liquid-route-scale, 1)) ease-in-out infinite reverse;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 /* ---- Blob keyframes (slower = less distraction) ---- */
 @keyframes float-blob-1 {
@@ -4843,8 +4828,8 @@ h3 {
   --motion-y: var(--dy, 0px);
   --motion-scale: 1;
   background: rgba(255, 255, 255, 0.072);
-  backdrop-filter: blur(40px) saturate(180%) brightness(1.07);
   -webkit-backdrop-filter: blur(40px) saturate(180%) brightness(1.07);
+  backdrop-filter: blur(40px) saturate(180%) brightness(1.07);
   border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 24px;
   box-shadow:
@@ -4886,8 +4871,8 @@ h3 {
 
 /* Profile hub: deeper blur + deeper shadow for visual prominence */
 .profile-hub.floating-widget {
-  backdrop-filter: blur(80px) saturate(220%) brightness(1.06);
   -webkit-backdrop-filter: blur(80px) saturate(220%) brightness(1.06);
+  backdrop-filter: blur(80px) saturate(220%) brightness(1.06);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     0 20px 60px rgba(0, 0, 0, 0.38),
@@ -6339,8 +6324,8 @@ h3 {
 
 .album-dialog::backdrop {
   background: rgba(4, 5, 6, 0.78);
-  backdrop-filter: blur(12px) saturate(0.7);
   -webkit-backdrop-filter: blur(12px) saturate(0.7);
+  backdrop-filter: blur(12px) saturate(0.7);
 }
 
 .album-dialog-surface {
@@ -9108,3 +9093,65 @@ object {
     flex: 1 1 calc(50% - 6px);
   }
 }
+
+/* Page-tool swatches rotate tones only; media and geometry remain unchanged. */
+.page-tools-swatches rect { transition: fill var(--motion-panel-duration); }
+.page-tools-swatches rect:nth-child(1) { fill: #E2E8EE; }
+.page-tools-swatches rect:nth-child(2), .page-tools-swatches rect:nth-child(4) { fill: #A9B3BD; }
+.page-tools-swatches rect:nth-child(3) { fill: #737D88; }
+[data-open="true"] .page-tools-swatches rect:nth-child(1), [data-open="true"] .page-tools-swatches rect:nth-child(3) { fill: #A9B3BD; }
+[data-open="true"] .page-tools-swatches rect:nth-child(2) { fill: #E2E8EE; }
+[data-open="true"] .page-tools-swatches rect:nth-child(4) { fill: #737D88; }
+.create-menu .action-menu-trigger, .create-menu .action-menu-trigger[aria-expanded="true"] { background: #1e2328; }
+.author-menu { position: relative; }
+/* The header creates a backdrop root; a solid token surface also keeps home text from bleeding through. */
+.author-menu .action-menu-panel { background: var(--surface-strong); max-width: calc(100vw - 40px); max-height: calc(100dvh - 100px); overflow-y: auto; }
+.author-menu-floating { position: fixed; right: calc(max(20px, env(safe-area-inset-right)) + 54px); bottom: max(22px, env(safe-area-inset-bottom)); z-index: 60; }
+.author-menu .bg-control-toggle { position: relative; }
+.author-task-dot { position: absolute; right: 5px; top: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--text-secondary); }
+.author-session-status { flex-wrap: wrap; }
+.author-drop-layer { position: fixed; inset: 12px; z-index: 90; display: grid; place-content: center; border: 2px dashed var(--text-secondary); border-radius: var(--radius-lg); background: rgb(12 14 16 / 0.94); color: var(--text); pointer-events: none; }
+/* Prevent long project names from contributing a min-content width to the home grid. */
+.orbital-stage, .home-action-row { min-width: 0; }
+.home-action-row > .orbit-upload { min-width: 0; max-width: 100%; }
+.orbit-upload strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Watching changes only chrome opacity: its layout footprint stays reserved. */
+.site-header, .video-detail > .back-link, .video-detail > .video-title,
+.player-controls-row { transition: opacity var(--motion-panel-duration); }
+html[data-watching="idle"] .site-header:not(:focus-within),
+html[data-watching="idle"] .video-detail > .back-link:not(:focus-within),
+html[data-watching="idle"] .video-detail > .video-title:not(:focus-within),
+html[data-watching="fullscreen"] .site-header,
+html[data-watching="fullscreen"] .video-detail > .back-link,
+html[data-watching="fullscreen"] .video-detail > .video-title,
+html[data-watching="fullscreen"] .create-menu { opacity: 0; pointer-events: none; }
+.player-shell:fullscreen, .player-shell.player-immersive {
+  position: fixed; inset: 0; z-index: 100; width: 100%; height: 100dvh; max-width: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: #000; overflow: hidden; overscroll-behavior: contain; display: block;
+}
+/* Let the real toolbar height reserve space, including wrapped/mobile controls. */
+.player-shell[data-player-fullscreen="true"] .player-layout { height: 100%; min-height: 0; }
+.player-shell[data-player-fullscreen="true"] .player-main { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.player-shell[data-player-fullscreen="true"] .player-frame { flex: 1; min-height: 0; border-radius: 0; box-shadow: none; }
+.player-shell[data-player-fullscreen="true"] .video-player { height: 100%; aspect-ratio: auto; object-fit: contain; }
+.player-shell[data-player-fullscreen="true"] .player-info-panel.open { max-height: 30dvh; overflow-y: auto; flex-shrink: 0; }
+.player-shell[data-player-fullscreen="true"] .player-controls-row { padding: 0 12px 8px; flex-shrink: 0; }
+.info-toggle-row { gap: 8px; }
+.player-shell[data-player-fullscreen="true"][data-controls-idle="true"] .player-controls-row:not(:focus-within) { opacity: 0; pointer-events: none; }
+.player-fullscreen-button { min-width: 88px; min-height: 44px; justify-content: center; }
+.player-shell[data-player-fullscreen="true"] .master-bar { flex-wrap: nowrap; overflow-x: auto; }
+.player-shell[data-player-fullscreen="true"] .master-button { flex-shrink: 0; }
+@media (pointer: coarse) {
+  .player-shell .master-bar { flex-wrap: nowrap; overflow-x: auto; }
+  .player-shell .master-button { min-height: 44px; flex-shrink: 0; }
+}
+@media (pointer: coarse) and (orientation: portrait) {
+  .player-shell[data-playing="true"] .player-frame { position: sticky; top: env(safe-area-inset-top); z-index: 51; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-tools-swatches rect { transition: none; }
+  .site-header, .video-detail > .back-link, .video-detail > .video-title, .player-controls-row { transition-duration: var(--motion-reduced-duration, 100ms); }
+}
+@media print { .author-menu, .author-drop-layer { display: none; } }

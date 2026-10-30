@@ -69,29 +69,44 @@ corners and inset preview chips use 4px corners.
 
 - The `/project` laboratory reuses the reference-room palette and type. Its two-column
   desktop / single-column mobile cards contain only a 16:10 unfiltered website picture,
-  title and description. `CreateMenu` remains the only global create entry; verified
-  author sessions own management. `SiteDialog` reuses native modal geometry and focus
+  title and description. `AuthorMenu` owns global creation; its device hint controls visibility and
+  verified author sessions own management. `SiteDialog` reuses native modal geometry and focus
   behavior for the editor/viewer. The full-window viewer reserves a neutral toolbar
   outside the target pixels. `Projects.module.css` consumes existing runtime tokens,
   not a separate palette. See `docs/external-projects.md` for lifecycle and permissions.
 
 - `ActionMenu` owns the shared disclosure panel, keyboard focus and the same
   circular reveal/conceal as `AppearanceControl`; its radius follows live panel
-  dimensions. `CreateMenu` adds reading tools and verified author-only publishing
-  links. `AuthorSignIn` reuses the native album-dialog geometry with global tokens
-  (never album-scoped amber). Authentication stays client-side, with a six-hour
-  expiry and cross-tab status updates; contracts live in `docs/upload-api.md`.
-  The floating control stays outside the route wipe, yields to playing video,
-  lightboxes and fullscreen, and recedes only during downward reading scroll.
-  Shortcuts leave text input, IME and open dialogs alone. Reduced motion removes
-  displacement and scale transitions; media pixels are never decorated.
-  `dropped-files.ts` owns a single in-memory handoff into existing forms; dropping
-  selects files but never submits them. The API remains the file-validation owner.
-  `AuthorCredential` owns the session status/manual override across publishing
-  forms. Explicit article credentials retain separate authority. `author-tasks.ts`
-  polls bounded summaries only for signed-in visible readers: byte/film progress
-  is measured, encoding is indeterminate, and completion feedback is temporary.
-  The SVG framing corners decorate the control/panel, never media content.
+  dimensions. `PageTools` owns public, route-specific tools and the `N` shortcut.
+  Its 26px SVG has four 8.5px swatches (1.8px gaps, 1.1px radii), with tones
+  #E2E8EE / #A9B3BD / #737D88 on #1e2328; opening rotates only their fills
+  clockwise, using `--motion-panel-duration`. The old framing corners are removed.
+  `AuthorMenu` is a separate client-only, 40px neutral icon in the header, or
+  left of Appearance on home. No visible label/title/badge; a 6px task dot is
+  the only busy indication. The panel retains task detail and author actions.
+  `author_device` controls visibility only; `AuthorSignIn` and server sessions
+  own authorization and action continuation. `/studio` and Cmd/Ctrl+Shift+L
+  expose sign-in on new devices. See `docs/deployment.md` for cookie semantics.
+  `dropped-files.ts` retains the in-memory handoff; the full-window drop layer
+  only selects files and never submits. Local upload zones keep their own drops.
+  `AuthorCredential` owns manual overrides; explicit article credentials retain
+  separate authority. `author-tasks.ts` polls only signed-in visible readers.
+  The floating public control stays outside the route wipe and yields to playing
+  media, viewers and fullscreen. Reduced motion removes swatch transitions.
+
+- `LiquidBackground` multiplies saved speed by 0.35 on article/video details
+  without modifying colors or preferences. It updates the live WebGL controller
+  and local CSS duration variables together. `player-viewing.ts` owns the
+  2.5-second watching timer, whole-player fullscreen and mobile immersion;
+  `html[data-watching]` drives surrounding chrome opacity and pauses liquid
+  rendering only in fullscreen. Player geometry is reserved during fading.
+  Standard native fullscreen is promoted when allowed, with stacked elements
+  unwound together on exit; native video-only fallback remains a documented limitation.
+  Home's three action slots use published project links and laboratory fallbacks;
+  profile, layout breakpoints and visual tokens remain unchanged.
+
+- Backdrop declarations use `-webkit-backdrop-filter` before `backdrop-filter`
+  so production CSS retains the standard property. Blur values are unchanged.
 
 - Motion roles are owned by the `--motion-*` variables in `globals.css`: controls
   130 ms, panel changes 260 ms / 12 px, media reveals 180 ms, emphasis 420 ms,

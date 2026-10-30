@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BackgroundControl } from "@/components/BackgroundControl";
-import { CreateMenu } from "@/components/CreateMenu";
+import { PageTools } from "@/components/PageTools";
+import { AuthorControl } from "@/components/AuthorControl";
 import { NavBar } from "@/components/NavBar";
 import { PageTransition } from "@/components/PageTransition";
 import { getSiteSettings, siteBackgroundImages } from "@/lib/directus";
@@ -81,6 +82,7 @@ export default async function RootLayout({
           </Link>
           <div className="site-header-actions">
             <NavBar />
+            <AuthorControl />
             <BackgroundControl
               images={bgImages}
               defaultBlur={blur}
@@ -93,7 +95,7 @@ export default async function RootLayout({
           <PageTransition>{children}</PageTransition>
         </div>
 
-        <CreateMenu />
+        <PageTools />
       </body>
     </html>
   );

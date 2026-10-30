@@ -16,6 +16,9 @@ import {
   waitForPresentedFrame,
 } from "@/lib/master-switch";
 import styles from "./MediaPlayer.module.css";
+import { usePlayerViewing } from "@/lib/player-viewing";
+import { playbackLinkTime } from "@/lib/viewing";
+import { useAuthorDevice } from "@/lib/author-session";
 
 type MediaPlayerProps = {
   masters: VideoMaster[];
@@ -64,6 +67,10 @@ type ShakaNamespace = {
 export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: MediaPlayerProps) {
   const playableMasters = useMemo(() => masters.filter(isPlayableMaster), [masters]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const shellRef = useRef<HTMLElement | null>(null);
+  const device = useAuthorDevice();
+  const viewing = usePlayerViewing(videoRef, shellRef, playableMasters.length > 0);
+  const linkTimeConsumed = useRef(false);
   const playerRef = useRef<ShakaPlayer | null>(null);
   const playerVideoRef = useRef<HTMLVideoElement | null>(null);
   const currentMasterRef = useRef<VideoMaster | null>(null);
@@ -108,6 +115,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
 
   useEffect(() => {
     // Navigating to a different project starts a fresh automatic selection.
+    linkTimeConsumed.current = false;
     manualSelectionRef.current = false;
     fallbackAttemptedRef.current = false;
   }, [videoProjectId]);
@@ -309,6 +317,11 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
         pendingSnapshot?.targetMasterId === activeMaster.id
           ? pendingSnapshot
           : capturePlaybackSnapshot(activeMaster.id);
+      // Feed deep-link seeks into the same bounded load/seek correction as master switches.
+      if (!linkTimeConsumed.current) {
+        snapshot.time = playbackLinkTime(new URLSearchParams(location.search).get("t"));
+        linkTimeConsumed.current = true;
+      }
       const source = mediaUrl(activeMaster.hls_url);
 
       if (pendingSnapshot?.targetMasterId === activeMaster.id) {
@@ -566,7 +579,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
               : "No video masters have been configured for this project."}
         </p>
         {playableMasters.map(master => <button key={master.id} type="button" onClick={() => switchMaster(master)}>{master.label}</button>)}
-        {addMaster ? (
+        {addMaster && device ? (
     <Link className="master-add" href={addMaster.href}>
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" aria-hidden="true">
         <path d="M12 5v14M5 12h14" />
@@ -591,7 +604,12 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
 
   return (
     <section
-      className="player-shell"
+      ref={shellRef}
+      tabIndex={-1}
+      className={`player-shell${viewing.immersive ? " player-immersive" : ""}`}
+      data-player-fullscreen={viewing.fullscreen}
+      data-controls-idle={viewing.idle}
+      data-playing={viewing.playing}
       aria-label="Video player"
       onKeyDown={(event) => {
         // 1–3 pick a master while focus is inside the player; native video keys are untouched.
@@ -604,12 +622,16 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
       <div className="player-layout">
         <div className="player-main">
           <div className="player-frame" data-state={playbackState} data-vt="cover">
-            {/* Hide common download UI only; these hints do not protect the media from capture. */}
+            {/* Prefer whole-player fullscreen; Safari/Firefox may retain their native video-only button. */}
             <video
               ref={videoRef}
               className="video-player"
               controls
-              controlsList="nodownload"
+              controlsList="nodownload nofullscreen"
+              onDoubleClickCapture={event => {
+                // Use the page gesture when the browser exposes it; native fullscreen is synchronized by the viewing hook.
+                event.preventDefault(); event.stopPropagation(); void viewing.toggleFullscreen();
+              }}
               onContextMenu={(event) => event.preventDefault()}
               playsInline
               poster={poster || undefined}
@@ -657,7 +679,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
                   </span>
                 </button>
               ))}
-              {addMaster ? (
+              {addMaster && device ? (
     <Link className="master-add" href={addMaster.href}>
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" aria-hidden="true">
         <path d="M12 5v14M5 12h14" />
@@ -668,6 +690,9 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
             </div>
 
             <div className="info-toggle-row">
+              <button type="button" className="info-toggle player-fullscreen-button" onClick={() => void viewing.toggleFullscreen()} aria-keyshortcuts="F">
+                {viewing.fullscreen ? "退出全屏" : "全屏"}
+              </button>
               <button
                 className={infoOpen ? "info-toggle active" : "info-toggle"}
                 onClick={() => setInfoOpen((open) => !open)}

@@ -119,3 +119,22 @@ test("protected GETs accept normal same-origin reads without Origin but still re
   assert.throws(() => f.auth.requireSession(f.req), { statusCode: 403 });
   assert.throws(() => f.auth.requireReadSession(f.req), { statusCode: 403 });
 });
+
+test("server-issued device hint lasts a year, never authorizes and survives expiry/logout until forgotten", () => {
+  const f = fixture();
+  const session = f.login();
+  assert.equal(f.headers.get("Set-Cookie")[2], "author_device=1; Path=/; SameSite=Strict; Max-Age=31536000");
+  f.req.headers.cookie = "author_device=1";
+  assert.throws(() => f.auth.requireSession(f.req), { statusCode: 401 });
+  assert.equal(f.auth.status(f.req, f.res).author, false);
+  assert.equal(f.headers.get("Set-Cookie").some(cookie => cookie.startsWith("author_device=")), false);
+  const second = f.login();
+  f.req.headers.cookie = f.cookie(); f.req.headers["x-author-csrf"] = second.csrf;
+  f.auth.signOut(f.req, f.res);
+  assert.equal(f.headers.get("Set-Cookie").some(cookie => cookie.startsWith("author_device=")), false);
+  f.advance(session.expiresAt);
+  f.auth.signOut(f.req, f.res, true);
+  assert.equal(f.headers.get("Set-Cookie")[2], "author_device=; Path=/; SameSite=Strict; Max-Age=0");
+  f.req.headers.origin = "http://attacker.test";
+  assert.throws(() => f.auth.signOut(f.req, f.res, true), { statusCode: 403 });
+});
