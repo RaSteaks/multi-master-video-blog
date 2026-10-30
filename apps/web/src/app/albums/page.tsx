@@ -110,7 +110,7 @@ export default async function AlbumsPage({
           </span>
           <div>
             <h2>接触印样还是空的</h2>
-            <p>点右下角的“＋”，选择“新建相簿”，再上传第一批 SDR／HDR 照片。</p>
+            <p>相簿整理中，照片将在这里陆续展出。</p>
           </div>
         </section>
       )}

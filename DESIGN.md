@@ -83,9 +83,12 @@ corners and inset preview chips use 4px corners.
   clockwise, using `--motion-panel-duration`. The old framing corners are removed.
   `AuthorMenu` is a separate client-only, 40px neutral icon in the header, or
   left of Appearance on home. No visible label/title/badge; a 6px task dot is
-  the only busy indication. The panel retains task detail and author actions.
+  the only busy indication. Completion keeps a success-colored dot for six
+  seconds; failure keeps a danger-colored dot until the panel is viewed, where
+  bounded failure details remain available. Dots never animate or gain labels.
+  The panel retains task detail and author actions.
   `author_device` controls visibility only; `AuthorSignIn` and server sessions
-  own authorization and action continuation. `/studio` and Cmd/Ctrl+Shift+L
+  own authorization and action continuation. `/studio` and Cmd/Ctrl+Alt+Shift+L
   expose sign-in on new devices. See `docs/deployment.md` for cookie semantics.
   `dropped-files.ts` retains the in-memory handoff; the full-window drop layer
   only selects files and never submits. Local upload zones keep their own drops.
@@ -94,12 +97,23 @@ corners and inset preview chips use 4px corners.
   The floating public control stays outside the route wipe and yields to playing
   media, viewers and fullscreen. Reduced motion removes swatch transitions.
 
+  `AuthorSignIn` reuses the native album-dialog geometry with global tokens,
+  never album-scoped amber. Sessions expire after six hours and synchronize
+  status across tabs; `docs/upload-api.md` owns the authentication contract.
+  Shortcuts leave text inputs, IME and open dialogs alone. Reduced motion removes
+  displacement and scale transitions. Media pixels are never decorated, tinted,
+  dimmed or blurred. The API remains the file-validation owner. Task byte/film
+  progress is measured, encoding is indeterminate, and completion is temporary.
+
 - `LiquidBackground` multiplies saved speed by 0.35 on article/video details
   without modifying colors or preferences. It updates the live WebGL controller
   and local CSS duration variables together. `player-viewing.ts` owns the
   2.5-second watching timer, whole-player fullscreen and mobile immersion;
   `html[data-watching]` drives surrounding chrome opacity and pauses liquid
-  rendering only in fullscreen. Player geometry is reserved during fading.
+  rendering only in fullscreen. Pointer focus does not prevent fading; keyboard
+  control focus does. Auto immersion is phone-only (coarse pointer, landscape,
+  viewport height at most 500px). Manual exit is respected until portrait return.
+  Player geometry is reserved during fading; unmount never restores old scroll.
   Standard native fullscreen is promoted when allowed, with stacked elements
   unwound together on exit; native video-only fallback remains a documented limitation.
   Home's three action slots use published project links and laboratory fallbacks;
@@ -171,8 +185,9 @@ corners and inset preview chips use 4px corners.
   superseded requests. A verified SDR canvas hold is optional and must never
   turn an HDR source into an SDR still. A confirmed replacement frame releases
   the hold with a cut, without blending renditions. All pending waits are bounded
-  and cancellable, including a browser play request that never settles. Keyboard
-  shortcuts are scoped to the player and leave editable targets/IME alone.
+  and cancellable, including a browser play request that never settles. Master-number
+  shortcuts are scoped to the player. Fullscreen F is page-wide but leaves
+  editable targets, IME, open dialogs and the author menu alone.
   Chinese action/status feedback follows the site locale; technical format names
   remain the source labels. Screenshot tests do not certify HDR brightness or
   physical touch behavior, which require device checks.

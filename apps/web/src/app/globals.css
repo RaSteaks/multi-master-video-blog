@@ -213,7 +213,7 @@ a {
   .collection-links a,
   .github-link,
   .profile-about-link,
-  .orbit-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget
 ):active {
@@ -4982,7 +4982,7 @@ h3 {
   padding: 2px 7px;
 }
 
-.orbit-upload {
+.orbit-lab-entry {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4999,28 +4999,19 @@ h3 {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .orbit-upload:hover {
+  .orbit-lab-entry:hover {
     color: var(--text);
   }
 }
 
-.orbit-blog-upload {
+.orbit-lab-entry {
   --wy: 0px;
   grid-column: 4 / 6;
   grid-row: 3;
   justify-self: end;
 }
 
-.orbit-album-upload {
-  --wy: 0px;
-}
 
-.orbit-post-upload {
-  --wy: 0px;
-  grid-column: 8 / 10;
-  grid-row: 3;
-  justify-self: start;
-}
 
 /* ---- GitHub / Bilibili standalone widgets ---- */
 .github-widget,
@@ -5058,7 +5049,7 @@ h3 {
   display: contents;
 }
 
-.home-action-row > :is(.orbit-upload, .github-widget, .bilibili-widget) {
+.home-action-row > :is(.orbit-lab-entry, .github-widget, .bilibili-widget) {
   align-items: center;
   justify-content: center;
   text-align: center;
@@ -5146,7 +5137,7 @@ h3 {
     width: max-content;
     max-width: 100%;
     margin-top: clamp(20px, 4dvh, 44px);
-    grid-template-columns: repeat(5, 140px);
+    grid-template-columns: repeat(3, 140px);
     align-items: center;
     justify-content: center;
     gap: clamp(10px, 1.25vw, 18px);
@@ -5215,7 +5206,7 @@ h3 {
   }
 
   .orbit-collection,
-  .orbit-blog-upload, .orbit-album-upload, .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget, .bilibili-widget {
     grid-column: auto;
     grid-row: auto;
@@ -5224,9 +5215,7 @@ h3 {
     --wy: 0px;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     width: fit-content;
@@ -5307,11 +5296,9 @@ h3 {
     line-clamp: 2;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
+  .orbit-lab-entry,
   .github-widget,
-  .bilibili-widget,
-  .orbit-post-upload {
+  .bilibili-widget {
     grid-column: 2 / 3;
     justify-self: stretch;
     align-self: start;
@@ -5324,30 +5311,22 @@ h3 {
     --motion-y: 0px;
   }
 
-  .orbit-blog-upload {
+  .orbit-lab-entry {
     grid-row: 2;
   }
 
-  .orbit-album-upload {
+
+
+  .github-widget {
     grid-row: 3;
+    justify-content: center;
     --motion-y: clamp(15px, calc(153.5px - 15.4vw), 55px);
   }
 
-  .orbit-post-upload {
-    grid-row: 4;
-    --motion-y: clamp(32px, calc(302px - 30vw), 110px);
-  }
-
-  .github-widget {
-    grid-row: 5;
-    justify-content: center;
-    --motion-y: clamp(49px, calc(450px - 45vw), 165px);
-  }
-
   .bilibili-widget {
-    grid-row: 6;
+    grid-row: 4;
     justify-content: center;
-    --motion-y: clamp(66px, calc(598px - 60vw), 220px);
+    --motion-y: clamp(32px, calc(302px - 30vw), 110px);
   }
 }
 
@@ -5360,11 +5339,9 @@ h3 {
       clamp(34px, 6svh, 52px);
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
+  .orbit-lab-entry,
   .github-widget,
-  .bilibili-widget,
-  .orbit-post-upload {
+  .bilibili-widget {
     width: 70%;
     justify-self: center;
     padding: 0 12px;
@@ -5408,9 +5385,7 @@ h3 {
     line-clamp: 2;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     grid-row: auto;
@@ -5424,25 +5399,19 @@ h3 {
     --wy: 0px;
   }
 
-  .orbit-blog-upload {
+  .orbit-lab-entry {
     grid-column: 1 / 3;
   }
 
-  .orbit-album-upload {
-    grid-column: 3 / 5;
-  }
 
-  .orbit-post-upload {
-    grid-column: 5 / 7;
-  }
 
   .github-widget {
-    grid-column: 1 / 4;
+    grid-column: 3 / 5;
     justify-content: center;
   }
 
   .bilibili-widget {
-    grid-column: 4 / 7;
+    grid-column: 5 / 7;
     justify-content: center;
   }
 
@@ -5482,9 +5451,7 @@ h3 {
     gap: 10px;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     padding: 0 10px;
@@ -5584,7 +5551,7 @@ h3 {
     line-clamp: 2;
   }
 
-  /* Upload actions share one row; social links wrap below. */
+  /* The laboratory and social links share one row. */
   .home-action-row {
     display: flex;
     order: 3;
@@ -5594,7 +5561,7 @@ h3 {
     width: 100%;
   }
 
-  .orbit-upload {
+  .orbit-lab-entry {
     grid-column: auto;
     grid-row: auto;
     justify-self: auto;
@@ -5602,7 +5569,7 @@ h3 {
     height: 44px;
     min-height: 44px;
     padding: 0 16px;
-    flex: 1 1 88px;
+    flex: 1 1 0;
     --motion-x: 0px;
     --motion-y: 0px;
     --wy: 0px;
@@ -5616,7 +5583,7 @@ h3 {
     height: 44px;
     min-height: 44px;
     padding: 0 16px;
-    flex: 1 1 120px;
+    flex: 1 1 0;
     justify-content: center;
     --motion-x: 0px;
     --motion-y: 0px;
@@ -5629,7 +5596,7 @@ h3 {
     gap: clamp(10px, 2svh, 18px);
   }
 
-  .orbit-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     padding: 0 10px;
@@ -8891,12 +8858,9 @@ object {
   .slug-rules,
   .slug-error,
   .collection-links strong,
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget,
-  .orbit-upload,
   .album-toolbar-status,
   .album-card-placeholder,
   .album-field > span,
@@ -9062,9 +9026,7 @@ object {
     width: 100%;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     grid-column: auto;
@@ -9082,15 +9044,10 @@ object {
     --wy: 0px;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload {
-    flex: 1 1 calc((100% - 24px) / 3);
-  }
-
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
-    flex: 1 1 calc(50% - 6px);
+    flex: 1 1 calc((100% - 24px) / 3);
   }
 }
 
@@ -9109,12 +9066,14 @@ object {
 .author-menu-floating { position: fixed; right: calc(max(20px, env(safe-area-inset-right)) + 54px); bottom: max(22px, env(safe-area-inset-bottom)); z-index: 60; }
 .author-menu .bg-control-toggle { position: relative; }
 .author-task-dot { position: absolute; right: 5px; top: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--text-secondary); }
+.author-task-dot[data-state="completed"] { background: var(--success); }
+.author-task-dot[data-state="failed"] { background: var(--danger); }
 .author-session-status { flex-wrap: wrap; }
 .author-drop-layer { position: fixed; inset: 12px; z-index: 90; display: grid; place-content: center; border: 2px dashed var(--text-secondary); border-radius: var(--radius-lg); background: rgb(12 14 16 / 0.94); color: var(--text); pointer-events: none; }
 /* Prevent long project names from contributing a min-content width to the home grid. */
 .orbital-stage, .home-action-row { min-width: 0; }
-.home-action-row > .orbit-upload { min-width: 0; max-width: 100%; }
-.orbit-upload strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-action-row > .orbit-lab-entry { min-width: 0; max-width: 100%; }
+.orbit-lab-entry strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Watching changes only chrome opacity: its layout footprint stays reserved. */
 .site-header, .video-detail > .back-link, .video-detail > .video-title,
@@ -9139,13 +9098,14 @@ html[data-watching="fullscreen"] .create-menu { opacity: 0; pointer-events: none
 .player-shell[data-player-fullscreen="true"] .player-info-panel.open { max-height: 30dvh; overflow-y: auto; flex-shrink: 0; }
 .player-shell[data-player-fullscreen="true"] .player-controls-row { padding: 0 12px 8px; flex-shrink: 0; }
 .info-toggle-row { gap: 8px; }
-.player-shell[data-player-fullscreen="true"][data-controls-idle="true"] .player-controls-row:not(:focus-within) { opacity: 0; pointer-events: none; }
+.player-shell[data-player-fullscreen="true"][data-controls-idle="true"] .player-controls-row { opacity: 0; pointer-events: none; }
 .player-fullscreen-button { min-width: 88px; min-height: 44px; justify-content: center; }
 .player-shell[data-player-fullscreen="true"] .master-bar { flex-wrap: nowrap; overflow-x: auto; }
 .player-shell[data-player-fullscreen="true"] .master-button { flex-shrink: 0; }
 @media (pointer: coarse) {
   .player-shell .master-bar { flex-wrap: nowrap; overflow-x: auto; }
   .player-shell .master-button { min-height: 44px; flex-shrink: 0; }
+  .player-shell :is(.master-add, .info-toggle) { min-height: 44px; }
 }
 @media (pointer: coarse) and (orientation: portrait) {
   .player-shell[data-playing="true"] .player-frame { position: sticky; top: env(safe-area-inset-top); z-index: 51; }

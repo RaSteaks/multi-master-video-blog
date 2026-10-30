@@ -69,7 +69,6 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const device = useAuthorDevice();
-  const viewing = usePlayerViewing(videoRef, shellRef, playableMasters.length > 0);
   const linkTimeConsumed = useRef(false);
   const playerRef = useRef<ShakaPlayer | null>(null);
   const playerVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -112,6 +111,8 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
     () => playableMasters.find((m) => m.id === activeMasterId),
     [activeMasterId, playableMasters],
   );
+  // Capability rejection unmounts the video; manual selection mounts a new one.
+  const viewing = usePlayerViewing(videoRef, shellRef, Boolean(activeMaster));
 
   useEffect(() => {
     // Navigating to a different project starts a fresh automatic selection.
@@ -320,7 +321,6 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
       // Feed deep-link seeks into the same bounded load/seek correction as master switches.
       if (!linkTimeConsumed.current) {
         snapshot.time = playbackLinkTime(new URLSearchParams(location.search).get("t"));
-        linkTimeConsumed.current = true;
       }
       const source = mediaUrl(activeMaster.hls_url);
 
@@ -448,6 +448,8 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
         const positionConfirmed = snapshot.time <= 0 ||
           Math.abs(video.currentTime - clampPlaybackTime(snapshot.time, video.duration)) <= 0.35;
         if ((frame === "frame" || frame === "ready") && positionConfirmed) {
+          // Failed/canceled loads must leave the deep-link position available to retry.
+          linkTimeConsumed.current = true;
           setPlaybackState(video.paused ? "ready" : "playing");
           completeUserSwitch(snapshot.requestId);
         } else if (userSwitchRef.current?.requestId === snapshot.requestId) {

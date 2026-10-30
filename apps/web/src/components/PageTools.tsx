@@ -41,6 +41,7 @@ export function PageTools() {
     const url = new URL(location.href);
     if (timed) url.searchParams.set("t", String(Math.floor(document.querySelector<HTMLVideoElement>(".player-shell video")?.currentTime || 0)));
     else url.searchParams.delete("t");
+    if (!navigator.clipboard?.writeText) { setNotice("复制失败，请从地址栏复制链接。"); return; }
     void navigator.clipboard.writeText(url.href).then(() => setNotice("已复制"))
       .catch(() => setNotice("复制失败，请从地址栏复制链接。"));
   }

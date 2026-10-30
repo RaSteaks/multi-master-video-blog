@@ -1,31 +1,21 @@
 import type { CSSProperties } from "react";
 import Link from "next/link";
 import { LiquidBackground } from "@/components/LiquidBackground";
-import { getCounts, getFeaturedProjects } from "@/lib/directus";
+import { getCounts } from "@/lib/directus";
 import {
   homeLayout,
   type HomeWidgetLayout,
 } from "@/lib/home-layout";
 import { siteConfig } from "@/lib/site-config";
 
-type ProjectWidgetProps = {
-  className: string;
-  href: string;
-  title: string;
-};
-
 type HomeWidgetStyle = CSSProperties & Record<`--${string}`, string | number>;
 
 export default async function Home() {
-  const [counts, projects] = await Promise.all([
-    getCounts().catch(() => ({ posts: 0, videos: 0, albums: 0 })),
-    getFeaturedProjects(3),
-  ]);
   const {
     posts: postCount,
     videos: videoCount,
     albums: albumCount,
-  } = counts;
+  } = await getCounts();
 
   return (
     <>
@@ -49,14 +39,7 @@ export default async function Home() {
           </div>
 
           <div className="home-action-row">
-            {["blog", "album", "post"].map((position, index) => {
-              const project = projects[index];
-              return <ProjectWidget key={position}
-                className={`floating-widget home-free-widget orbit-card orbit-upload orbit-${position}-upload`}
-                href={project ? project.open_mode === "external" ? project.url : `/project#project-${project.id}` : "/project"}
-                title={project?.title || "进入实验室"} />;
-            })}
-
+            <LabWidget />
             <GitHubWidget />
             <BilibiliWidget />
           </div>
@@ -151,21 +134,14 @@ function CollectionCard({
   );
 }
 
-function ProjectWidget({ className, href, title }: ProjectWidgetProps) {
-  const isExternal = href.startsWith("http");
-  const content = <strong>{title}</strong>;
-
-  if (isExternal) {
-    return (
-      <a className={className} href={href} target="_blank" rel="noopener noreferrer" aria-label={title}>
-        {content}
-      </a>
-    );
-  }
-
+function LabWidget() {
   return (
-    <Link className={className} href={href} aria-label={title}>
-      {content}
+    <Link className="floating-widget home-free-widget orbit-card orbit-lab-entry" href="/project">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <path d="M3 8h18M8 12l-3 3 3 3M16 12l3 3-3 3" />
+      </svg>
+      <strong>实验室</strong>
     </Link>
   );
 }

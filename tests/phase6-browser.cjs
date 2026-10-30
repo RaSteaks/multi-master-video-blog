@@ -19,10 +19,16 @@ async function main() {
     const masters = [1, 2].map(id => ({ id, project_id: 50, label: `SDR ${id}`, type: "sdr", verification_status: "ready", is_default: id === 1, sort_order: id,
       hls_url: `/media/phase6/master.m3u8?master=${id}`, resolution_width: 320, resolution_height: 180, codec: "H.264 / AVC", hls_video_range: "SDR", status: "published" }));
     fixture.collections.video_projects.push({ id: 50, title: "观看体验验收", slug: "phase6-video", published: true, description: "母版切换与时间点链接。", masters });
-    await fetch(`${fixture.url}/videos/phase6-video`);
+    fixture.collections.video_projects.push(
+      { id: 51, title: "手动恢复", slug: "phase6-manual", published: true, masters: [{ ...masters[0], label: "手动母版", type: "hdr10", hls_video_range: "PQ" }] },
+      { id: 52, title: "加载重试", slug: "phase6-retry", published: true, masters: [{ ...masters[0], hls_url: "/media/phase6/master.m3u8?retry=1" }] },
+    );
+    for (const slug of ["phase6-video", "phase6-manual", "phase6-retry"]) await fetch(`${fixture.url}/videos/${slug}`);
     browser = await engine.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    let failRetry = true;
     await context.route("**/media/phase6/**", async route => {
+      if (failRetry && route.request().url().includes("retry=1")) return route.fulfill({ status: 503, body: "Fixture temporary failure" });
       const file = path.basename(new URL(route.request().url()).pathname);
       await route.fulfill({ path: path.join(media, file), contentType: file.endsWith("m3u8") ? "application/vnd.apple.mpegurl" : "video/mp2t" });
     });
@@ -46,7 +52,7 @@ async function main() {
     await page.screenshot({ path: path.join(fixture.output, "article-tools.png") });
     pass("guest page tools, clockwise tones, scroll threshold, detail speed and header glass");
 
-    for (const next of ["/albums", "https://example.com", "//example.com"]) {
+    for (const next of ["/albums", "https://example.com", "//example.com", "/.//evil.com", "/%2e//evil.com"]) {
       await page.goto(`${fixture.url}/studio?next=${encodeURIComponent(next)}`, { waitUntil: "networkidle" });
       assert.ok((await page.locator('meta[name="robots"]').getAttribute("content")).includes("noindex"));
       const dialog = page.getByRole("dialog", { name: "作者登录", exact: true });
@@ -81,41 +87,42 @@ async function main() {
     assert.equal(await page.getByRole("button", { name: "管理此相簿", exact: true }).count(), 0);
     pass("studio login/local redirect, external redirects rejected, server HTML excludes author controls, forget-device and guest management");
 
-    const project = id => ({ id, title: id === 1 ? "一个很长的网站项目名称，用于确认窄屏下单行截断不会挤破现有布局" : `项目 ${id}`, description: "验收", url: "https://example.com/", preview_url: null, preview_enabled: false, open_mode: id === 1 ? "iframe" : "external", cover_image: null, published: true, sort_order: id });
-    for (const count of [0, 1, 3]) {
-      fixture.collections.external_projects = Array.from({ length: count }, (_, index) => project(index + 1));
-      for (const width of [1440, 1100, 900, 700, 390, 360]) {
-        await page.setViewportSize({ width, height: 900 });
-        await page.goto(`${fixture.url}/`, { waitUntil: "networkidle" });
-        assert.equal(await page.locator(".home-action-row .orbit-upload").count(), 3);
-        assert.equal(await page.locator(".orbit-upload").filter({ hasText: "进入实验室" }).count(), 3 - count);
-        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), JSON.stringify({ count, width, overflow: await page.evaluate(() => [...document.querySelectorAll("body *")].filter(el => el.getBoundingClientRect().right > innerWidth + 1).map(el => ({ class: el.className, width: el.getBoundingClientRect().width })).slice(0, 8)) }));
-        if (count) assert.equal(await page.locator(".orbit-upload").first().getAttribute("href"), "/project#project-1");
-        if (count === 3) assert.equal(await page.locator(".orbit-upload").nth(1).getAttribute("rel"), "noopener noreferrer");
-        if (count === 3) await page.screenshot({ path: path.join(fixture.output, `home-${width}.png`) });
-      }
+    for (const width of [1440, 1100, 900, 700, 390, 360]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`${fixture.url}/`, { waitUntil: "networkidle" });
+      assert.equal(await page.locator(".home-action-row > .home-free-widget").count(), 3);
+      assert.equal(await page.locator(".orbit-lab-entry").count(), 1);
+      assert.equal(await page.locator(".orbit-lab-entry").getAttribute("href"), "/project");
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `home overflows at ${width}`);
+      await page.screenshot({ path: path.join(fixture.output, `home-${width}.png`) });
     }
-    await page.locator(".orbit-upload").first().click();
-    await page.waitForURL(`${fixture.url}/project#project-1`);
-    await page.locator("#project-1").waitFor();
-    for (const collection of ["external_projects", "posts", "video_projects", "albums"]) fixture.unavailableCollections.add(collection);
-    await page.goto(`${fixture.url}/`, { waitUntil: "networkidle" });
-    assert.equal(await page.locator(".orbit-upload").filter({ hasText: "进入实验室" }).count(), 3);
-    fixture.unavailableCollections.clear();
-    pass("home 0/1/3 projects at all six widths, anchors/external semantics and CMS outage fallback");
+    await page.locator(".orbit-lab-entry").click();
+    await page.waitForURL(`${fixture.url}/project`);
+    pass("home has one laboratory entry beside the social links at all six widths");
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`${fixture.url}/videos/phase6-video?t=4`, { waitUntil: "networkidle" });
     await page.waitForFunction(() => { const video = document.querySelector("video"); return video && video.readyState >= 2 && Math.abs(video.currentTime - 4) < 0.5; }, null, { timeout: 30000 });
     assert.equal(await page.locator(".master-add").count(), 0);
+    await page.locator("video").evaluate(video => { video.muted = true; video.loop = true; });
+    await page.locator("video").click();
+    await page.waitForFunction(() => !document.querySelector("video").paused);
+    // Keep the pointer modality but make native-control focus deterministic
+    // across engines; this is the focus that previously prevented all fading.
+    await page.locator("video").focus();
+    assert.ok(await page.evaluate(() => document.activeElement === document.querySelector("video")));
+    // The real click can scroll the player into view; measure the subsequent fade.
     const before = await page.locator(".player-frame").boundingBox();
-    await page.evaluate(async () => { const video = document.querySelector("video"); video.muted = true; video.loop = true; await video.play(); });
     await page.waitForFunction(() => document.documentElement.dataset.watching === "idle");
     assert.deepEqual(await page.locator(".player-frame").boundingBox(), before);
     await page.waitForFunction(() => getComputedStyle(document.querySelector(".video-title")).opacity === "0");
     await page.mouse.move(300, 200);
     await page.waitForFunction(() => document.documentElement.dataset.watching === "active");
     await page.locator(".master-button").first().focus();
+    // Safari's OS keyboard-navigation setting may skip buttons on Tab. Exercise
+    // a real key interaction on the focused control without leaving the player.
+    await page.keyboard.press("ArrowRight");
+    assert.ok(await page.evaluate(() => Boolean(document.activeElement?.closest(".player-shell"))));
     await page.waitForTimeout(2800);
     assert.equal(await page.locator("html").getAttribute("data-watching"), "active");
     await page.keyboard.press("f");
@@ -127,6 +134,10 @@ async function main() {
     assert.equal(await page.locator(".master-button").nth(1).getAttribute("aria-pressed"), "true");
     assert.ok(await page.getByRole("button", { name: "退出全屏", exact: true }).evaluate(element => element.getBoundingClientRect().bottom <= innerHeight));
     await page.screenshot({ path: path.join(fixture.output, "whole-player-fullscreen.png") });
+    await page.waitForFunction(() => document.querySelector(".player-shell").dataset.controlsIdle === "true");
+    await page.waitForFunction(() => getComputedStyle(document.querySelector(".player-controls-row")).opacity === "0");
+    await page.mouse.move(320, 180);
+    await page.waitForFunction(() => document.querySelector(".player-shell").dataset.controlsIdle === "false");
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => document.documentElement.dataset.watching !== "fullscreen");
     assert.equal(await page.locator(".liquid-bg").first().getAttribute("data-liquid-speed"), "0.35");
@@ -136,7 +147,24 @@ async function main() {
     await page.waitForFunction(() => document.documentElement.dataset.watching === "fullscreen");
     await page.getByRole("button", { name: "退出全屏", exact: true }).click();
     await page.waitForFunction(() => document.documentElement.dataset.watching !== "fullscreen");
-    pass("real HLS timestamp seek, idle layout stability/focus recovery, F/double-click fullscreen and master switching");
+    pass("real pointer playback idles despite video focus; keyboard focus stays visible; fullscreen toolbar fades and exits");
+
+    await page.goto(`${fixture.url}/videos/phase6-manual`, { waitUntil: "networkidle" });
+    await page.getByText("No compatible master was confirmed. Select a version manually.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "手动母版", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("video")?.readyState >= 2);
+    await page.locator("video").evaluate(video => { video.muted = true; video.loop = true; });
+    await page.locator("video").click();
+    await page.waitForFunction(() => document.querySelector(".player-shell").dataset.playing === "true");
+    await page.waitForFunction(() => document.documentElement.dataset.watching === "idle");
+    pass("manual selection after capability rejection rebinds the viewing listeners");
+
+    await page.goto(`${fixture.url}/videos/phase6-retry?t=4`, { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "Retry playback", exact: true }).waitFor();
+    failRetry = false;
+    await page.getByRole("button", { name: "Retry playback", exact: true }).click();
+    await page.waitForFunction(() => { const video = document.querySelector("video"); return video?.readyState >= 2 && Math.abs(video.currentTime - 4) < 0.5; });
+    pass("initial load failure and explicit retry retain the timestamp link");
 
     const stopped = await browser.newContext();
     await stopped.addInitScript(() => localStorage.setItem("mm-liquid-background-v1", JSON.stringify({ version: 1, speed: 0, color: { kind: "gray" }, slots: [] })));
@@ -166,12 +194,74 @@ async function main() {
     await phone.waitForFunction(() => document.documentElement.dataset.watching === "fullscreen" && getComputedStyle(document.querySelector(".site-header")).opacity === "0");
     assert.ok(await phone.getByRole("button", { name: "退出全屏", exact: true }).evaluate(element => element.getBoundingClientRect().bottom <= innerHeight));
     await phone.screenshot({ path: path.join(fixture.output, "mobile-landscape.png") });
+    for (const selector of [".info-toggle", ".master-button"]) {
+      assert.ok(await phone.locator(selector).first().evaluate(element => element.getBoundingClientRect().height >= 44));
+    }
+    await phone.getByRole("button", { name: "退出全屏", exact: true }).click();
+    await phone.locator(".player-immersive").waitFor({ state: "detached" });
+    await phone.setViewportSize({ width: 844, height: 400 });
+    await phone.evaluate(async () => { const video = document.querySelector("video"); video.pause(); await video.play(); });
+    await phone.waitForTimeout(500);
+    assert.equal(await phone.locator(".player-immersive").count(), 0);
+    await phone.setViewportSize({ width: 390, height: 844 });
+    // Deliver the portrait resize before issuing a separate physical rotation.
+    await phone.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await phone.setViewportSize({ width: 844, height: 390 });
+    await phone.locator(".player-immersive").waitFor();
     await phone.setViewportSize({ width: 390, height: 844 });
     await phone.locator(".player-immersive").waitFor({ state: "detached" });
     assert.notEqual(await phone.evaluate(() => document.body.style.overflow), "hidden");
     await phone.screenshot({ path: path.join(fixture.output, "mobile-portrait.png") });
+    await phone.setViewportSize({ width: 1024, height: 768 });
+    await phone.evaluate(async () => { const video = document.querySelector("video"); video.pause(); await video.play(); });
+    await phone.waitForTimeout(500);
+    assert.equal(await phone.locator(".player-immersive").count(), 0);
+    await phone.setViewportSize({ width: 390, height: 844 });
+    await phone.locator("video").evaluate(video => video.pause());
+    const authorLogin = await mobile.request.post(`${fixture.url}/api/author/session`, { headers: { Origin: fixture.url }, data: { token: fixture.token } });
+    assert.ok(authorLogin.ok());
+    await phone.reload({ waitUntil: "networkidle" });
+    await phone.locator(".master-add").waitFor();
+    assert.ok(await phone.locator(".master-add").evaluate(element => element.getBoundingClientRect().height >= 44));
+    await phone.evaluate(() => scrollTo({ top: 150, behavior: "instant" }));
+    await phone.waitForFunction(() => scrollY > 0);
+    await phone.setViewportSize({ width: 844, height: 390 });
+    await phone.evaluate(async () => { const video = document.querySelector("video"); video.muted = true; await video.play(); });
+    await phone.locator(".player-immersive").waitFor();
+    await phone.locator(".master-add").click();
+    await phone.waitForURL(/\/upload\?projectId=50$/);
+    await phone.locator("form.upload-form").waitFor();
+    await phone.waitForLoadState("networkidle");
+    assert.equal(await phone.evaluate(() => scrollY), 0);
     await mobile.close();
-    pass("touch portrait sticky frame, landscape auto-immersion and reversible scroll lock");
+    pass("manual exit survives resize/replay, portrait resets it, tablets stay inline, touch targets are 44px and navigation starts at top");
+
+    const navigation = await browser.newContext({ viewport: { width: 1280, height: 600 } });
+    await navigation.route("**/media/phase6/**", route => {
+      const file = path.basename(new URL(route.request().url()).pathname);
+      return route.fulfill({ path: path.join(media, file), contentType: file.endsWith("m3u8") ? "application/vnd.apple.mpegurl" : "video/mp2t" });
+    });
+    const navigationLogin = await navigation.request.post(`${fixture.url}/api/author/session`, { headers: { Origin: fixture.url }, data: { token: fixture.token } });
+    assert.ok(navigationLogin.ok());
+    const fullPage = await navigation.newPage();
+    await fullPage.goto(`${fixture.url}/videos/phase6-video`, { waitUntil: "networkidle" });
+    await fullPage.waitForFunction(() => document.querySelector("video")?.readyState >= 2);
+    await fullPage.locator(".player-fullscreen-button").click();
+    await fullPage.waitForFunction(() => document.documentElement.dataset.watching === "fullscreen");
+    await fullPage.locator(".master-add").click();
+    await fullPage.waitForURL(/\/upload\?projectId=50$/);
+    await fullPage.locator("form.upload-form").waitFor();
+    await fullPage.waitForLoadState("networkidle");
+    assert.equal(await fullPage.evaluate(() => scrollY), 0);
+    assert.equal(await fullPage.evaluate(() => document.documentElement.dataset.watching || null), null);
+    await navigation.close();
+    pass("leaving native whole-player fullscreen does not restore the previous page's scroll");
+
+    fixture.collections.albums = [];
+    await page.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
+    assert.equal(await page.getByText(/点右下角/).count(), 0);
+    await page.getByText("相簿整理中，照片将在这里陆续展出。", { exact: true }).waitFor();
+    pass("empty album uses neutral visitor copy");
     assert.deepEqual(report.errors, []);
     report.passed = true;
   } catch (error) {

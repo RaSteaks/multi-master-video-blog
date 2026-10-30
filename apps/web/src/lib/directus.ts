@@ -46,21 +46,6 @@ export async function getExternalProjects() {
   }
 }
 
-/** Public homepage projection uses tagged caching, never the live laboratory query. */
-export async function getFeaturedProjects(limit = 3) {
-  try {
-    const params = new URLSearchParams({
-      fields: "id,title,description,url,preview_url,preview_enabled,open_mode,cover_image,published,sort_order",
-      "filter[published][_eq]": "true", sort: "sort_order,-id", limit: String(limit),
-    });
-    const result = await directusFetch<{ data: unknown[] }>(`/items/external_projects?${params}`, false, ["projects:list"]);
-    return result.data.map(readWebsiteProject);
-  } catch {
-    // An unavailable CMS must not punch holes in the homepage action row.
-    return [];
-  }
-}
-
 export type Post = {
   id: number;
   title: string;

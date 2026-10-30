@@ -36,7 +36,7 @@ async function main() {
     assert.equal(await page.getByRole("link", { name: "添加网站", exact: true }).count(), 0);
     assert.equal((await context.request.get(`${fixture.url}/api/external-projects/manage`)).status(), 401);
     assert.equal((await context.request.post(`${fixture.url}/api/external-projects`, { data: {} })).status(), 401);
-    await page.keyboard.press("Control+Shift+L");
+    await page.keyboard.press("Control+Alt+Shift+L");
     const login = page.getByRole("dialog", { name: "作者登录", exact: true });
     await login.getByLabel("上传令牌", { exact: true }).fill(fixture.token);
     await login.getByRole("button", { name: "登录", exact: true }).click();

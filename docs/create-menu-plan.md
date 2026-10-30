@@ -273,7 +273,7 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
   - `/studio` 不进入导航和站点地图，并设置 `noindex`。
 - **迁入内容：** 创作、相簿、实验室分组，"上传到此相簿"，任务列表，登录状态与退出。任务详情放在展开后的面板里。
 - **会话过期：** 入口继续显示。点击时弹出 `AuthorSignIn`，登录成功后自动继续原来的目标，不需要再点一次。
-- **新设备：** 新增 `/studio`，页面只有登录框，设置 `noindex`，不进入导航。支持 `?next=`，但只接受以单个 `/` 开头的站内相对路径，防止开放重定向。另外，`⌘⇧L` / `Ctrl+Shift+L` 在任意页面打开同一个登录框，界面上没有提示。
+- **新设备：** 新增 `/studio`，页面只有登录框，设置 `noindex`，不进入导航。支持 `?next=`，但只接受以单个 `/` 开头的站内相对路径，防止开放重定向。另外，`⌘⌥⇧L` / `Ctrl+Alt+Shift+L` 在任意页面打开同一个登录框，界面上没有提示。
 - **拖放上传：** 只在有效作者会话下启用。改为全窗口的放置层，不再借用悬浮按钮。
 - **页面内的作者控件：** 单个相簿页的"管理"按钮和实验室的新建入口，同样只在存在 `author_device` 时显示。
 
@@ -298,7 +298,7 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
 | `idle` | 正在播放，2.5 秒内没有操作 | 页头、返回按钮、标题说明淡出，只改透明度和 `pointer-events`，不改变布局。播放器画面不受任何影响 |
 | `fullscreen` | 进入全屏或沉浸模式 | 页头、页面工具、标题说明全部隐藏；液体背景速度设为 0；退出时恢复滚动位置 |
 
-鼠标移动、触摸、键盘操作、暂停、播放结束都回到 `active` 或无属性。焦点在播放器控件内时不进入 `idle`。
+鼠标移动、触摸、键盘操作、暂停、播放结束都回到 `active` 或无属性。只有键盘操作形成的播放器控件焦点才阻止进入 `idle`；鼠标或触摸留下的焦点不阻止退场。
 
 **桌面和 Android：**
 
@@ -313,7 +313,7 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
 - **iPhone Safari：** 没有元素级全屏 API。全屏按钮改为进入页内沉浸模式：`position: fixed`、高度 `100dvh`、黑底、留出 `safe-area-inset-*`，母版切换条仍然可用。iOS 原生控件的全屏仍然存在，用 `webkitbeginfullscreen` 和 `webkitendfullscreen` 同步状态。
 - **Android：** 进入全屏后，横版视频尝试 `screen.orientation.lock("landscape")`，失败时静默忽略，退出时解锁。
 - **竖屏播放：** 播放器吸附在顶部（`position: sticky`，考虑安全区），下方的说明和母版切换条可以滚动。
-- **横屏：** 播放中转到横屏时，自动进入沉浸模式；转回竖屏时退出。
+- **横屏：** 仅对触屏、横屏且视口高度不超过 500px 的手机自动沉浸，排除平板。手动退出后，resize 或重新播放不再自动进入，直到转回竖屏清除这个选择；再转横屏才重新自动沉浸。
 - **触摸：** 没有悬停，所以退场计时从最后一次触摸开始，点击页面恢复。触控目标不小于 44px，母版切换条支持横向滚动，保留 `playsInline`。
 
 媒体画面约束：退场和全屏只影响画面周围的元素，不得对视频本身加滤镜、遮罩、亮度或模糊变化。
@@ -324,7 +324,7 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
 - 所有访客看到的内容相同，不做客户端替换，避免闪烁。作者的上传入口走工作台。
 - **数据：** 取 `external_projects` 中已发布、按 `sort_order` 排序的前 3 条。**不要在首页调用 `getExternalProjects()`**：它内部的 `await connection()` 会让首页变成动态渲染。新增一个走 `directusFetch` 缓存的 `getFeaturedProjects(limit)`，并确认 `lib/revalidate-tags.ts` 能在 project 变更时刷新它。
 - **跳转：** `open_mode` 为 `external` 时，新标签页打开 `url`，带 `rel="noopener noreferrer"`；其他情况跳到 `/project` 中的对应项目（实现前先读 `ProjectGallery.tsx`，确认定位方式）。
-- **不足 3 个或 CMS 不可用时：** 用"进入实验室"（`/project`）补位，首页不能因此报错，也不能出现布局空洞。
+- **不足 3 个或单行数据无效时：** 用"进入实验室"（`/project`）补位，保留其他有效项目。CMS 读取故障必须让 ISR 再生成失败并保留上一版成功页面，不能把故障转换成空列表或零计数写入缓存；首次无缓存的构建需要 CMS 可用。
 - **长标题：** 单行省略，完整标题放在无障碍名称里。
 - `SITE_POST_UPLOAD_HREF`、`SITE_ALBUM_UPLOAD_HREF` 不再使用后，从 `site-config.ts`、`.env.example` 和文档中删除。
 
@@ -348,7 +348,7 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
 
 ### 8.8 实施顺序
 
-1. 作者入口分离：`author_device`、`AuthorMenu`、`/studio`、`⌘⇧L`，并把作者内容从悬浮按钮迁出。
+1. 作者入口分离：`author_device`、`AuthorMenu`、`/studio`、`⌘⌥⇧L`，并把作者内容从悬浮按钮迁出。
 2. `PageTools`：按页面显示工具、2×2 色卡图案、`?t=` 时间点链接。
 3. 液体背景放缓。
 4. 观看状态、桌面全屏联动。
@@ -384,6 +384,26 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
 12. `apps/web/src/lib/player-viewing.ts:149-152`：组件卸载时不要恢复滚动位置，否则离开页面后下一页会跳动。
 13. `.master-add`、`.info-toggle` 在触屏上提高到 44px。
 14. `apps/web/src/components/AuthorMenu.tsx:50`：`notice` 在路由变化时清除。
-15. **任务失败没有提示（默认方案，作者尚未确认）：** `author-tasks.ts` 只跟踪进行中和已完成的状态，失败的任务直接从列表消失。失败时保留小点（颜色 `--danger`），直到作者打开面板查看。
+15. **任务失败没有提示（本轮采用默认方案）：** `author-tasks.ts` 只跟踪进行中和已完成的状态，失败的任务直接从列表消失。失败时保留小点（颜色 `--danger`），直到作者打开面板查看。
+16. **Codex 交叉审查：** 能力检测未确认兼容母版后，视频会卸载并在手动选择时重新挂载。观看监听必须跟随 `activeMaster` 是否存在重新绑定，不能仅依赖母版列表长度。
 
 **修复后的验证：** 在有视频数据的环境里实际运行退场、全屏、Esc 恢复、`?t=` 和 0.35 倍速；运行 `tests/phase6-browser.cjs`、`tests/create-menu-browser.cjs` 和 `next build`，确认首页仍是静态页面。运行 `npm run test:api` 时设置 `FFMPEG_PATH`、`FFPROBE_PATH`、`VK_ICD_FILENAMES`，指向 `cms/bin/`；用系统 ffmpeg 会有 15 项媒体测试失败。
+
+### 8.10 首页入口修订（2026-10-31，覆盖第 8.5 节和第 8.9 节的相关条目）
+
+作者决定：首页只保留**一个**固定的"实验室"入口，链接到 `/project`，不展示具体项目。已实现：
+
+- 首页操作行固定为实验室、GitHub、Bilibili 三项，所有断点已重排。类名改为 `.orbit-lab-entry`。
+- 已删除 `getFeaturedProjects`、`projects:list` 标签、`external_projects` 的缓存刷新映射，以及 `scripts/setup-revalidate-flows.cjs` 中的 `external_projects`。
+- 第 8.5 节中关于前 3 个 project、补位和长标题的要求作废；第 8.9 节第 6、8 项不再需要；第 5 项中 `getFeaturedProjects` 的部分不再需要。
+- 如果已经运行过包含 `external_projects` 的 `setup-revalidate-flows.cjs`，需要在 Directus 中删除名为 `Web cache: external_projects:*` 的三个 Flow，否则它们会收到 400。
+
+### 8.11 本轮交叉修复记录
+
+- 修复前已创建基线提交 `7b8d8fd`，其中保留第 8.9 节的待办记录。
+- 第 8.9 节第 1、2、16 项：区分鼠标与键盘焦点；手机横屏手动退出保持到竖屏；500px 高度上限排除平板；观看监听跟随实际视频挂载状态重新绑定。
+- 第 4、5、7、9–14 项：更新空相簿文案；计数失败交给 ISR 保留上一版成功页面；规范化登录回跳路径；首次加载重试保留时间点；缺少剪贴板 API 时显示失败提示；恢复有效设计规则；卸载不恢复旧滚动；触屏按钮至少 44px；导航清除旧 notice。
+- 钢笔图标保留。完成小点使用成功色并保留 6 秒；第 15 项采用默认方案，失败小点使用危险色，打开面板后清除未读提示，失败详情继续保留。任务详情仅保存在当前客户端会话，退出作者登录时清除。
+- 第 6、8 项及第 5 项中的 featured-project 部分由第 8.10 节作废，本轮保留该并行改动，不再恢复已删除的缓存链路。
+- 第 3 项代码改为 `⌘⌥⇧L` / `Ctrl+Alt+Shift+L`，使用物理 `KeyL` 兼容 Option 改变字符的键盘布局。Safari 26.2 的原生验证被“允许远程自动化”关闭阻塞；没有更改 Safari 设置，WebKit 页面测试不作为 Safari 应用层快捷键验证。
+- 新增 `npm run test:phase6-cache`：生产构建后检查静态首页、CMS 故障时保留成功计数、恢复后的失效刷新，以及真实非 HTTPS 域名下的剪贴板缺失提示。移动端回归使用浏览器触控与方向模拟，不替代真机安全区或 Android 屏幕锁定验证。

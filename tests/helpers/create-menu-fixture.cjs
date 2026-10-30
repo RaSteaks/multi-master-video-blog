@@ -24,6 +24,7 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
   }));
   const token = "isolated-author-session-fixture";
   const unavailableCollections = new Set();
+  const failedReads = new Map();
   const collections = {
     albums: [{ id: 1, title: "验收相簿", slug: "fixture-album", description: "隔离测试数据", published: true, photos: [] }],
     album_photos: [], video_projects: [], video_masters: [], external_projects: [], files: [], film_scan_jobs: [], film_scan_sources: [], film_scan_frames: [],
@@ -60,7 +61,10 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
       const collection = parts[1] === "files" ? "files" : parts[2];
       const id = parts[1] === "files" ? parts[2] : parts[3];
       if (collection === "site_settings") return json(res, { data: null });
-      if (unavailableCollections.has(collection)) return json(res, { error: "Fixture CMS unavailable" }, 503);
+      if (unavailableCollections.has(collection)) {
+        failedReads.set(collection, (failedReads.get(collection) || 0) + 1);
+        return json(res, { error: "Fixture CMS unavailable" }, 503);
+      }
       const rows = collections[collection] || [];
       if (req.method === "GET") {
         let selected = rows.filter(row => !id || String(row.id) === id);
@@ -84,6 +88,7 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
             : match[2] === "neq" ? String(row[match[1]]) !== value : String(row[match[1]]) === value);
         }
         if (url.searchParams.has("aggregate[count]")) {
+          if (url.searchParams.get("aggregate[count]") === "*") return json(res, { data: [{ count: String(selected.length) }] });
           const groups = new Map();
           for (const row of selected) {
             const key = `${row.album_id}:${row.published}`;
@@ -167,7 +172,7 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
     await ready(`${webUrl}/write`);
     await ready(`${webUrl}/albums/fixture-album`);
     for (const route of ["/", "/studio", "/project", "/posts", "/videos"]) await ready(`${webUrl}${route}`);
-    return { output, temp, token, collections, unavailableCollections, close, restartApi, envFile, url: webUrl, apiUrl, cmsUrl };
+    return { output, temp, token, collections, unavailableCollections, failedReads, close, restartApi, envFile, url: webUrl, apiUrl, cmsUrl };
   } catch (error) { await close(); throw error; }
 }
 

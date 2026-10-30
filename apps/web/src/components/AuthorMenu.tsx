@@ -52,6 +52,11 @@ export function AuthorMenu() {
   const [time, setTime] = useState(0);
   const [dragging, setDragging] = useState(false);
 
+  useEffect(() => { setNotice(""); }, [pathname]);
+  useEffect(() => {
+    if (open) activity.acknowledgeFailures();
+  }, [open, activity.failed, activity.acknowledgeFailures]);
+
   useEffect(() => {
     function login(event: Event) {
       if (!(event instanceof CustomEvent) || typeof event.detail !== "function") return;
@@ -60,13 +65,13 @@ export function AuthorMenu() {
     }
     function keydown(event: KeyboardEvent) {
       const target = event.target;
-      if (event.defaultPrevented || event.isComposing || event.repeat || event.altKey
+      if (event.defaultPrevented || event.isComposing || event.repeat
         || document.querySelector("dialog[open]")
         || (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, textarea, select")))) return;
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "l") {
+      if ((event.metaKey || event.ctrlKey) && event.altKey && event.shiftKey && event.code === "KeyL") {
         event.preventDefault(); continuation.current = undefined; setLoginOpen(true); return;
       }
-      if (!open || event.metaKey || event.ctrlKey || event.shiftKey) return;
+      if (!open || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const item = GROUPS.flatMap(group => group.items).find(item => item.shortcut === event.key.toUpperCase());
       if (item && "href" in item) {
         event.preventDefault(); setOpen(false);
@@ -134,9 +139,15 @@ export function AuthorMenu() {
   const menu = device ? <ActionMenu className={`author-menu${pathname === "/" ? " author-menu-floating" : ""}`}
     triggerClassName="bg-control-toggle" open={open} onOpenChange={setOpen} label="工具"
     placement={pathname === "/" ? "up" : "down"} groups={authenticatedGroups}
-    trigger={<><Icon><path d="m16 3 5 5-12 12H4v-5Z M13 6l5 5" /></Icon>{activity.tasks.length ? <span className="author-task-dot" /> : null}</>}
-    header={activity.tasks.length ? <div className="author-tasks" aria-label="进行中的任务"><p>进行中的任务</p>
-      {activity.tasks.map(task => <div key={task.id}><span>{task.label}</span><small>{authorTaskLabel(task)}{task.progress !== null ? ` · ${task.progress}%` : ""}</small></div>)}
+    trigger={<><Icon><path d="m16 3 5 5-12 12H4v-5Z M13 6l5 5" /></Icon>{activity.tasks.length || activity.completed || activity.failed ? <span className="author-task-dot"
+      data-state={activity.failed ? "failed" : activity.completed ? "completed" : "active"} aria-hidden="true" /> : null}</>}
+    header={activity.tasks.length || activity.failedTasks.length ? <div className="author-tasks">
+      {activity.tasks.length ? <><p>进行中的任务</p>
+        {activity.tasks.map(task => <div key={task.id}><span>{task.label}</span><small>{authorTaskLabel(task)}{task.progress !== null ? ` · ${task.progress}%` : ""}</small></div>)}
+      </> : null}
+      {activity.failedTasks.length ? <><p>需要处理的任务</p>
+        {activity.failedTasks.map(task => <div key={task.id}><span>{task.label}</span><small>{authorTaskLabel(task)}</small></div>)}
+      </> : null}
     </div> : null}
     footer={<>
       <p className="create-menu-notice" role="status">{notice || activity.error || (activity.completed ? "任务已完成" : "")}</p>

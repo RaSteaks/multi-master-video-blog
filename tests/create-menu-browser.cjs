@@ -26,7 +26,7 @@ async function main() {
     assert.equal(await tools.count(), 0);
     assert.equal(await publicTools.count(), 0, "An unscrolled list has no page tools.");
     await page.screenshot({ path: path.join(fixture.output, "guest-desktop.png") });
-    await page.keyboard.press("Control+Shift+L");
+    await page.keyboard.press("Control+Alt+Shift+L");
     const dialog = page.getByRole("dialog", { name: "作者登录", exact: true });
     await dialog.getByLabel("上传令牌", { exact: true }).fill("wrong");
     await dialog.getByRole("button", { name: "登录", exact: true }).click();
@@ -59,7 +59,20 @@ async function main() {
     fixture.collections.film_scan_jobs[0].status = "review_required";
     fixture.collections.film_scan_jobs[0].progress = 100;
     await menu.getByText("任务已完成", { exact: true }).waitFor();
-
+    await menu.locator('.author-task-dot[data-state="completed"]').waitFor();
+    await page.waitForTimeout(3000);
+    assert.equal(await menu.locator('.author-task-dot[data-state="completed"]').count(), 1);
+    await menu.locator('.author-task-dot[data-state="completed"]').waitFor({ state: "detached", timeout: 5000 });
+    await page.keyboard.press("Escape");
+    fixture.collections.film_scan_jobs[0].status = "failed";
+    await menu.locator('.author-task-dot[data-state="failed"]').waitFor();
+    await page.waitForTimeout(6000);
+    assert.equal(await menu.locator('.author-task-dot[data-state="failed"]').count(), 1);
+    await tools.click();
+    await menu.getByText("任务失败，请检查", { exact: true }).waitFor();
+    await menu.locator('.author-task-dot[data-state="failed"]').waitFor({ state: "detached" });
+    await page.waitForTimeout(5500);
+    assert.equal(await menu.locator('.author-task-dot[data-state="failed"]').count(), 0);
     pass("session-protected task summaries show measured progress and bounded completion feedback");
 
     for (const [label, query] of [["上传照片", "upload"], ["新建相簿", "create"], ["导入胶片扫描", "film"]]) {
@@ -168,6 +181,18 @@ async function main() {
       await dropPage.close();
     }
     pass("video/photo/TIFF/Markdown drops retain files across client navigation without uploading");
+    await page.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
+    await page.evaluate(() => {
+      const dataTransfer = new DataTransfer(); dataTransfer.items.add(new File(["invalid"], "unknown.xyz"));
+      document.body.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }));
+    });
+    await page.locator(".author-menu .create-menu-notice").filter({ hasText: /./ }).waitFor();
+    await page.locator('.site-header a[href="/posts"]').click();
+    await page.waitForURL(`${fixture.url}/posts`);
+    await page.waitForLoadState("networkidle");
+    await tools.click();
+    assert.equal(await menu.locator(".create-menu-notice").innerText(), "");
+    await page.keyboard.press("Escape");
     await page.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
 
     const signedStatus = await (await context.request.get(`${fixture.url}/api/author/session`)).json();

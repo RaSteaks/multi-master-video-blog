@@ -7,7 +7,6 @@
  *   posts:list / posts:slug:<slug>      getPosts / getPost
  *   videos:list / videos:slug:<slug>    getVideoProjects / getVideoProject
  *   albums:list / albums:slug:<slug>    getAlbums / getAlbum
- *   projects:list                     getFeaturedProjects
  *   site-settings                       getSiteSettings
  *
  * Detail fetches also carry their collection list tag. Partial updates,
@@ -43,7 +42,6 @@ export const REVALIDATE_COLLECTIONS = [
   "albums",
   "album_photos",
   "site_settings",
-  "external_projects",
 ] as const;
 
 /** Normalize the accepted webhook shapes into known tags. Untrusted input is
@@ -52,8 +50,6 @@ export function collectRevalidateTags(body: RevalidateRequest): string[] {
   if (!body || typeof body !== "object" || Array.isArray(body)) return [];
   const collection =
     typeof body.collection === "string" ? body.collection : null;
-
-  if (collection === "external_projects") return ["projects:list"];
 
   if (collection === "site_settings") {
     return ["site-settings"];

@@ -180,7 +180,10 @@ Successful login also writes `author_device=1` server-side with `Path=/`,
 This non-secret hint only reveals the client-rendered author icon; it grants no
 API permission. Expiry and ordinary logout retain it. “退出并忘记此设备” clears
 it, including after session expiry. New devices sign in through `/studio` or
-Cmd/Ctrl+Shift+L; `/studio?next=/albums` resumes a local path after login.
+Cmd/Ctrl+Alt+Shift+L; `/studio?next=/albums` resumes a local path after login.
+The keyboard handler uses physical `KeyL` because Option changes the character
+reported by some Mac layouts. Native Safari shortcut verification requires
+Safari's “Allow remote automation”; WebKit page tests do not verify its app menu.
 External and protocol-relative return URLs are ignored. The studio route is
 noindex and omitted from navigation/sitemap. Keep it reachable through Nginx.
 
@@ -188,12 +191,13 @@ Public PageTools no longer contain login/upload actions. The author icon lives
 beside Appearance (home: to its left), and the global file-drop layer is enabled
 only with a valid session. Page management affordances use the same device hint.
 
-Homepage project links use cached published `external_projects`, ordered by
-`sort_order,-id`, with three laboratory fallbacks. Add `external_projects` to the
-Directus create/update/delete webhook for `/internal/revalidate`; it invalidates
-`projects:list`. `CMS_RUNTIME_ONLY=true` continues to opt deployments into runtime
+The homepage has one fixed laboratory link to `/project`, so project edits never
+need to invalidate it. Failed CMS reads propagate to ISR, which retains the last
+successful homepage. A cold build requires a reachable CMS. `CMS_RUNTIME_ONLY=true` continues to opt deployments into runtime
 rendering intentionally; normal builds with positive cache revalidation retain a
-static homepage. The former home upload-link environment overrides are removed.
+static homepage. `npm run test:phase6-cache` verifies a production build, failed
+CMS revalidation retaining good data, and recovery after project invalidation.
+The former home upload-link environment overrides are removed.
 
 Whole-player fullscreen retains master controls. Standard native-video fullscreen
 is promoted to the whole player when the browser permits; Firefox's stacked

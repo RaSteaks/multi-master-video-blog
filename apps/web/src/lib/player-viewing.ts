@@ -12,6 +12,9 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
   const [idle, setIdle] = useState(false);
   const [playing, setPlaying] = useState(false);
   const autoImmersive = useRef(false);
+  // Manual exit wins for the rest of this landscape session, including resize/play.
+  const dismissedLandscape = useRef(false);
+  const keyboardFocus = useRef(false);
   const savedScroll = useRef<number | null>(null);
   const nativeFullscreen = useRef(false);
   const promotedFullscreen = useRef(false);
@@ -24,8 +27,8 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
     const shell = shellRef.current;
     if (!shell) return;
     autoImmersive.current = false;
-    if (document.fullscreenElement) { exitingFullscreen.current = true; await document.exitFullscreen(); return; }
-    if (immersiveRef.current) { setImmersive(false); return; }
+    if (document.fullscreenElement) { dismissedLandscape.current = true; exitingFullscreen.current = true; await document.exitFullscreen(); return; }
+    if (immersiveRef.current) { dismissedLandscape.current = true; setImmersive(false); return; }
     savedScroll.current = scrollY;
     if (shell.requestFullscreen) {
       try {
@@ -64,6 +67,8 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
       setFullscreen(full); setPlaying(running); setIdle(false);
       if (full && !expanded.current && savedScroll.current === null) savedScroll.current = scrollY;
       if (!full && expanded.current) {
+        // Native Esc also counts as an explicit exit while still landscape.
+        if (matchMedia("(orientation: landscape)").matches) dismissedLandscape.current = true;
         if (orientationLocked.current) { screen.orientation?.unlock(); orientationLocked.current = false; }
         if (savedScroll.current !== null) window.scrollTo({ top: savedScroll.current, behavior: "instant" });
         savedScroll.current = null;
@@ -74,8 +79,9 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
       else delete document.documentElement.dataset.watching;
       if (!running) return;
       timer = setTimeout(() => {
-        // Native video focus counts as control focus too; never fade a keyboard target.
-        if (document.activeElement !== shell && shell!.contains(document.activeElement)) return;
+        // Pointer playback also focuses <video>. Only keyboard interaction keeps
+        // focused controls visible; a lingering mouse focus must not pin the UI.
+        if (keyboardFocus.current && document.activeElement !== shell && shell!.contains(document.activeElement)) return;
         setIdle(true);
         if (!full) document.documentElement.dataset.watching = "idle";
       }, IDLE_MS);
@@ -83,13 +89,21 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
     function begin() { nativeFullscreen.current = true; synchronize(); }
     function end() { nativeFullscreen.current = false; synchronize(); }
     function orientation() {
-      if (!matchMedia("(pointer: coarse) and (orientation: landscape)").matches) {
+      if (matchMedia("(orientation: portrait)").matches) {
+        dismissedLandscape.current = false;
         if (autoImmersive.current) { autoImmersive.current = false; setImmersive(false); }
         return;
       }
-      if (!video!.paused && !document.fullscreenElement && !immersiveRef.current) {
+      // This behavior is phone-only. Landscape tablets should keep their page UI.
+      const phoneLandscape = matchMedia("(pointer: coarse) and (orientation: landscape) and (max-height: 500px)").matches;
+      if (phoneLandscape && !dismissedLandscape.current && !video!.paused && !document.fullscreenElement && !immersiveRef.current) {
         savedScroll.current = scrollY; autoImmersive.current = true; setImmersive(true);
       }
+    }
+    function pointerActivity() { keyboardFocus.current = false; synchronize(); }
+    function keyboardActivity(event: KeyboardEvent) {
+      if (!["Shift", "Control", "Alt", "Meta"].includes(event.key)) keyboardFocus.current = true;
+      synchronize();
     }
     function play() { synchronize(); orientation(); }
     function keydown(event: KeyboardEvent) {
@@ -98,7 +112,7 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
         || document.querySelector('dialog[open], .author-menu[data-open="true"]')
         || (target instanceof HTMLElement && (target.isContentEditable || target.closest("input,textarea,select")))) return;
       if (event.key.toLowerCase() === "f") { event.preventDefault(); void toggleFullscreen(); }
-      if (event.key === "Escape" && immersiveRef.current) { event.preventDefault(); autoImmersive.current = false; setImmersive(false); }
+      if (event.key === "Escape" && immersiveRef.current) { event.preventDefault(); dismissedLandscape.current = true; autoImmersive.current = false; setImmersive(false); }
       if (event.key === "Tab" && immersiveRef.current) {
         const controls = Array.from(shell!.querySelectorAll<HTMLElement>("button, a[href], video[controls], [tabindex='0']")).filter(element => element.getClientRects().length);
         const first = controls[0]; const last = controls[controls.length - 1];
@@ -128,7 +142,9 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
     for (const event of ["pause", "ended", "emptied"]) video.addEventListener(event, synchronize);
     video.addEventListener("play", play);
     video.addEventListener("webkitbeginfullscreen", begin); video.addEventListener("webkitendfullscreen", end);
-    for (const event of ["pointermove", "pointerdown", "keydown", "focusin", "focusout"]) document.addEventListener(event, synchronize);
+    for (const event of ["pointermove", "focusin", "focusout"]) document.addEventListener(event, synchronize);
+    document.addEventListener("pointerdown", pointerActivity, true);
+    document.addEventListener("keydown", keyboardActivity, true);
     document.addEventListener("fullscreenchange", fullscreenChanged);
     document.addEventListener("keydown", keydown);
     window.addEventListener("player-fullscreen", fullscreenRequest); window.addEventListener("resize", orientation);
@@ -138,7 +154,9 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
       for (const event of ["pause", "ended", "emptied"]) video.removeEventListener(event, synchronize);
       video.removeEventListener("play", play);
       video.removeEventListener("webkitbeginfullscreen", begin); video.removeEventListener("webkitendfullscreen", end);
-      for (const event of ["pointermove", "pointerdown", "keydown", "focusin", "focusout"]) document.removeEventListener(event, synchronize);
+      for (const event of ["pointermove", "focusin", "focusout"]) document.removeEventListener(event, synchronize);
+      document.removeEventListener("pointerdown", pointerActivity, true);
+      document.removeEventListener("keydown", keyboardActivity, true);
       document.removeEventListener("fullscreenchange", fullscreenChanged);
       document.removeEventListener("keydown", keydown);
       window.removeEventListener("player-fullscreen", fullscreenRequest); window.removeEventListener("resize", orientation);
@@ -148,7 +166,7 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
   useEffect(() => () => {
     delete document.documentElement.dataset.watching;
     if (orientationLocked.current) screen.orientation?.unlock();
-    if (savedScroll.current !== null) window.scrollTo({ top: savedScroll.current, behavior: "instant" });
+    // Navigation owns scroll restoration after unmount; never scroll the next page.
   }, []);
   return { immersive, fullscreen, idle, playing, toggleFullscreen };
 }

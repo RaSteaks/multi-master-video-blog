@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { liquidReadingScale, playbackLinkTime } from "./viewing";
 import { authorReturnPath } from "./author-navigation";
-import { collectRevalidateTags } from "./revalidate-tags";
 
 describe("viewing and author navigation boundaries", () => {
   it("slows only article/video details", () => {
@@ -13,10 +12,8 @@ describe("viewing and author navigation boundaries", () => {
     for (const time of [null, "", "-2", "Infinity", "NaN", "1:30", "1e3", "9".repeat(400)]) expect(playbackLinkTime(time)).toBe(0);
   });
   it("allows local return URLs without accepting URL-normalized external destinations", () => {
+    expect(authorReturnPath("/posts/../albums?dialog=upload#photos")).toBe("/albums?dialog=upload#photos");
     expect(authorReturnPath("/albums?dialog=upload#photos")).toBe("/albums?dialog=upload#photos");
-    for (const next of [undefined, ["/albums"], "https://example.com", "//example.com", "/\\example.com", "/\n/example.com"]) expect(authorReturnPath(next)).toBe("/");
-  });
-  it("invalidates featured projects for publication, order and deletion webhooks", () => {
-    for (const event of ["items.create", "items.update", "items.delete"]) expect(collectRevalidateTags({ collection: "external_projects", event, key: 7 })).toEqual(["projects:list"]);
+    for (const next of [undefined, ["/albums"], "https://example.com", "//example.com", "/\\example.com", "/\n/example.com", "/.//evil.com", "/%2e//evil.com", "/a/..//evil.com"]) expect(authorReturnPath(next)).toBe("/");
   });
 });
