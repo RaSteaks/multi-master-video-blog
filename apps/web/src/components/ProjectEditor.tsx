@@ -179,7 +179,7 @@ export function ProjectEditor({ project, onClose, onSaved }: {
           <button type="button" disabled={busy} onClick={requestClose}>取消</button>
           <span />
           {!project?.published ? <button type="submit" value="draft" disabled={busy || !session.author}>保存草稿</button> : null}
-          <button className={styles.primary} type="submit" value="publish" disabled={busy || !session.author} aria-busy={busy}>{busy ? "正在保存…" : project?.published ? "保存更改" : "发布到项目页"}</button>
+          <button className={styles.primary} type="submit" value="publish" disabled={busy || !session.author} aria-busy={busy}>{busy ? "正在保存…" : project?.published ? "保存更改" : "发布到实验室"}</button>
         </footer>
       </form>
     </SiteDialog>

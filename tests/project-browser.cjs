@@ -73,8 +73,8 @@ async function main() {
 
     await page.getByRole("button", { name: "管理网站", exact: true }).click();
     await page.getByRole("button", { name: "管理黑洞演示", exact: true }).click();
-    await page.getByRole("button", { name: "发布到项目页", exact: true }).click();
-    await page.getByText("网站已发布到项目页。", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "发布到实验室", exact: true }).click();
+    await page.getByText("网站已发布到实验室。", { exact: true }).waitFor();
     await page.waitForLoadState("networkidle");
     // The preceding anonymous draft probe deliberately populated the existing
     // two-second negative asset cache; allow that denial to expire on publication.
@@ -110,7 +110,7 @@ async function main() {
     const fullFrame = await viewer.locator("iframe").elementHandle().then(handle => handle.contentFrame());
     await fullFrame.getByRole("link", { name: "内部页面" }).click();
     await page.screenshot({ path: path.join(fixture.output, "viewer-desktop.png") });
-    await viewer.getByRole("button", { name: "← 返回项目", exact: true }).click();
+    await viewer.getByRole("button", { name: "← 返回实验室", exact: true }).click();
     await viewer.waitFor({ state: "hidden" });
     assert.equal(await page.evaluate(() => scrollY), scroll);
     assert.equal(await card.evaluate(element => document.activeElement === element), true);
@@ -120,7 +120,7 @@ async function main() {
     await card.hover();
     await page.waitForFunction(() => !document.querySelector('ol[aria-label="网站作品"] iframe'));
     await card.click(); await viewer.waitFor();
-    await viewer.getByRole("button", { name: "← 返回项目", exact: true }).click();
+    await viewer.getByRole("button", { name: "← 返回实验室", exact: true }).click();
     await page.emulateMedia({ reducedMotion: "no-preference" });
     pass("reduced motion suppresses automatic previews without disabling full viewing");
 
@@ -158,7 +158,7 @@ async function main() {
     await page.getByRole("button", { name: "查看禁止嵌入的作品", exact: true }).click();
     const denied = page.getByRole("dialog", { name: "禁止嵌入的作品", exact: true });
     assert.equal(await denied.getByRole("link", { name: "独立打开 ↗" }).getAttribute("href"), "http://127.0.0.1:18098/blocked");
-    await denied.getByRole("button", { name: "← 返回项目", exact: true }).click();
+    await denied.getByRole("button", { name: "← 返回实验室", exact: true }).click();
     pass("a frame-denied website cannot trap the reader or hide the independent-open fallback");
 
     await context.request.post(`${fixture.url}/api/external-projects`, { headers, data: {
@@ -170,7 +170,7 @@ async function main() {
     const lowerScroll = await page.evaluate(() => scrollY);
     assert.ok(lowerScroll > 0, "Exercise a genuinely scrolled list, not only its first row.");
     await lowerCard.click();
-    await page.getByRole("dialog", { name: "下方展品", exact: true }).getByRole("button", { name: "← 返回项目", exact: true }).click();
+    await page.getByRole("dialog", { name: "下方展品", exact: true }).getByRole("button", { name: "← 返回实验室", exact: true }).click();
     assert.equal(await page.evaluate(() => scrollY), lowerScroll);
     assert.equal(await lowerCard.evaluate(element => document.activeElement === element), true);
     pass("return preserves a nonzero list scroll position and the originating lower-row card focus");
@@ -208,7 +208,7 @@ async function main() {
     const mobileBox = await mobileViewer.boundingBox();
     assert.equal(Math.round(mobileBox.width), 390); assert.equal(Math.round(mobileBox.height), 844);
     await phone.screenshot({ path: path.join(fixture.output, "viewer-mobile.png") });
-    await mobileViewer.getByRole("button", { name: "← 返回项目", exact: true }).tap();
+    await mobileViewer.getByRole("button", { name: "← 返回实验室", exact: true }).tap();
     await mobileViewer.waitFor({ state: "hidden" }); await mobile.close();
     pass("mobile automatic preview, one-column layout, no horizontal overflow and reachable full-screen return");
 

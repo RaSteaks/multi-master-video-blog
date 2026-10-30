@@ -123,7 +123,7 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     try {
       const updated = readSavedProject(await projectRequest(`/${project.id}`, { method: "PATCH", body: JSON.stringify({ published: !project.published }) }));
       setList(current => ({ ...current, projects: current.projects.map(item => item.id === updated.id ? updated : item) }));
-      setNotice(updated.published ? "网站已发布到项目页。" : "已取消发布，网站保留为草稿。");
+      setNotice(updated.published ? "网站已发布到实验室。" : "已取消发布，网站保留为草稿。");
       router.refresh();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败，请重试。"); }
     finally { locked.current = false; setMutation(null); }
@@ -137,7 +137,7 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     {management ? <p className={styles.note}>草稿仅作者可见。通过页头工具中的“添加网站”创建，编辑网站可调整排序。</p> : null}
     <p className={styles.notice} role="status">{notice}</p>
     {error || list.unavailable ? <div className={styles.failure} role="alert">
-      <p>{error || "项目暂时无法载入，请稍后重试。"}</p>
+      <p>{error || "实验室暂时无法载入，请稍后重试。"}</p>
       {session.author && list.unavailable ? <p>请确认媒体 API 正常运行，并已安装网站项目的 CMS 数据模型。</p> : null}
       <button type="button" onClick={() => { setManaged(false); router.refresh(); }}>重新加载</button>
     </div> : null}
@@ -162,14 +162,14 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
           <span>{project.published ? "已发布" : "草稿"}</span>
           {mutation === project.id ? <span role="status">正在保存…</span> : <ActionMenu label={`管理${project.title}`} trigger="管理" groups={[{ items: [
             { label: "编辑网站", icon: <span aria-hidden="true">✎</span>, onSelect: () => { stopPreview(); setEditor(project); } },
-            { label: project.published ? "取消发布" : "发布到项目页", icon: <span aria-hidden="true">◇</span>, onSelect: () => void publication(project) },
+            { label: project.published ? "取消发布" : "发布到实验室", icon: <span aria-hidden="true">◇</span>, onSelect: () => void publication(project) },
           ] }]} />}
         </div> : null}
       </li>)}
     </ol>
     {list.hasMore ? <button type="button" className={styles.more} onClick={() => void more()} disabled={busy} aria-busy={busy}>{busy ? "正在加载…" : "加载更多"}</button> : busy ? <p role="status" className={styles.note}>正在加载网站…</p> : null}
     {editor ? <ProjectEditor project={editor === "create" ? null : editor} onClose={closeEditor} onSaved={saved => {
-      setNotice(saved.published ? "网站已发布到项目页。" : "草稿已保存，可在管理网站中继续编辑。");
+      setNotice(saved.published ? "网站已发布到实验室。" : "草稿已保存，可在管理网站中继续编辑。");
       closeEditor();
     }} /> : null}
     {viewing ? <ProjectViewer project={viewing} onClose={() => setViewing(null)} /> : null}

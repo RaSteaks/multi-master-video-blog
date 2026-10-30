@@ -77,7 +77,7 @@ export default async function RootLayout({
         </a>
 
         <header className="site-header" role="banner">
-          <Link className="brand" href="/" aria-label={`${siteConfig.title} - 首页`}>
+          <Link className="brand" href="/" prefetch aria-label={`${siteConfig.title} - 首页`}>
             {siteConfig.title}
           </Link>
           <div className="site-header-actions">

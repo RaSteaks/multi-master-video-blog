@@ -48,7 +48,7 @@ on every asset request; unpublishing revokes public access. Authenticated draft
 covers use the existing blob-preview component. An uncertain CMS mutation never
 deletes a potentially referenced upload. Existing/replaced originals are retained.
 
-Create offers **保存草稿** and **发布到项目页**; edits preserve current publication
+Create offers **保存草稿** and **发布到实验室**; edits preserve current publication
 unless the author explicitly changes it. Failure preserves form values; dismissing
 unsaved work requires an application-owned confirmation. Save closes back to the
 list and clears `dialog` without racing a second route refresh.
@@ -62,7 +62,7 @@ and scaled into a 16:10 picture. Only one exhibit runs; leaving/unloading a prev
 unmounts its frame rather than pretending a hidden frame is paused.
 
 Clicking an iframe-mode card opens a native modal filling the browser content
-viewport. The blog owns the fixed **返回项目**, title and **独立打开** toolbar. The
+viewport. The blog owns the fixed **返回实验室**, title and **独立打开** toolbar. The
 frame owns its content scrolling; the underlying list stays mounted with body
 scroll locked. Closing destroys the frame and restores list position/focus, even
 after internal iframe navigation. The Page Tools menu yields to this viewer.

@@ -82,6 +82,10 @@ const TRANSITION_RECOVERY_TIMEOUT_MS = 15_000;
 // transition and falls back to the progress bar, skeleton and veil. Snapshot
 // capture and main-thread work add to the visible freeze on top of it.
 const VT_DECISION_MS = 180;
+// The home page is the way back from everywhere and has no skeleton to show, so
+// it may hold the old page a little longer for the wipe to play. Production
+// normally has it prefetched and cached, and does not use this margin.
+const HOME_DECISION_MS = 450;
 
 export function PageTransition({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "/";
@@ -272,6 +276,10 @@ export function PageTransition({ children }: { children: ReactNode }) {
         fromPathname,
         url.pathname,
       );
+      // The home page has no header, so across that boundary the header wipes
+      // with the page instead of staying fixed above it.
+      const touchesHome = fromPathname === "/" || url.pathname === "/";
+      document.documentElement.toggleAttribute("data-vt-home", touchesHome);
       const transition = document.startViewTransition(async () => {
         router.push(`${url.pathname}${url.search}${url.hash}`);
         const readiness = await waitForRouteReady(
@@ -279,6 +287,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
           pathnameRef,
           sharedKinds.has("cover"),
           isCurrent,
+          url.pathname === "/" ? HOME_DECISION_MS : VT_DECISION_MS,
         );
         // Superseded: the newer navigation owns all shared state.
         if (!isCurrent()) return;
@@ -286,7 +295,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
           // The divider exists only in the new state, so it enters with the
           // wipe and leaves when the transition ends. Its top is set on the
           // root, so the transition pseudo-elements can read it too.
-          document.documentElement.style.setProperty("--wipe-top", `${contentTop()}px`);
+          document.documentElement.style.setProperty("--wipe-top", `${touchesHome ? 0 : contentTop()}px`);
           document.body.append(wipeLine());
         }
         if (readiness === "shared") {
@@ -313,6 +322,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
         clearSharedElementNames();
         wipeLine().remove();
         delete document.documentElement.dataset.vtDirection;
+        document.documentElement.removeAttribute("data-vt-home");
         document.documentElement.style.removeProperty("--wipe-top");
       };
       transition.finished.then(done, done);
@@ -385,7 +395,7 @@ function clearSharedElementNames() {
   });
 }
 
-// Waits up to VT_DECISION_MS for the new route's real content (and, when the
+// Waits up to budgetMs for the new route's real content (and, when the
 // navigation morphs a cover, its decoded image) and reports what the
 // transition should do (see routeReadiness). A superseded navigation stops
 // waiting at once.
@@ -394,6 +404,7 @@ function waitForRouteReady(
   pathnameRef: { current: string },
   morphsCover: boolean,
   isCurrent: () => boolean,
+  budgetMs: number,
 ) {
   return new Promise<RouteReadiness>((resolve) => {
     const main = document.getElementById("main-content");
@@ -453,7 +464,7 @@ function waitForRouteReady(
         loading,
         coverReady,
         // Set only once content is ready, so it can only yield "content".
-        expired: coverUnavailable || performance.now() - startedAt >= VT_DECISION_MS,
+        expired: coverUnavailable || performance.now() - startedAt >= budgetMs,
       });
       if (readiness) finish(readiness);
     }
@@ -466,7 +477,7 @@ function waitForRouteReady(
     const tick = () => {
       check();
       if (settled) return;
-      const remaining = VT_DECISION_MS - (performance.now() - startedAt);
+      const remaining = budgetMs - (performance.now() - startedAt);
       timer = window.setTimeout(tick, Math.max(0, Math.min(50, remaining)));
     };
     tick();

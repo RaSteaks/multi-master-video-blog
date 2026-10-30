@@ -15,7 +15,7 @@ export function ProjectViewer({ project, onClose }: { project: WebsiteProject; o
     const timer = setTimeout(() => setSlow(true), 10_000);
     return () => clearTimeout(timer);
   }, [attempt]);
-  return <SiteDialog title={project.title} onRequestClose={onClose} closeLabel="← 返回项目"
+  return <SiteDialog title={project.title} onRequestClose={onClose} closeLabel="← 返回实验室"
     className={`project-viewer ${styles.viewer}`}
     actions={<a className="album-action-button" href={project.url} target="_blank" rel="noopener noreferrer">独立打开 ↗</a>}>
     <div className={styles.viewerBody}>

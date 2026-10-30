@@ -504,6 +504,11 @@ html.route-transition-pending body::after {
   view-transition-name: site-header;
 }
 
+/* Home has no header: there it belongs to the page and wipes with it. */
+html[data-vt-home] .site-header {
+  view-transition-name: none;
+}
+
 /* The header persists across routes: show it as-is (live) instead of
    cross-fading it with itself, so the nav pill slide stays visible. */
 ::view-transition-group(site-header),
