@@ -267,7 +267,7 @@ test("replacing or removing a cover preserves its authorized reuse in article Ma
 
 // Run the component's actual effects with controlled visibility/network completion.
 // This keeps regression tests independent of a browser, CMS, or new DOM dependencies.
-function assetImageFixture({ observerAvailable = true } = {}) {
+function assetImageFixture({ observerAvailable = true, author = { author: false } } = {}) {
   const hooks = [], pendingEffects = [], observers = [], requests = [], revoked = [];
   const node = {};
   let cursor = 0, dirty = false, props, view, nextBlob = 0;
@@ -305,6 +305,7 @@ function assetImageFixture({ observerAvailable = true } = {}) {
   }
   const { AuthenticatedAssetImage } = loadTs(path.join(root, "apps/web/src/components/AuthenticatedAssetImage.tsx"), {
     react, "react/jsx-runtime": { jsx: (type, props) => ({ type, props }) },
+    "@/lib/author-session": { useAuthorSession: () => author },
     "@/lib/asset-preview": {
       isAssetPreviewUrl: src => typeof src === "string" && src.startsWith("/api/assets/"),
       fetchAssetPreview: (src, token, signal) => new Promise((resolve, reject) => requests.push({ src, token, signal, resolve, reject })),
@@ -557,12 +558,12 @@ test("health requests share a short probe, cache failures and refresh once after
 });
 
 test("draft image transport never sends a token to external or rewritten URLs", async () => {
-  const ts = require("typescript"), module = { exports: {} }, requests = [];
-  const source = fs.readFileSync(path.join(root, "apps/web/src/lib/asset-preview.ts"), "utf8");
-  const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
-  vm.runInNewContext(code, { module, exports: module.exports,
-    fetch: async (url, options) => { requests.push({ url, options }); return new Response("image"); } });
-  const { fetchAssetPreview } = module.exports, signal = new AbortController().signal;
+  const requests = [];
+  const author = loadTs(path.join(root, "apps/web/src/lib/author-session.ts"));
+  const { fetchAssetPreview } = loadTs(path.join(root, "apps/web/src/lib/asset-preview.ts"), { "./author-session": author }, {
+    fetch: async (url, options) => { requests.push({ url, options }); return new Response("image"); },
+  });
+  const signal = new AbortController().signal;
   for (const url of ["https://attacker.invalid/api/assets/a", "//attacker.invalid/a", "/api/assets/../users", "/api/assets/a?redirect=https://attacker.invalid"]) {
     await assert.rejects(fetchAssetPreview(url, "secret", signal));
   }
@@ -573,10 +574,23 @@ test("draft image transport never sends a token to external or rewritten URLs", 
   assert.equal(requests[0].options.cache, "no-store");
 });
 
+test("session-backed managed images keep the protected blob path with an empty manual token", async () => {
+  const image = assetImageFixture({ author: { author: true, csrf: "session-nonce", expiresAt: Date.now() + 1000, article: false } });
+  const view = image.render({ token: "", src: "/api/assets/draft", srcSet: "/api/assets/draft 640w", loading: "eager" });
+  assert.equal(view.props.srcSet, undefined);
+  assert.equal(image.requests.length, 1);
+  assert.equal(image.requests[0].token, "");
+  image.requests[0].resolve({});
+  assert.equal((await image.flush()).props.src, "blob:fixture-1");
+  image.unmount();
+});
+
 test("explicit site preview preserves draft images without making unrelated CMS files public", async () => {
   const env = { DIRECTUS_SHOW_DRAFTS: "false" };
   const assetHelpers = loadTs(path.join(root, "apps/web/src/lib/asset-url.ts"));
-  const directus = loadTs(path.join(root, "apps/web/src/lib/directus.ts"), { "./asset-url": assetHelpers }, { process: { env } });
+  const authorSession = loadTs(path.join(root, "apps/web/src/lib/author-session.ts"));
+  const projectHelpers = loadTs(path.join(root, "apps/web/src/lib/external-projects.ts"), { "./author-session": authorSession });
+  const directus = loadTs(path.join(root, "apps/web/src/lib/directus.ts"), { "./asset-url": assetHelpers, "./external-projects": projectHelpers }, { process: { env } });
   assert.equal(directus.assetUrl("cover"), "/api/assets/cover");
   env.DIRECTUS_SHOW_DRAFTS = "true";
   assert.equal(directus.assetUrl("cover", "content-card"), "/internal/preview/assets/cover?key=content-card");

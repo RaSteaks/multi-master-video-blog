@@ -39,7 +39,8 @@ const SECTION_ORDER: Record<string, number> = {
   posts: 2,
   write: 2,
   albums: 3,
-  about: 4,
+  project: 4,
+  about: 5,
 };
 
 /**

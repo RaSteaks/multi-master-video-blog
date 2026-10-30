@@ -66,7 +66,10 @@ async function canReadAsset(fileId, access, request, publicAssetIds = new Set(),
     },
     renditions: async () => (await rows("album_photo_renditions", { file: eq(fileId), ...(access.media ? {} : {
       photo_id: { published: eq(true), album_id: { published: eq(true) } }
-    }) })).length > 0
+    }) })).length > 0,
+    // Keep existing media discovery costs unchanged; ownership hints promote
+    // website covers on subsequent checks without caching a publication grant.
+    projects: async () => (await rows("external_projects", { ...publicOnly(access.media), cover_image: eq(fileId) })).length > 0
   };
   const order = [...new Set([hints.preferred, ...Object.keys(checks)])].filter(key => checks[key]);
   for (const owner of order) if (await checks[owner]()) { hints.onMatch?.(owner, articleOwner); return true; }

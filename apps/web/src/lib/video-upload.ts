@@ -1,3 +1,5 @@
+import { AuthorSessionError, authorHeaders, observeAuthorResponse } from "./author-session";
+
 export type UploadFile = {
   field: string; name: string; size: number; type: string; fingerprint: string; offset: number;
 };
@@ -43,15 +45,17 @@ export async function uploadRequest<T>(id: string, token: string, signal: AbortS
   let response: Response;
   try {
     response = await fetch(`${base}/${id}${suffix}`, {
-      method, headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+      method, headers: { ...authorHeaders(token), ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined, cache: "no-store",
       signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
     });
   } catch (error) {
     signal.throwIfAborted();
+    if (error instanceof AuthorSessionError) throw new VideoUploadError(error.message, error.status);
     throw new VideoUploadError(error instanceof Error ? error.message : "Network error");
   }
   const payload = await response.json().catch(() => null);
+  observeAuthorResponse(response.status, token);
   if (!response.ok) throw new VideoUploadError(payload?.error || `HTTP ${response.status}`, response.status,
     Math.min(60_000, Math.max(0, Number(response.headers.get("retry-after")) || 0) * 1000));
   if (!payload) throw new VideoUploadError("Invalid upload response", 502);
@@ -123,7 +127,7 @@ function sendChunk(id: string, index: number, offset: number, chunk: Blob, check
       if (error) reject(error); else resolve();
     };
     xhr.open("PATCH", `${base}/${id}/files/${index}`);
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    for (const [name, value] of Object.entries(authorHeaders(token))) xhr.setRequestHeader(name, value);
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.setRequestHeader("Upload-Offset", String(offset));
     xhr.setRequestHeader("Upload-Checksum", checksum);
@@ -131,6 +135,7 @@ function sendChunk(id: string, index: number, offset: number, chunk: Blob, check
     xhr.timeout = 300_000;
     xhr.upload.onprogress = event => onBytes(event.loaded);
     xhr.onload = () => {
+      observeAuthorResponse(xhr.status, token);
       let payload;
       try { payload = JSON.parse(xhr.responseText); } catch { /* Report invalid responses as retryable. */ }
       if (xhr.status >= 200 && xhr.status < 300 && payload?.offset === offset + chunk.size) finish();

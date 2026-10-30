@@ -28,6 +28,8 @@ describe("route readiness", () => {
 
 describe("wipe direction", () => {
   it("follows the nav order between sections", () => {
+    expect(wipeDirection("/albums", "/project")).toBe("forward");
+    expect(wipeDirection("/about", "/project")).toBe("back");
     expect(wipeDirection("/videos", "/posts")).toBe("forward");
     expect(wipeDirection("/about", "/albums")).toBe("back");
     expect(wipeDirection("/", "/about")).toBe("forward");

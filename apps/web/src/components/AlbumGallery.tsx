@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
+  Suspense,
   useCallback,
   useEffect,
   useId,
@@ -20,6 +21,9 @@ import {
   type ManagedAlbum,
   type ManagedPhoto,
 } from "@/lib/album-management";
+import { ActionMenu } from "@/components/ActionMenu";
+import { canAuthorize, useAuthorSession } from "@/lib/author-session";
+import { AuthorCredential } from "@/components/AuthorCredential";
 import { AlbumPhotoUploader, UploadIcon } from "@/components/AlbumPhotoUploader";
 import { albumThumbSrcSet, assetUrl } from "@/lib/asset-url";
 import {
@@ -109,6 +113,7 @@ export function AlbumGallery({
   onManagedAlbumChange?: (album: ManagedAlbum) => void;
 }) {
   const router = useRouter();
+  const author = useAuthorSession();
   const [adminOpen, setAdminOpen] = useState(Boolean(initialManagedAlbum));
   const [token, setToken] = useState(initialToken);
   const [managedAlbum, setManagedAlbum] = useState<ManagedAlbum | null>(
@@ -164,7 +169,7 @@ export function AlbumGallery({
   }, [uploadOpen, Boolean(managedAlbum)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadAdminAlbum() {
-    if (!token.trim()) {
+    if (!canAuthorize(token)) {
       setAdminError("请输入管理员令牌。");
       return null;
     }
@@ -219,11 +224,11 @@ export function AlbumGallery({
     }
   }
 
-  /** Uploading needs the admin token, so this opens the management panel (login first) and then the uploader. */
-  function openUpload() {
+  /** Open verification before the uploader; either a session or manual token may authorize it. */
+  const openUpload = useCallback(() => {
     setAdminOpen(true);
     setUploadOpen(true);
-  }
+  }, []);
 
   function toggleAdmin() {
     if (adminOpen) {
@@ -341,6 +346,7 @@ export function AlbumGallery({
       }}
       className={`${embedded ? "album-manager-workspace " : "shell page-stack "}album-detail`}
     >
+      {!embedded ? <Suspense fallback={null}><AlbumUploadRequest onRequest={openUpload} /></Suspense> : null}
       <header className="album-detail-header">
         <div>
           {!embedded ? (
@@ -376,28 +382,42 @@ export function AlbumGallery({
             </dl>
           ) : null}
           <div className="album-detail-actions">
-            <button
-              className="album-action-button"
-              type="button"
-              aria-expanded={uploadOpen}
-              aria-controls="album-upload-panel"
-              onClick={openUpload}
-            >
-              <UploadIcon />
-              上传照片
-            </button>
-          {!embedded ? (
-            <button
-              className="album-action-button"
-              type="button"
-              aria-expanded={adminOpen}
-              aria-controls="album-admin-panel"
-              onClick={toggleAdmin}
-            >
-              <SlidersIcon />
-              {adminOpen ? "退出管理" : "管理模式"}
-            </button>
-          ) : null}
+            {embedded ? (
+              <button
+                className="album-action-button"
+                type="button"
+                aria-expanded={uploadOpen}
+                aria-controls="album-upload-panel"
+                onClick={openUpload}
+              >
+                <UploadIcon />
+                上传照片
+              </button>
+            ) : (
+              <ActionMenu
+                label="管理此相簿"
+                triggerClassName="album-action-button"
+                trigger={
+                  <>
+                    <SlidersIcon />
+                    {adminOpen ? "管理中" : "管理"}
+                    <ChevronIcon />
+                  </>
+                }
+                groups={[
+                  {
+                    items: [
+                      { label: "上传照片", icon: <UploadIcon />, onSelect: openUpload },
+                      {
+                        label: adminOpen ? "退出管理模式" : "进入管理模式",
+                        icon: <SlidersIcon />,
+                        onSelect: toggleAdmin,
+                      },
+                    ],
+                  },
+                ]}
+              />
+            )}
           </div>
         </div>
       </header>
@@ -421,7 +441,7 @@ export function AlbumGallery({
                 <h2>载入草稿与编辑工具</h2>
                 <p>令牌只保存在当前组件内，不写入持久存储。</p>
               </div>
-              <label className="album-field">
+              <AuthorCredential token={token}><label className="album-field">
                 <span>管理员令牌</span>
                 <input
                   type="password"
@@ -429,9 +449,9 @@ export function AlbumGallery({
                   onChange={(event) => setToken(event.target.value)}
                   autoComplete="new-password"
                   autoFocus
-                  required
+                  required={!author.author}
                 />
-              </label>
+              </label></AuthorCredential>
               <button
                 className="album-action-button album-action-button--primary"
                 type="submit"
@@ -614,7 +634,7 @@ export function AlbumGallery({
           </span>
           <div>
             <h2>这个相簿还没有公开照片</h2>
-            <p>返回相簿页，从标题区的“上传照片”加入第一批照片。</p>
+            <p>打开标题区的“管理”，选择“上传照片”加入第一批照片。</p>
           </div>
         </section>
       )}
@@ -717,6 +737,20 @@ export function AlbumGallery({
       ) : null}
     </RootElement>
   );
+}
+
+// Isolate query-string subscription from the server-rendered public gallery.
+function AlbumUploadRequest({ onRequest }: { onRequest: () => void }) {
+  const search = useSearchParams();
+  const router = useRouter();
+  useEffect(() => {
+    if (search.get("action") !== "upload") return;
+    onRequest();
+    const url = new URL(location.href);
+    url.searchParams.delete("action");
+    router.replace(`${url.pathname}${url.search}${url.hash}`, { scroll: false });
+  }, [search, router, onRequest]);
+  return null;
 }
 
 export function ManagedAlbumGallery({
@@ -1497,7 +1531,7 @@ function PhotoLightbox({
   // Neighbour preloading: public assets only, after the current photo is on screen.
   useEffect(() => {
     // Protected (management) files must keep their authenticated fetch; no speculative copies.
-    if (token || !targetShown) return;
+    if (token !== undefined || !targetShown) return;
     const connection = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } })
       .connection;
     if (!canSpeculativelyPreload(connection)) return;
@@ -2048,6 +2082,25 @@ function managedAlbumToGallery(album: ManagedAlbum): GalleryAlbum {
     published: album.published,
     photos: album.photos.map(managedPhotoToGallery),
   };
+}
+
+function ChevronIcon() {
+  return (
+    <svg
+      className="action-menu-chevron"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
 }
 
 function SlidersIcon() {

@@ -340,6 +340,15 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
     },
     snapshot: () => ({ sessions: sessions.size, active: draining,
       queued: [...sessions.values()].filter(s => s.state === "queued").length }),
+    taskSummaries: () => [...sessions.values()].filter(session => session.expiresAt > now()
+      || ["queued", "processing"].includes(session.state)).reverse().map(session => ({
+      id: `video:${session.id}`, kind: "video", label: session.fields.title || "视频上传",
+      state: session.state,
+      // Encoder phases have no measured percentage; never turn upload completion
+      // into a fabricated encoding percentage.
+      progress: session.state === "receiving" ? Math.round(session.files.reduce((sum, file) => sum + file.offset, 0) / session.total * 100)
+        : session.state === "completed" ? 100 : null,
+    })),
     async close() {
       closed = true; clearInterval(timer);
       while (draining) await new Promise(resolve => setTimeout(resolve, 20));

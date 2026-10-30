@@ -1,4 +1,7 @@
 "use client";
+import { useDroppedFiles } from "@/lib/dropped-files";
+import { authorHeaders, canAuthorize, observeAuthorResponse, useAuthorSession } from "@/lib/author-session";
+import { AuthorCredential } from "@/components/AuthorCredential";
 
 import {
   useDeferredValue,
@@ -120,6 +123,7 @@ export function FilmScanImport({
   onCompleted: (message: string) => void;
 }) {
   const [albumId, setAlbumId] = useState(String(albums[0]?.id ?? ""));
+  const author = useAuthorSession();
   const [scanner, setScanner] = useState("hasselblad-x5");
   const [frameFormat, setFrameFormat] = useState("135-full");
   const [filmType, setFilmType] = useState("color-negative");
@@ -128,6 +132,7 @@ export function FilmScanImport({
   const [process, setProcess] = useState("c41");
   const [pushPull, setPushPull] = useState("0");
   const [files, setFiles] = useState<File[]>([]);
+  useDroppedFiles("film", setFiles);
   const [job, setJob] = useState<FilmJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -176,12 +181,12 @@ export function FilmScanImport({
     };
     timer = setTimeout(poll, 1400);
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [job?.id, job?.albumId, job?.status, token]);
+  }, [job?.id, job?.albumId, job?.status, token, author.author ? author.csrf : null]);
 
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
-    if (!token.trim()) {
+    if (!canAuthorize(token)) {
       setError("请输入管理员令牌。");
       return;
     }
@@ -421,16 +426,16 @@ export function FilmScanImport({
           <span><b>03</b> 暗房审核</span>
         </div>
       </div>
-      <label className="album-field">
+      <AuthorCredential token={token}><label className="album-field">
         <span>管理员令牌</span>
         <input
           type="password"
           value={token}
           onChange={(event) => setToken(event.target.value)}
           autoComplete="new-password"
-          required
+          required={!author.author}
         />
-      </label>
+      </label></AuthorCredential>
       <div className="film-scan-fields">
         <SelectField label="目标相簿" value={albumId} onChange={setAlbumId}>
           {albums.map((album) => (
@@ -507,13 +512,14 @@ export function FilmScanImport({
           multiple
           accept=".fff,.3f,.tif,.tiff,.jpg,.jpeg,image/tiff,image/jpeg"
           onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
-          required
+          required={!files.length}
         />
         <span>选择 FFF / 3F / TIFF / JPEG 原档</span>
         <small>
           单原档 2 GiB，单任务 4 GiB；支持整条扫描与已逐帧保存的单张扫描。
         </small>
         {files.length ? <strong>{files.length} 个原档 · {formatBytes(files.reduce((sum, file) => sum + file.size, 0))}</strong> : null}
+        {files.length ? <small>{files.map(file => file.name).join("、")}</small> : null}
       </label>
       {busy ? <progress max={100} value={progress} /> : null}
       {error ? <p className="album-form-feedback is-error" role="alert">{error}</p> : null}
@@ -540,7 +546,9 @@ function FilmStockCombobox({
   onSelect: (preset: FilmStockPreset) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const observedTokenRef = useRef(token.trim());
+  const author = useAuthorSession();
+  const credentialKey = token.trim() || (author.author ? author.csrf : "");
+  const observedTokenRef = useRef(credentialKey);
   const loadedTokenRef = useRef("");
   const loadingTokenRef = useRef("");
   const requestIdRef = useRef(0);
@@ -563,7 +571,7 @@ function FilmStockCombobox({
   }, [deferredQuery, presets]);
 
   useEffect(() => {
-    const currentToken = token.trim();
+    const currentToken = credentialKey;
     if (observedTokenRef.current === currentToken) return;
     observedTokenRef.current = currentToken;
     requestIdRef.current += 1;
@@ -572,7 +580,7 @@ function FilmStockCombobox({
     setPresets([]);
     setLoading(false);
     setLoadError("");
-  }, [token]);
+  }, [credentialKey]);
 
   useEffect(() => {
     if (!open) return;
@@ -595,7 +603,7 @@ function FilmStockCombobox({
   }, [visiblePresets]);
 
   async function loadPresets() {
-    const currentToken = token.trim();
+    const currentToken = credentialKey;
     if (!currentToken) {
       setLoadError("输入管理员令牌后可搜索服务器预设。");
       return;
@@ -613,7 +621,7 @@ function FilmStockCombobox({
       const response = await albumApiRequest<{
         status: string;
         presets: FilmStockPreset[];
-      }>("/api/albums/film-stock-presets", currentToken);
+      }>("/api/albums/film-stock-presets", token);
       if (requestIdRef.current !== requestId) return;
       setPresets(response.presets);
       loadedTokenRef.current = currentToken;
@@ -1265,6 +1273,7 @@ function useAuthenticatedImage(
   token: string,
   revision = 0,
 ) {
+  const author = useAuthorSession();
   const [image, setImage] = useState<string | null>(null);
   useEffect(() => {
     if (!url) {
@@ -1273,14 +1282,17 @@ function useAuthenticatedImage(
     }
     let objectUrl: string | null = null;
     let canceled = false;
-    fetch(`${url}${url.includes("?") ? "&" : "?"}v=${revision}`, {
-      headers: { Authorization: `Bearer ${token.trim()}` },
-      cache: "no-store",
-    })
-      .then((response) => {
-        if (!response.ok) throw new Error("预览载入失败");
-        return response.blob();
-      })
+    const controller = new AbortController();
+    const previewUrl = `${url}${url.includes("?") ? "&" : "?"}v=${revision}`;
+    async function load() {
+      const response = await fetch(previewUrl, {
+        headers: authorHeaders(token), cache: "no-store", signal: controller.signal,
+      });
+      observeAuthorResponse(response.status, token);
+      if (!response.ok) throw new Error("预览载入失败");
+      return response.blob();
+    }
+    void load()
       .then((blob) => {
         if (canceled) return;
         objectUrl = URL.createObjectURL(blob);
@@ -1291,9 +1303,10 @@ function useAuthenticatedImage(
       });
     return () => {
       canceled = true;
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [revision, token, url]);
+  }, [revision, token, url, author.author ? author.csrf : null]);
   return image;
 }
 

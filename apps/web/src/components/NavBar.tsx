@@ -42,6 +42,15 @@ const NAV_LINKS = [
     ),
   },
   {
+    href: "/project",
+    activeHrefs: ["/project"],
+    label: "项目",
+    prefetch: true,
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 8h18M8 12l-3 3 3 3M16 12l3 3-3 3" />
+    </svg>,
+  },
+  {
     href: "/about",
     activeHrefs: ["/about"],
     label: "关于",

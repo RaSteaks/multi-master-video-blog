@@ -1,0 +1,87 @@
+.heading { display: flex; justify-content: space-between; align-items: end; gap: 24px; padding-block: 18px 10px; }
+.heading h1 { font-size: clamp(2.2rem, 5vw, 3.8rem); line-height: 1.1; letter-spacing: -.04em; font-weight: 600; }
+.heading p { color: var(--text-secondary); margin-top: 16px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 36px 28px; padding: 0; list-style: none; }
+.card { min-width: 0; position: relative; border: 1px solid var(--line-light); background: var(--surface); border-radius: var(--radius-lg); }
+.cardEntry { display: block; width: 100%; padding: 0; color: inherit; border: 0; border-radius: inherit; background: none; text-align: left; font: inherit; text-decoration: none; cursor: pointer; overflow: hidden; }
+.cardEntry:hover .cardCopy h2 { color: var(--accent-readable); }
+.cardEntry:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 5px; }
+.cardCopy { padding: 22px 24px 24px; }
+.cardCopy h2, .cardCopy h3 { margin: 0; font-size: 1.25rem; line-height: 1.35; font-weight: 600; overflow-wrap: anywhere; }
+.cardCopy p { margin-top: 8px; color: var(--text-secondary); line-height: 1.6; overflow-wrap: anywhere; white-space: pre-line; }
+.preview { position: relative; overflow: hidden; aspect-ratio: 16 / 10; background: var(--background); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+.preview > img { width: 100%; height: 100%; object-fit: cover; }
+.placeholder { height: 100%; display: grid; place-items: center; color: var(--muted); background: var(--surface-strong); }
+.placeholder span { font-size: 3rem; font-weight: 200; }
+.previewFrame { position: absolute; inset: 0; pointer-events: none; transition: opacity var(--motion-media-duration) var(--motion-ease); }
+.previewFrame iframe { display: block; border: 0; max-width: none; transform-origin: top left; pointer-events: none; background: var(--background); }
+.notice { min-height: 1.4em; margin: 0; color: var(--text-secondary); font-size: .9rem; }
+.note { color: var(--text-secondary); font-size: .875rem; line-height: 1.65; }
+.failure { padding: 24px; border: 1px solid var(--line-light); border-radius: var(--radius); background: var(--surface); }
+.failure p + p { margin-top: 8px; }
+.failure button { margin-top: 16px; }
+.empty { min-height: 36vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
+.empty > span { font-size: 3.5rem; color: var(--muted); }
+.empty h2 { font-size: 1.4rem; }
+.empty p { color: var(--text-secondary); }
+.cardManagement { display: flex; align-items: center; justify-content: space-between; padding: 0 24px 18px; color: var(--text-secondary); font-size: .85rem; }
+.manageButton, .more, .failure button, .testActions button, .formFooter button, .viewerLoading button, .authNotice button, .textButton {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 9px 16px;
+  border: 1px solid var(--line-light); border-radius: var(--radius); background: var(--surface); color: var(--text);
+  font: inherit; font-size: .9rem; cursor: pointer; text-decoration: none;
+}
+.manageButton:hover, .more:hover, .testActions button:hover, .formFooter button:hover, .failure button:hover, .authNotice button:hover, .textButton:hover { border-color: var(--accent-readable); background: var(--surface-raised); }
+.manageButton:focus-visible, .more:focus-visible, .editor button:focus-visible, .failure button:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 3px; }
+.more { justify-self: center; min-width: 144px; }
+.editor { --album-accent: var(--accent-readable); --album-accent-soft: var(--accent-soft); }
+.editorForm { display: flex; flex-direction: column; gap: 20px; padding-top: 22px; min-height: 0; overflow: auto; }
+.editorColumns { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 32px; align-items: start; }
+.fields, .fieldset { display: grid; gap: 18px; min-width: 0; }
+.fieldset { border: 0; padding: 0; margin: 0; }
+.resize-none { resize: none; }
+.editorPreview { position: sticky; top: 0; display: grid; gap: 16px; min-width: 0; }
+.editorPreview h3 { font-size: 1.15rem; }
+.check { display: flex; gap: 10px; align-items: center; min-height: 44px; cursor: pointer; }
+.check input { width: 18px; height: 18px; accent-color: var(--accent-base); }
+.fieldRow { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.testActions { display: flex; gap: 12px; flex-wrap: wrap; }
+.formFooter { display: flex; gap: 12px; align-items: center; border-top: 1px solid var(--line-light); padding-top: 18px; }
+.formFooter > span { flex: 1; }
+.formFooter .primary { background: var(--accent-readable); color: var(--on-accent); border-color: var(--accent-readable); min-width: 130px; }
+.error { color: var(--danger); line-height: 1.6; }
+.editor .error { color: var(--danger); }
+.authNotice { padding: 14px; border: 1px solid var(--line-light); border-radius: var(--radius); display: grid; gap: 12px; }
+.authNotice button { justify-self: start; }
+.textButton { justify-self: start; background: none; }
+.testActions button:disabled, .formFooter button:disabled, .more:disabled { cursor: not-allowed; opacity: .5; }
+.viewer { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; padding: 0; border: 0; border-radius: 0; overflow: hidden; }
+.viewer :global(.album-dialog-surface) { padding: 0; width: 100%; height: 100%; max-height: none; display: flex; flex-direction: column; overflow: hidden; background: var(--background); }
+.viewer :global(.album-dialog-header) { position: relative; display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: center; padding: max(10px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) 10px max(18px, env(safe-area-inset-left)); flex: 0 0 auto; border-bottom: 1px solid var(--line-light); background: var(--surface); }
+.viewer :global(.album-dialog-header) h2 { grid-column: 2; font-size: 1rem; font-weight: 500; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer :global(.album-dialog-header) { margin-bottom: 0; }
+.editor :global(.album-dialog-surface) { background: var(--surface); display: flex; flex-direction: column; overflow: hidden; }
+.editor :global(.album-dialog-header) { flex: 0 0 auto; margin-bottom: 0; }
+.viewer :global(.site-dialog-actions) { display: contents; }
+.viewer :global(.site-dialog-actions) > button { grid-column: 1; grid-row: 1; justify-self: start; }
+.viewer :global(.site-dialog-actions) > a { grid-column: 3; grid-row: 1; justify-self: end; }
+.viewerBody { position: relative; flex: 1; min-height: 0; background: var(--background); }
+.viewerBody > iframe { display: block; width: 100%; height: 100%; border: 0; }
+.viewerLoading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: var(--background); color: var(--text-secondary); padding: 24px; text-align: center; pointer-events: none; }
+.viewerLoading button { pointer-events: auto; }
+.viewerHint { flex: 0 0 auto; margin: 0; padding: 5px 16px max(5px, env(safe-area-inset-bottom)); text-align: center; color: var(--text-secondary); font-size: .75rem; background: var(--surface); }
+@media (max-width: 700px) {
+  .heading { align-items: start; gap: 12px; }
+  .heading h1 { font-size: 2.4rem; }
+  .manageButton { padding-inline: 10px; white-space: nowrap; }
+  .grid { grid-template-columns: 1fr; gap: 24px; }
+  .cardCopy { padding: 18px 20px 20px; }
+  .editor { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+  .editorColumns { grid-template-columns: 1fr; gap: 24px; }
+  .editorPreview { position: static; }
+  .formFooter { flex-wrap: wrap; gap: 8px; }
+  .formFooter button { padding-inline: 12px; }
+  .viewer :global(.album-dialog-header) { gap: 8px; padding-inline: max(8px, env(safe-area-inset-left)); }
+  .viewer :global(.album-dialog-header) h2 { max-width: 24vw; }
+  .viewer :global(.album-action-button) { padding: 8px 10px; min-height: 44px; font-size: .8rem; }
+}
+@media (prefers-reduced-motion: reduce) { .previewFrame { transition: none; } }

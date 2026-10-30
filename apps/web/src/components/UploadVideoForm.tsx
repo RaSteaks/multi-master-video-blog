@@ -1,6 +1,9 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useDroppedFiles } from "@/lib/dropped-files";
+import { canAuthorize, useAuthorSession } from "@/lib/author-session";
+import { AuthorCredential } from "@/components/AuthorCredential";
 import type { Lang } from "@/components/UploadPageClient";
 import { SLUG_MAX_LENGTH, SLUG_PATTERN, sanitizeSlugInput, slugify, slugifyFileName, timestampSlug } from "@/lib/slug";
 import { VideoProjectPicker, type UploadProject } from "./VideoProjectPicker";
@@ -355,6 +358,7 @@ function defaultMasterLabel(sourceKind: SourceKind, masterType: string) {
 
 export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang; initialProjectId?: string }) {
   const t = translations[lang];
+  const author = useAuthorSession();
 
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
@@ -392,6 +396,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
   const [message, setMessage] = useState("");
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [sourceError, setSourceError] = useState("");
+  useDroppedFiles("video", selectSourceFiles);
   const embeddedPair = sourceKind === "embedded" && Boolean(video && sdrVideo);
   const isHdr = ["hdr10", "hlg", "dolby_vision"].includes(masterType);
 
@@ -483,7 +488,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
   }
 
   async function runUpload(form?: FormData, resume = false) {
-    if (requestRef.current || !token.trim()) return;
+    if (requestRef.current || !canAuthorize(token)) return;
     const controller = new AbortController(); requestRef.current = controller;
     const credential = token.trim();
     setState("uploading"); setMessage(copy.verifying);
@@ -572,7 +577,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
   const canSubmit = useMemo(
     () =>
       Boolean(
-        token.trim() &&
+        canAuthorize(token) &&
           title.trim() &&
           slug.trim() &&
           !slugInvalid &&
@@ -582,7 +587,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
           (!pairedSdr || !isHdr || sdrVideo) &&
           !sessionId && state !== "uploading" && state !== "success"
       ),
-    [sessionId, slug, slugInvalid, sourceReady, state, title, token, appendProject, selectedProject, pairedSdr, isHdr, sdrVideo, sourceError]
+    [sessionId, slug, slugInvalid, sourceReady, state, title, token, author, appendProject, selectedProject, pairedSdr, isHdr, sdrVideo, sourceError]
   );
 
   const dropTexts = {
@@ -693,7 +698,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
       {/* ── Access ── */}
       <section className="upload-panel">
         <h2>{t.access}</h2>
-        <div className="upload-grid">
+        <AuthorCredential token={token}><div className="upload-grid">
           <label className="upload-wide">
             {t.uploadToken}
             <input
@@ -703,14 +708,14 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
               autoComplete="off"
               disabled={!hydrated}
               placeholder="UPLOAD_API_TOKEN"
-              required
+              required={!author.author}
             />
           </label>
           <button className="upload-token-toggle" type="button" disabled={!hydrated}
             aria-pressed={showToken} onClick={() => setShowToken(value => !value)}>
             {lang === "zh" ? (showToken ? "隐藏令牌" : "显示令牌") : (showToken ? "Hide token" : "Show token")}
           </button>
-        </div>
+        </div></AuthorCredential>
       </section>
 
       {sessionId ? <section className="upload-panel upload-recovery" aria-labelledby="upload-task-heading">
@@ -741,9 +746,9 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
         </> : null}
         <div className="upload-actions">
           {state === "uploading" ? <button type="button" onClick={() => requestRef.current?.abort()}>{copy.pause}</button> : null}
-          {!busy && state !== "success" ? <button type="button" disabled={!token.trim()}
+          {!busy && state !== "success" ? <button type="button" disabled={!canAuthorize(token)}
             onClick={() => void runUpload(undefined, session?.state === "receiving")}>{session?.state === "receiving" ? copy.resume : copy.recover}</button> : null}
-          {!busy && session?.state === "receiving" ? <button className="upload-secondary" type="button" disabled={!token.trim()} onClick={() => void cancelUpload()}>{copy.cancel}</button> : null}
+          {!busy && session?.state === "receiving" ? <button className="upload-secondary" type="button" disabled={!canAuthorize(token)} onClick={() => void cancelUpload()}>{copy.cancel}</button> : null}
           {!busy ? <button className="upload-secondary" type="button" onClick={forgetUpload}>{copy.forget}</button> : null}
         </div>
         {!busy ? <p className="field-note">{copy.forgetNote}</p> : null}

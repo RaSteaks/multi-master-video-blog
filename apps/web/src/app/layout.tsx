@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BackgroundControl } from "@/components/BackgroundControl";
+import { CreateMenu } from "@/components/CreateMenu";
 import { NavBar } from "@/components/NavBar";
 import { PageTransition } from "@/components/PageTransition";
 import { getSiteSettings, siteBackgroundImages } from "@/lib/directus";
@@ -91,6 +92,8 @@ export default async function RootLayout({
         <div id="main-content" tabIndex={-1}>
           <PageTransition>{children}</PageTransition>
         </div>
+
+        <CreateMenu />
       </body>
     </html>
   );

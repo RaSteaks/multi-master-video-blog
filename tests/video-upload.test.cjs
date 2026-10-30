@@ -59,6 +59,20 @@ test("checksums, exact chunk boundaries and duplicate offsets cannot corrupt con
   await assert.rejects(store.complete(id), { statusCode: 409 });
 });
 
+test("task summaries expose confirmed upload progress without inventing encoder percentages", async t => {
+  const { store } = await fixture(t);
+  const id = crypto.randomUUID(); await store.create(id, manifest());
+  assert.equal(store.taskSummaries()[0].progress, 0);
+  await store.append(id, 0, request(bytes.subarray(0, 4), 0));
+  assert.equal(store.taskSummaries()[0].progress, 40);
+  await store.append(id, 0, request(bytes.subarray(4, 8), 4));
+  await store.append(id, 0, request(bytes.subarray(8), 8));
+  await store.complete(id);
+  assert.equal(store.taskSummaries()[0].state, "queued");
+  assert.equal(store.taskSummaries()[0].progress, null);
+  assert.equal("files" in store.taskSummaries()[0], false);
+});
+
 test("aborted and concurrent chunks retain the last acknowledged offset", async t => {
   const { store } = await fixture(t);
   const id = crypto.randomUUID(); await store.create(id, manifest());

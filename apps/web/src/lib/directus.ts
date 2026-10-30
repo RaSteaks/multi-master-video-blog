@@ -1,4 +1,5 @@
 import { connection } from "next/server";
+import { readWebsiteProject } from "./external-projects";
 import {
   assetUrl as publicAssetUrl,
   type AssetPreset,
@@ -25,6 +26,24 @@ export function previewAssetUrl(src: string) {
 export function assetUrl(fileId: DirectusFileId, preset?: AssetPreset) {
   const src = publicAssetUrl(fileId, preset);
   return src ? previewAssetUrl(src) : null;
+}
+
+export async function getExternalProjects() {
+  // Publication edits should be visible immediately after the create dialog closes.
+  await connection();
+  try {
+    const params = new URLSearchParams({
+      fields: "id,title,description,url,preview_url,preview_enabled,open_mode,cover_image,published,sort_order",
+      "filter[published][_eq]": "true", sort: "sort_order,-id", limit: "25",
+    });
+    const response = await fetchDirectusPreview(`/items/external_projects?${params}`);
+    if (!response.ok) throw new Error(`CMS project request failed: ${response.status}`);
+    const result: unknown = await response.json();
+    if (!result || typeof result !== "object" || !("data" in result) || !Array.isArray(result.data)) throw new Error("Invalid CMS project list");
+    return { projects: result.data.slice(0, 24).map(readWebsiteProject), hasMore: result.data.length > 24, unavailable: false };
+  } catch {
+    return { projects: [], hasMore: false, unavailable: true };
+  }
 }
 
 export type Post = {

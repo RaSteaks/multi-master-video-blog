@@ -25,7 +25,9 @@ export default async function AlbumsPage({
           <h1>相簿</h1>
         </div>
         <AlbumsToolbar
-          initialDialog={dialog === "upload" ? "upload" : null}
+          initialDialog={
+            dialog === "upload" || dialog === "create" || dialog === "film" ? dialog : null
+          }
           albums={albums.map((album) => ({
             id: album.id,
             title: album.title,
@@ -108,7 +110,7 @@ export default async function AlbumsPage({
           </span>
           <div>
             <h2>接触印样还是空的</h2>
-            <p>使用上方“新建相簿”，再从同一页面上传第一批 SDR／HDR 照片。</p>
+            <p>点右下角的“＋”，选择“新建相簿”，再上传第一批 SDR／HDR 照片。</p>
           </div>
         </section>
       )}

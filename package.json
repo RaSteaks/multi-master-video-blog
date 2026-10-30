@@ -26,6 +26,8 @@
     "build:web": "npm --workspace @multi-master-video-blog/web run build",
     "test:web": "npm --workspace @multi-master-video-blog/web run test",
     "test:article-editor-browser": "node tests/article-editor-browser.cjs",
+    "test:project-browser": "node tests/project-browser.cjs",
+    "test:external-projects": "node --test apps/api/test/external-projects.test.cjs",
     "start:web": "npm --workspace @multi-master-video-blog/web run start",
     "web:start": "node scripts/service-control.cjs web start",
     "web:stop": "node scripts/service-control.cjs web stop",

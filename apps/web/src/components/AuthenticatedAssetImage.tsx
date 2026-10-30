@@ -2,14 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { fetchAssetPreview, isAssetPreviewUrl } from "@/lib/asset-preview";
+import { useAuthorSession } from "@/lib/author-session";
 
 /** Draft images use in-memory blob URLs; credentials never enter img URLs or storage. */
 export function AuthenticatedAssetImage({ token, src, srcSet, loading, ...props }:
   ComponentPropsWithoutRef<"img"> & { token?: string }) {
   const imageRef = useRef<HTMLImageElement>(null);
-  const protectedRequest = Boolean(token?.trim()) && isAssetPreviewUrl(src);
+  const author = useAuthorSession();
+  // Undefined means public; an empty explicit token uses the current session.
+  const protectedRequest = token !== undefined && isAssetPreviewUrl(src);
   // Revisiting the same token/URL after another request must not reuse a revoked blob.
-  const requestKey = useMemo(() => ({}), [src, token]);
+  const requestKey = useMemo(() => ({}), [src, token, author.author ? author.csrf : null]);
   const [visibleRequest, setVisibleRequest] = useState<object | null>(null);
   const ready = visibleRequest === requestKey;
   const shouldLoad = loading !== "lazy" || ready;
@@ -33,7 +36,7 @@ export function AuthenticatedAssetImage({ token, src, srcSet, loading, ...props 
   }, [loading, protectedRequest, ready, requestKey]);
 
   useEffect(() => {
-    if (!protectedRequest || !shouldLoad || !src || !token) return;
+    if (!protectedRequest || !shouldLoad || !src || token === undefined) return;
     const controller = new AbortController();
     let objectUrl: string | undefined;
     fetchAssetPreview(src, token, controller.signal).then(blob => {

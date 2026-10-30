@@ -67,6 +67,32 @@ corners and inset preview chips use 4px corners.
 
 ## Components
 
+- The `/project` laboratory reuses the reference-room palette and type. Its two-column
+  desktop / single-column mobile cards contain only a 16:10 unfiltered website picture,
+  title and description. `CreateMenu` remains the only global create entry; verified
+  author sessions own management. `SiteDialog` reuses native modal geometry and focus
+  behavior for the editor/viewer. The full-window viewer reserves a neutral toolbar
+  outside the target pixels. `Projects.module.css` consumes existing runtime tokens,
+  not a separate palette. See `docs/external-projects.md` for lifecycle and permissions.
+
+- `ActionMenu` owns the shared disclosure panel, keyboard focus and the same
+  circular reveal/conceal as `AppearanceControl`; its radius follows live panel
+  dimensions. `CreateMenu` adds reading tools and verified author-only publishing
+  links. `AuthorSignIn` reuses the native album-dialog geometry with global tokens
+  (never album-scoped amber). Authentication stays client-side, with a six-hour
+  expiry and cross-tab status updates; contracts live in `docs/upload-api.md`.
+  The floating control stays outside the route wipe, yields to playing video,
+  lightboxes and fullscreen, and recedes only during downward reading scroll.
+  Shortcuts leave text input, IME and open dialogs alone. Reduced motion removes
+  displacement and scale transitions; media pixels are never decorated.
+  `dropped-files.ts` owns a single in-memory handoff into existing forms; dropping
+  selects files but never submits them. The API remains the file-validation owner.
+  `AuthorCredential` owns the session status/manual override across publishing
+  forms. Explicit article credentials retain separate authority. `author-tasks.ts`
+  polls bounded summaries only for signed-in visible readers: byte/film progress
+  is measured, encoding is indeterminate, and completion feedback is temporary.
+  The SVG framing corners decorate the control/panel, never media content.
+
 - Motion roles are owned by the `--motion-*` variables in `globals.css`: controls
   130 ms, panel changes 260 ms / 12 px, media reveals 180 ms, emphasis 420 ms,
   route wipes 1200 ms, and reduced-motion fades 100 ms. These are role budgets rather than mandatory

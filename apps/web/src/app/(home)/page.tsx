@@ -144,6 +144,10 @@ function CollectionCard({
           <span>{siteConfig.home.collectionAlbumLabel}</span>
           <strong>{albumCount}</strong>
         </Link>
+        <Link href="/project">
+          <span>项目</span>
+          <strong>实验室</strong>
+        </Link>
         <Link href="/about">
           <span>{siteConfig.home.collectionAboutLabel}</span>
           <strong>{siteConfig.home.collectionAboutValue}</strong>

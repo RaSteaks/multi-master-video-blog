@@ -196,6 +196,8 @@ npm run test:db                # 检查 Directus 数据库（SQLite / PostgreSQL
 npm run test:cms-schema        # 检查 CMS 表、字段、关系
 npm run test:cms-crud          # 检查 CMS CRUD 与关联读取
 npm run test:web               # 前端单元测试
+npm run test:external-projects # 独立网站数据、封面和发布权限测试
+npm run test:project-browser   # 隔离 CMS 与 headless WebKit 项目页验证
 npm run test:article-editor-browser # 启动 dev:web 后，以 headless WebKit 检查文章预览滚动
 npm run health                 # 检查本地服务健康状态
 npm run manager                # 启动本地服务管理面板

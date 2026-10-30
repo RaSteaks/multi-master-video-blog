@@ -168,6 +168,33 @@ selection, reordering, publication changes, and deletion. It is entered in
 the page component and must never be placed in a `NEXT_PUBLIC_*` variable,
 URL, cookie, or browser storage.
 
+The author menu exchanges this token for a fixed six-hour in-memory session.
+Only a random session ID is sent in the HttpOnly `author_session` cookie
+(`Path=/api`); the API stores its SHA-256 digest. The readable `author_hint`
+cookie is only a client-side hint and never grants access. Session responses
+are `no-store`; public page rendering does not read either cookie. Up to 16
+devices may be signed in; another login evicts the oldest session.
+
+API process termination revokes every author session. Manager saves token
+settings before restarting the API: if it reports `restartOk: false`, confirm
+the old process has stopped before treating all sessions as revoked. Signing
+out revokes only the current browser session (shared by its tabs).
+
+For proxied browser login, enable `TRUST_PROXY=true` only while the API is
+private. Nginx must overwrite `X-Forwarded-Host` (including the public port)
+and `X-Forwarded-Proto`; the supplied templates do this, and Next rewrites
+preserve the original host. HTTPS adds `Secure` to both cookies. Login requires
+a same-origin JSON request; logout also requires the session's `X-Author-CSRF`.
+Tokens are never logged, persisted by the site, or returned to the browser.
+Video, album, photo and film-scan requests accept either the original token or
+an author session with `X-Author-CSRF`. An explicitly entered token takes
+precedence; an invalid token never silently falls back to the session. Article
+requests accept the session only when `ARTICLE_API_TOKEN` is unset and actually
+inherits the upload token. An explicitly configured identical value still keeps
+the article boundary separate; its placeholder disables publication. Maintenance
+control remains token-only. Upload forms preserve manual credential entry and
+retain selected files/text when a session expires.
+
 For album uploads, configure:
 
 ```env

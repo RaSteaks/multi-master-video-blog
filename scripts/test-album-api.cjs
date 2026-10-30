@@ -3,7 +3,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
-const apiEnv = loadEnv(path.join(ROOT, "apps", "api", ".env"));
+// Browser fixtures provide a disposable API/CMS target instead of touching the
+// author's running database. The ordinary live-test default stays unchanged.
+const apiEnv = loadEnv(process.env.ALBUM_API_ENV_FILE || path.join(ROOT, "apps", "api", ".env"));
 const API_URL = stripSlash(apiEnv.API_URL || "http://127.0.0.1:8060");
 const WEB_URL = stripSlash(apiEnv.WEB_URL || "http://127.0.0.1:3000");
 const DIRECTUS_URL = stripSlash(
@@ -211,14 +213,10 @@ async function main() {
       "Album file reconciliation tag was not queryable."
     );
 
-    const thumbnail = await fetch(
+    const draftThumbnail = await fetch(
       `${API_URL}/assets/${photo.sdrImage}?key=album-thumb`
     );
-    assert.equal(thumbnail.status, 200);
-    assert.match(
-      String(thumbnail.headers.get("content-type")),
-      /^image\/webp/
-    );
+    assert.ok([403, 404].includes(draftThumbnail.status), "A draft album must not expose its thumbnail anonymously.");
 
     const arbitraryTransform = await fetch(
       `${API_URL}/assets/${photo.sdrImage}?width=12`
@@ -229,6 +227,15 @@ async function main() {
       method: "PATCH",
       body: JSON.stringify({ published: true })
     });
+    // The asset authorizer bounds repeated denied lookups with a short miss cache.
+    let thumbnail;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      thumbnail = await fetch(`${API_URL}/assets/${photo.sdrImage}?key=album-thumb`);
+      if (thumbnail.ok) break;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    assert.equal(thumbnail.status, 200);
+    assert.match(String(thumbnail.headers.get("content-type")), /^image\/webp/);
     const publishedPage = await fetch(`${WEB_URL}/albums/${testSlug}`);
     assert.equal(publishedPage.status, 200);
     assert.match(await publishedPage.text(), new RegExp(testTitle));

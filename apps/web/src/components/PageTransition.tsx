@@ -17,6 +17,7 @@ const animatedSections = new Set([
   "upload",
   "about",
   "albums",
+  "project",
 ]);
 const pendingClass = "route-transition-pending";
 // Route skeletons (loading.tsx) carry this marker so the veil can wait for the

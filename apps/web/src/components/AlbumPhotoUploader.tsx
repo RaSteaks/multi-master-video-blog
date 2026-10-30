@@ -1,4 +1,5 @@
 "use client";
+import { useDroppedFiles } from "@/lib/dropped-files";
 
 import {
   useEffect,
@@ -191,6 +192,7 @@ export function AlbumPhotoUploader({
 }) {
   const [sdrFiles, setSdrFiles] = useState<File[]>([]);
   const [hdrFiles, setHdrFiles] = useState<File[]>([]);
+  useDroppedFiles("photo", setSdrFiles);
   const [metadata, setMetadata] = useState<Record<string, UploadMetadata>>({});
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);

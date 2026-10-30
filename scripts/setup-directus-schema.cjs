@@ -495,6 +495,11 @@ function selectField(field, choices, required = false) {
 
 const collections = [
   {
+    collection: "external_projects",
+    meta: { collection: "external_projects", icon: "science", note: "Independent websites in the blog laboratory.", display_template: "{{title}}" },
+    schema: {}
+  },
+  {
     collection: "site_settings",
     meta: {
       collection: "site_settings",
@@ -735,6 +740,18 @@ const analyticsEventTypes = [
 ];
 
 const fields = {
+  external_projects: [
+    stringField("title", true, { maxLength: 120 }),
+    stringField("description", false, { maxLength: 300 }),
+    stringField("url", true, { maxLength: 2048 }),
+    stringField("preview_url", false, { maxLength: 2048 }),
+    booleanField("preview_enabled", true),
+    selectField("open_mode", [{ text: "Full-window viewer", value: "iframe" }, { text: "Open independently", value: "external" }], true),
+    fileField("cover_image"),
+    booleanField("published", false),
+    integerField("sort_order", { defaultValue: 0 }),
+    dateTimeField("created_at"), dateTimeField("updated_at")
+  ],
   site_settings: [
     fileField("background_image"),
     integerField("background_blur", { defaultValue: 8 }),
@@ -1043,6 +1060,7 @@ function itemRelation(collection, field, relatedCollection) {
 }
 
 const relations = [
+  fileRelation("external_projects", "cover_image"),
   fileRelation("site_settings", "background_image"),
   {
     collection: "site_settings_files",
@@ -1619,10 +1637,19 @@ async function verifyVideoSourceFormat(token) {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.some((arg) => arg !== "--video-source-format-only")) {
-    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only]");
+  if (args.length > 1 || args.some((arg) => !["--video-source-format-only", "--external-projects-only"].includes(arg))) {
+    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only | --external-projects-only]");
   }
   const token = await login();
+
+  // An additive rollout for this feature must not rewrite unrelated CMS settings.
+  if (args.includes("--external-projects-only")) {
+    await ensureCollection(token, collections.find(item => item.collection === "external_projects"));
+    for (const field of fields.external_projects) await ensureField(token, "external_projects", field);
+    await ensureRelation(token, fileRelation("external_projects", "cover_image"));
+    console.log("External project schema is ready.");
+    return;
+  }
 
   if (args.includes("--video-source-format-only")) {
     await ensureField(token, "video_masters", fields.video_masters.find((field) => field.field === "source_format"));

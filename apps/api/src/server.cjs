@@ -1,5 +1,6 @@
 const { buildNegativeDensityFilter } = require("./film-negative.cjs");
 const crypto = require("node:crypto");
+const { createAuthorSessions } = require("./author-session.cjs");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const http = require("node:http");
@@ -59,6 +60,7 @@ const { createTaskLimiter } = require("./task-limiter.cjs");
 const { createVideoUploadStore } = require("./video-upload-store.cjs");
 const { createCachedProbe } = require("./cached-probe.cjs");
 const { createAssetAuthorizer } = require("./asset-access.cjs");
+const { createExternalProjects, EXTERNAL_PROJECT_FIELDS } = require("./external-projects.cjs");
 const { canReadMedia } = require("./media-access.cjs");
 const { createRequestBudget, requestAddress } = require("./request-budget.cjs");
 const { createAnalyticsRecorder } = require("./analytics-recorder.cjs");
@@ -121,6 +123,9 @@ const ARTICLE_API_TOKEN =
   configuredArticleApiToken === ARTICLE_API_TOKEN_PLACEHOLDER
     ? ""
     : configuredArticleApiToken || UPLOAD_API_TOKEN;
+// An explicitly configured article token (even the same literal value) keeps its
+// separate authority. Placeholder values disable publication rather than inherit.
+const ARTICLE_USES_UPLOAD_TOKEN = !configuredArticleApiToken && Boolean(UPLOAD_API_TOKEN);
 const MEDIA_ROOT = path.resolve(ROOT, env.MEDIA_ROOT || "../../media");
 const MAX_UPLOAD_BYTES = Number(env.MAX_UPLOAD_BYTES || 2 * 1024 * 1024 * 1024);
 const MAX_ARTICLE_UPLOAD_BYTES = positiveInteger(
@@ -203,6 +208,7 @@ const PUBLIC_ASSET_IDS = new Set(String(env.PUBLIC_ASSET_IDS || "")
   .split(",").map(value => value.trim()).filter(Boolean));
 // Limits are process-wide as well as per client; spoofed visitor IDs cannot evade them.
 const TRUST_PROXY = env.TRUST_PROXY === "true";
+const authorSessions = createAuthorSessions({ token: UPLOAD_API_TOKEN, trustProxy: TRUST_PROXY });
 const assetBudget = createRequestBudget({ limit: 1200, perClient: 600 });
 const assetSlots = createTaskLimiter({ concurrency: 8, maxPending: 24, waitMs: 5000 });
 const analyticsBudget = createRequestBudget({ limit: 120, perClient: 30 });
@@ -214,6 +220,12 @@ const PUBLIC_MEDIA_FILES = new Set(String(env.PUBLIC_MEDIA_FILES || "").split(",
 const authorizeAsset = createAssetAuthorizer({
   publicAssetIds: PUBLIC_ASSET_IDS,
   request: async route => directusRequest(route, await directusLogin())
+});
+const externalProjects = createExternalProjects({
+  request: async (route, options) => directusRequest(route, await directusLogin(), options),
+  uploadCover: async (file, title) => directusUploadFile(await directusLogin(), file, title),
+  removeUploadedCover: async id => rollbackDirectusFiles(await directusLogin(), [id]),
+  allowLocal: env.NODE_ENV !== "production",
 });
 const JSON_COMPRESSION_MIN_BYTES = 1024;
 const COLOR_REQUIRED_FIELDS = [
@@ -270,7 +282,7 @@ function positiveInteger(value, fallback) {
 function sendJson(res, statusCode, payload) {
   if (res.destroyed || res.writableEnded) return;
   if (res.headersSent) { res.destroy(); return; }
-  if ([429, 503].includes(statusCode)) res.setHeader("Retry-After", "60");
+  if ([429, 503].includes(statusCode) && !res.hasHeader("Retry-After")) res.setHeader("Retry-After", "60");
   const body = JSON.stringify(payload);
   const bodyBuffer = Buffer.from(body);
   const acceptsGzip = acceptsEncoding(
@@ -298,7 +310,7 @@ function sendJson(res, statusCode, payload) {
   res.end(bodyBuffer);
 }
 
-function requireUploadAuth(req) {
+function requireUploadAuth(req, allowSession = true) {
   if (!UPLOAD_API_TOKEN) {
     throw httpError(503, "Video uploading is disabled until UPLOAD_API_TOKEN is configured.");
   }
@@ -309,6 +321,11 @@ function requireUploadAuth(req) {
 
   // Use the same constant-time credential comparison as album/article access.
   if (tokenMatches(bearer, UPLOAD_API_TOKEN) || tokenMatches(uploadToken, UPLOAD_API_TOKEN)) {
+    return;
+  }
+
+  if (allowSession && !authorization && !uploadToken && req.headers.cookie) {
+    authorSessions.requireSession(req);
     return;
   }
 
@@ -337,6 +354,11 @@ function requireArticleAuth(req) {
   const articleToken = String(req.headers["x-article-token"] || "").trim();
   const compatibleUploadToken = String(req.headers["x-upload-token"] || "").trim();
 
+  if (!authorization && !articleToken && !compatibleUploadToken && req.headers.cookie && ARTICLE_USES_UPLOAD_TOKEN) {
+    authorSessions.requireSession(req);
+    return;
+  }
+
   if (
     tokenMatches(bearer, ARTICLE_API_TOKEN) ||
     tokenMatches(articleToken, ARTICLE_API_TOKEN) ||
@@ -360,6 +382,11 @@ function requireAlbumAuth(req) {
   const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
   const bearer = bearerMatch ? bearerMatch[1].trim() : "";
   const uploadToken = String(req.headers["x-upload-token"] || "").trim();
+
+  if (!authorization && !uploadToken && req.headers.cookie) {
+    authorSessions.requireSession(req);
+    return;
+  }
 
   if (
     tokenMatches(bearer, UPLOAD_API_TOKEN) ||
@@ -749,7 +776,9 @@ async function parseMultipart(req) {
   });
 }
 
-async function parseArticleMultipart(req) {
+// Website covers share the existing bounded image parser and signature checks.
+// Additional text fields are opt-in; the article endpoint retains its field set.
+async function parseArticleMultipart(req, extraFields = []) {
   const contentTypeHeader = String(req.headers["content-type"] || "");
   if (!contentTypeHeader.toLowerCase().startsWith("multipart/form-data")) {
     throw httpError(415, "Article requests must use multipart/form-data.");
@@ -843,7 +872,8 @@ async function parseArticleMultipart(req) {
           "published",
           "inlineImageManifest",
           "articleId",
-          "removeCover"
+          "removeCover",
+          ...extraFields
         ].includes(name)
       ) {
         fields[name] = value;
@@ -8218,9 +8248,47 @@ async function dispatchRequest(req, res) {
 async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
 
+  if (url.pathname === "/author/tasks") {
+    res.setHeader("Cache-Control", "no-store");
+    if (req.method !== "GET") throw httpError(405, "不支持此请求方法。");
+    authorSessions.requireReadSession(req);
+    const token = await directusLogin();
+    const params = new URLSearchParams({ fields: "id,status,progress,film_stock", sort: "-created_at,-id", limit: "16" });
+    const response = await directusRequest(`/items/film_scan_jobs?${params}`, token);
+    const films = (response.data || []).map(job => ({ id: `film:${job.id}`, kind: "film",
+      label: job.film_stock || "胶片扫描", state: job.status,
+      progress: Math.min(100, Math.max(0, Number(job.progress) || 0)) }));
+    sendJson(res, 200, { tasks: [...videoUploads.taskSummaries(), ...films] });
+    return;
+  }
+
+  // Authentication stays available during maintenance; these responses, including
+  // failures, carry private session state and must never enter a shared cache.
+  if (url.pathname === "/author/session") {
+    res.setHeader("Cache-Control", "no-store");
+    if (req.method === "GET") {
+      const status = authorSessions.status(req, res);
+      sendJson(res, 200, status.author ? { ...status, article: ARTICLE_USES_UPLOAD_TOKEN } : status);
+    }
+    else if (req.method === "DELETE") sendJson(res, 200, authorSessions.signOut(req, res));
+    else if (req.method === "POST") {
+      authorSessions.requireOrigin(req);
+      if (String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+        throw httpError(415, "请使用 JSON 提交登录令牌。");
+      }
+      const payload = await readJsonBody(req, 4096).catch(error => {
+        if (error.statusCode === 400) throw httpError(400, "登录请求必须是有效的 JSON。");
+        if (error.statusCode === 413) throw httpError(413, "登录请求不能超过 4 KiB。");
+        throw error;
+      });
+      sendJson(res, 200, { ...authorSessions.signIn(req, res, payload), article: ARTICLE_USES_UPLOAD_TOKEN });
+    } else { res.setHeader("Allow", "GET, POST, DELETE"); throw httpError(405, "不支持此请求方法。"); }
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/maintenance") {
     try {
-      requireUploadAuth(req);
+      requireUploadAuth(req, false);
       const body = await readJsonBody(req, 1024);
       if (typeof body.enabled !== "boolean") throw httpError(400, "enabled must be a boolean.");
       maintenanceMode = body.enabled;
@@ -8248,6 +8316,35 @@ async function handleRequest(req, res) {
 
   if (["GET", "HEAD"].includes(req.method) && url.pathname.startsWith("/assets/")) {
     await handleAsset(req, url, res);
+    return;
+  }
+
+  if (url.pathname === "/external-projects" || url.pathname.startsWith("/external-projects/")) {
+    res.setHeader("Cache-Control", "no-store");
+    const managed = url.pathname === "/external-projects/manage";
+    if (req.method === "GET" && (managed || url.pathname === "/external-projects")) {
+      if (managed) requireUploadAuth(req);
+      sendJson(res, 200, await externalProjects.list({ page: Number(url.searchParams.get("page") || 1), managed }));
+      return;
+    }
+    requireUploadAuth(req);
+    const match = url.pathname.match(/^\/external-projects(?:\/([1-9]\d*))?$/);
+    if (!match) throw httpError(404, "网站接口不存在。");
+    const id = match[1] ? Number(match[1]) : null;
+    if ((id === null && req.method !== "POST") || (id !== null && req.method !== "PATCH")) throw httpError(405, "不支持此请求方法。");
+    let parsed;
+    try {
+      const multipart = String(req.headers["content-type"] || "").startsWith("multipart/form-data");
+      parsed = multipart ? await parseArticleMultipart(req, EXTERNAL_PROJECT_FIELDS) : null;
+      if (parsed?.files.inlineImages.length) throw httpError(400, "网站仅接受一张封面图片。");
+      const body = parsed ? parsed.fields : await readJsonBody(req, 16 * 1024);
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw httpError(400, "网站信息必须为对象。");
+      const { removeCover = false, ...input } = body;
+      const project = await externalProjects.save(id, input, { cover: parsed?.files.cover, removeCover });
+      sendJson(res, id === null ? 201 : 200, { project });
+    } finally {
+      if (parsed) await fsp.rm(parsed.tempDir, { recursive: true, force: true });
+    }
     return;
   }
 
@@ -8435,6 +8532,10 @@ async function handleMedia(req, pathname, res) {
 function assetAccess(req) {
   const bearer = String(req.headers.authorization || "").match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
   const credentials = [bearer, req.headers["x-upload-token"], req.headers["x-article-token"]].filter(Boolean);
+  if (!req.headers.authorization && !credentials.length && req.headers["x-author-csrf"]) {
+    authorSessions.requireSession(req);
+    return { media: true, article: ARTICLE_USES_UPLOAD_TOKEN };
+  }
   const media = credentials.some(value => tokenMatches(value, UPLOAD_API_TOKEN));
   const article = credentials.some(value => tokenMatches(value, ARTICLE_API_TOKEN));
   if ((req.headers.authorization || credentials.length) && !media && !article) {

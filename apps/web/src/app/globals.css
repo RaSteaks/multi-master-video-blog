@@ -787,48 +787,283 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
   margin-bottom: 0;
 }
 
-.page-action-link {
+/* ---- Action menu (ActionMenu.tsx) ----
+   A trigger that discloses a short panel of actions, aligned to the trigger's
+   end edge, opening down (default) or up (data-placement="up"). It opens and
+   closes exactly like the appearance panel (.bg-control-panel): the same
+   circular reveal from the trigger's centre (--reveal-* set by ActionMenu)
+   and collapse back into it, with the same settle of opacity, scale and
+   offset. The panel is mounted while open or closing. */
+.action-menu {
+  position: relative;
   display: inline-flex;
-  min-height: 44px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  border: 1px solid rgb(var(--accent-rgb) / 0.55);
-  border-radius: 999px;
-  background: var(--accent-base);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.16),
-    0 10px 26px rgb(var(--accent-rgb) / 0.14);
-  color: var(--on-accent);
-  padding: 10px 18px;
-  font-size: 0.86rem;
-  font-weight: 750;
-  line-height: 1;
-  white-space: nowrap;
-  touch-action: manipulation;
-  transition: translate var(--transition-fast);
 }
 
+.action-menu-chevron {
+  transition: rotate var(--motion-control-duration) var(--motion-ease);
+}
+
+.action-menu-trigger[aria-expanded="true"] .action-menu-chevron {
+  rotate: 180deg;
+}
+
+.action-menu-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  display: grid;
+  min-width: 212px;
+  border: 1px solid var(--line-light);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-strong) 94%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 18px 44px -12px rgb(0 0 0 / 0.6);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  padding: 6px;
+  visibility: hidden;
+  opacity: 0;
+  scale: 0.985;
+  translate: 0 -5px;
+  transform-origin: right top;
+  pointer-events: none;
+  transition:
+    opacity var(--transition-base),
+    scale var(--transition-base),
+    translate var(--transition-base),
+    visibility 0s var(--transition-base);
+}
+
+.action-menu[data-placement="up"] .action-menu-panel {
+  top: auto;
+  bottom: calc(100% + 10px);
+  translate: 0 5px;
+  transform-origin: right bottom;
+}
+
+.action-menu-panel.open {
+  visibility: visible;
+  opacity: 1;
+  scale: 1;
+  translate: 0 0;
+  pointer-events: auto;
+  transition:
+    opacity var(--transition-base),
+    scale var(--transition-base),
+    translate var(--transition-base),
+    visibility 0s 0s;
+  animation: bg-panel-reveal 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.action-menu-panel.closing {
+  pointer-events: none;
+  animation: bg-panel-conceal 300ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
+.action-menu-group {
+  display: grid;
+  gap: 2px;
+}
+
+.action-menu-group + .action-menu-group {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+
+.action-menu-group-label {
+  margin: 4px 12px 4px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.action-menu-footer {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+
+.action-menu-footer button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 6px 0;
+}
+
+.action-menu-footer button:hover { color: var(--text); }
+.action-menu-footer button:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 3px; }
+.action-menu-footer button:disabled { opacity: 0.55; cursor: wait; }
+.author-session-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.create-menu-notice { margin: 0; white-space: normal; max-width: 260px; }
+.create-menu-notice:empty { display: none; }
+.author-sign-in { max-width: min(440px, calc(100vw - 24px)); }
+.author-sign-in-error { min-height: 2.8em; margin: 0; color: var(--text); font-size: 0.88rem; }
+.author-sign-in .album-submit { background: var(--accent-soft); border-color: var(--accent-readable); color: var(--text); }
+.author-sign-in .album-action-button:hover:not(:disabled) { background: var(--surface-overlay); border-color: var(--accent-readable); }
+.author-sign-in button:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 3px; }
+.author-credential { display: grid; gap: 8px; width: 100%; }
+.author-credential p { margin: 0; color: var(--text); font-size: 0.86rem; }
+.author-credential summary { color: var(--text-secondary); cursor: pointer; margin-bottom: 8px; font-size: 0.78rem; }
+.author-credential summary:hover { color: var(--text); }
+.author-credential summary:focus-visible { outline: 2px solid var(--accent-readable); }
+
+.action-menu-item {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 0 12px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.action-menu-item svg {
+  flex: none;
+  color: var(--text-secondary);
+  transition: color var(--transition-fast);
+}
+
+.action-menu-copy { display: grid; gap: 3px; }
+.action-menu-copy small { color: var(--text-secondary); font-size: 0.7rem; font-weight: 400; white-space: normal; }
+.action-menu-item kbd { margin-left: auto; color: var(--text-secondary); font: 0.7rem var(--font-mono); }
+.create-menu .action-menu-item { padding-block: 9px; }
+
 @media (hover: hover) and (pointer: fine) {
-  .page-action-link:hover {
-    border-color: var(--accent-readable);
-    background: var(--accent-hover);
-    box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.18),
-    0 13px 30px rgb(var(--accent-rgb) / 0.22);
-    translate: 0 -2px;
+  .action-menu-item:hover {
+    background: var(--surface-overlay);
+  }
+
+  .action-menu-item:hover svg {
+    color: var(--text);
   }
 }
 
-.page-action-link:active {
-  scale: 0.97;
-  translate: 0;
+.action-menu-item:focus-visible {
+  outline: 2px solid var(--accent-readable);
+  outline-offset: -2px;
+  background: var(--surface-overlay);
 }
 
-.page-action-link:focus-visible {
-  outline-color: var(--accent-readable);
-  outline-offset: 4px;
+@media (pointer: coarse) {
+  .action-menu-item {
+    min-height: 46px;
+  }
+}
+
+/* ---- Create menu (CreateMenu.tsx) ----
+   One floating entry for every create and upload action, bottom right on all
+   pages except home (which keeps its upload cards), /write and /upload. While
+   open it takes the appearance toggle's active state. */
+.create-menu {
+  position: fixed;
+  right: max(20px, calc(env(safe-area-inset-right) + 14px));
+  bottom: max(20px, calc(env(safe-area-inset-bottom) + 14px));
+  z-index: 70;
+  view-transition-name: create-menu;
+  transition: opacity var(--transition-base);
+}
+
+::view-transition-group(create-menu), ::view-transition-new(create-menu) { animation: none; }
+::view-transition-old(create-menu) { animation: vt-hide 1ms both; }
+.create-menu--hidden { opacity: 0; pointer-events: none; }
+.create-menu--dragging .action-menu-trigger { scale: 1.15; border-color: var(--accent-readable); }
+.create-menu-drop-label { position: absolute; right: 0; bottom: calc(100% + 12px); white-space: nowrap; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-strong); color: var(--text); }
+.create-menu--retreated:not(:focus-within) { opacity: 0.55; }
+.create-menu--retreated:not(:focus-within) .action-menu-trigger { scale: 0.7692; }
+.create-menu .action-menu-panel { max-width: calc(100vw - 40px); max-height: calc(100dvh - 100px); overflow-y: auto; }
+.create-menu-frame { position: absolute; pointer-events: none; z-index: 81; right: 15px; bottom: 15px; width: 22px; height: 22px; color: var(--text-secondary); transition: width 300ms cubic-bezier(0.23, 1, 0.32, 1), height 300ms cubic-bezier(0.23, 1, 0.32, 1), right 300ms cubic-bezier(0.23, 1, 0.32, 1), bottom 300ms cubic-bezier(0.23, 1, 0.32, 1); }
+.create-menu[data-open="true"] .create-menu-frame { right: 0; bottom: calc(100% + 10px); width: var(--menu-width); height: var(--menu-height); color: var(--accent-readable); transition-duration: 460ms; transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1); }
+.create-menu-corner { position: absolute; width: 8px; height: 8px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.corner-0 { left: 0; top: 0; }.corner-1 { right: 0; top: 0; rotate: 90deg; }.corner-2 { right: 0; bottom: 0; rotate: 180deg; }.corner-3 { left: 0; bottom: 0; rotate: 270deg; }
+.create-menu-progress { position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px); pointer-events: none; rotate: -90deg; fill: none; stroke: var(--accent-readable); stroke-width: 1.5; }
+.create-menu-progress.is-complete { stroke: var(--success); }
+.create-menu-progress.is-indeterminate { animation: create-menu-working 2s linear infinite; }
+@keyframes create-menu-working { to { transform: rotate(360deg); } }
+.create-menu-tasks { border-bottom: 1px solid var(--line); padding: 8px 12px; display: grid; gap: 8px; max-width: 300px; }
+.create-menu-tasks p { margin: 0; color: var(--text-secondary); font-size: 0.72rem; }
+.create-menu-tasks > div { display: grid; gap: 3px; color: var(--text); font-size: 0.8rem; overflow-wrap: anywhere; }
+.create-menu-tasks small { color: var(--text-secondary); font-size: 0.7rem; }
+@media (prefers-reduced-motion: reduce) { .create-menu-frame { transition: none; }.create-menu-progress.is-indeterminate { animation: none; } }
+
+.create-menu .action-menu-trigger {
+  appearance: none;
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid var(--line-light);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface-raised) 90%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.07),
+    0 10px 28px -8px rgb(0 0 0 / 0.65);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  color: var(--text);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    scale var(--transition-fast);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .create-menu .action-menu-trigger:hover {
+    border-color: var(--accent-2);
+    background: var(--surface-overlay);
+  }
+}
+
+.create-menu .action-menu-trigger:active {
+  scale: 0.96;
+}
+
+.create-menu .action-menu-trigger:focus-visible {
+  outline: 2px solid var(--accent-readable);
+  outline-offset: 3px;
+}
+
+.create-menu .action-menu-trigger[aria-expanded="true"] {
+  border-color: rgb(var(--accent-rgb) / 0.55);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .create-menu .action-menu-trigger {
+    width: 48px;
+    height: 48px;
+  }
+  .create-menu--retreated:not(:focus-within) .action-menu-trigger { scale: 0.8333; }
+  .create-menu-frame { right: 13px; bottom: 13px; }
+}
+
+@media print {
+  .create-menu {
+    display: none;
+  }
 }
 
 /* ---- Video title (single reading column: title → description → meta/action) ---- */
@@ -5736,13 +5971,6 @@ h3 {
   gap: 8px;
 }
 
-.album-toolbar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
 .album-toolbar-status {
   min-height: 1.3em;
   margin: 0;
@@ -6141,6 +6369,13 @@ h3 {
 .album-dialog-header h2 {
   margin: 0;
   font-size: clamp(1.45rem, 3vw, 2rem);
+}
+
+/* Native project dialogs reuse the site's modal geometry and semantic controls. */
+.site-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .album-icon-button {
@@ -7316,10 +7551,6 @@ h3 {
     justify-items: start;
   }
 
-  .album-toolbar-actions {
-    justify-content: flex-start;
-  }
-
   .album-toolbar-status {
     text-align: left;
   }
@@ -7382,24 +7613,13 @@ h3 {
     gap: 20px;
   }
 
-  .page-action-link {
-    width: 100%;
-  }
-
   .album-index,
   .album-detail {
     gap: 38px;
   }
 
-  .album-toolbar,
-  .album-toolbar-actions,
-  .album-toolbar-actions .album-action-button {
+  .album-toolbar {
     width: 100%;
-  }
-
-  .album-toolbar-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .album-card-frame {
@@ -7598,10 +7818,6 @@ h3 {
 }
 
 @media (max-width: 390px) {
-  .album-toolbar-actions {
-    grid-template-columns: 1fr;
-  }
-
   .album-empty-state {
     flex-direction: column;
     gap: 14px;

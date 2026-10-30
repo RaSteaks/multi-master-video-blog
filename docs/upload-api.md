@@ -26,7 +26,8 @@ The API writes chunks to a private disk spool and acknowledges them only after
 the bytes and updated offset journal are saved. Receiving uploads does not occupy
 an FFmpeg processing slot, including under low-resource profiles.
 
-All routes below require the existing upload token and return `Cache-Control:
+All routes below require the existing upload token or an author session with
+`X-Author-CSRF`, and return `Cache-Control:
 no-store`. This is the project's offset/checksum protocol, not a tus endpoint.
 Paths below are relative to the public `/api` prefix:
 
@@ -51,7 +52,8 @@ The existing server video/color/package verification still runs before publicati
 The browser retries transient network/408/409/429/5xx failures with bounded
 exponential backoff and reconciles offsets before resending. It supports pause,
 resume and reload recovery. Only the session ID is stored locally, never the
-token or video bytes. After reload, enter the token and reselect the original
+token or video bytes. After reload, use a valid author session or enter the token,
+then reselect the original
 files when reception is incomplete. If browser storage is unavailable, keep the
 displayed task ID for authenticated API lookup. Transfer progress represents
 server-confirmed bytes; waiting and processing are separate named states.
@@ -143,6 +145,64 @@ http://127.0.0.1:8060/media/<slug>/<master-type>/master.m3u8
 The Next.js dev server rewrites `/media/*` to the upload API so local playback works at `http://127.0.0.1:3000`.
 
 ## Upload Authentication
+
+### Author sessions
+
+Public paths use the `/api` prefix; the API receives `/author/session`.
+
+| Method | Public path | Contract |
+| --- | --- | --- |
+| POST | `/api/author/session` | Same-origin `application/json`, exactly `{ "token": "..." }` (1–512 characters, 4 KiB body). Returns `{ expiresAt, csrf, article }` and two cookies. |
+| GET | `/api/author/session` | Returns `{ author: true, expiresAt, csrf, article }` or `{ author: false }`. Invalid sessions clear both cookies. Does not renew the six-hour expiry. |
+| DELETE | `/api/author/session` | Requires the session cookie, same origin and `X-Author-CSRF`; revokes the current session and clears both cookies. |
+| GET | `/api/author/tasks` | Session-only, read-only `{ tasks }` summaries: active/recent video sessions and the latest 16 film jobs. No private file paths or source bytes. |
+
+All responses, including errors, use `Cache-Control: no-store`. Login returns
+401 for invalid credentials/payload shape, 429 after ten failed attempts in a
+five-minute process-wide window (`Retry-After` is the remaining duration), and
+503 for an empty/placeholder upload token. Missing/null/cross-origin mutation
+origins, cross-site fetches and invalid CSRF are rejected. Non-JSON login is
+415; oversized bodies are 413. `expiresAt` is Unix time in milliseconds.
+
+Sessions are process-local, fixed at six hours, bounded to 16 and rotated on
+sign-in. An API restart invalidates all of them. Cookie paths are `/api` for
+the HttpOnly identifier and `/` for the readable hint. Both use SameSite=Strict
+and Secure over HTTPS. The hint never authorizes an API request. Browser tabs
+revalidate after session changes and when becoming visible; no token or CSRF
+is placed in persistent browser storage. Publishing routes accept the original
+Bearer/token headers or session + `X-Author-CSRF`. Cookie-authenticated writes
+require the exact external origin; GET/HEAD may omit Origin but still require
+CSRF on protected publishing/preview routes. Explicit invalid manual tokens
+never fall back to a session. The standalone task-summary read validates the
+session and rejects cross-site requests without requiring a CSRF header.
+
+`article` indicates whether the article API actually inherits `UPLOAD_API_TOKEN`.
+An explicitly configured `ARTICLE_API_TOKEN`, even with an identical value, does
+not grant article rights to this session. The article placeholder remains
+disabled. `/maintenance` remains token-only. Authentication failures do not
+automatically replay writes; the user can reauthenticate and retry with their
+selected files/text preserved.
+
+Task progress uses server-confirmed upload bytes and the film job's measured
+percentage. Video encoding exposes phase only, so the ring is indeterminate
+during processing; upload completion is never presented as encoding progress.
+The menu polls serially every five seconds while visible and defers checks while
+hidden, with a 15-second wake check. Guests do not poll. Completion feedback is
+brief and based on an observed task transition.
+
+Author file drops only route and select files, without submitting. A one-item
+in-memory handoff survives client navigation; extensions/MIME guide the route,
+and the target form/API still own content validation. HEIF/AVIF routing does
+not broaden the API's existing accepted image formats or colour requirements.
+
+Run `node tests/create-menu-browser.cjs` for the isolated headless WebKit
+acceptance suite (ports 13002, 18057, 18062; reports/screenshots under
+`test-results/create-menu`). It uses a disposable CMS and media directory.
+`npm run test:api`, `npm run test:web` and `cd apps/web && npx tsc --noEmit -p .`
+cover the remaining checks. Media tests require the project's compatible
+FFmpeg/FFprobe and working Vulkan configuration.
+
+### Existing token clients
 
 Set `UPLOAD_API_TOKEN` in `apps/api/.env`.
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Lang } from "./UploadPageClient";
+import { authorHeaders, canAuthorize, observeAuthorResponse, useAuthorSession } from "@/lib/author-session";
 
 export type UploadProject = {
   id: number;
@@ -27,6 +28,8 @@ export function VideoProjectPicker({ token, lang, initialProjectId, selected, on
   onSelect: (project: UploadProject | null) => void;
 }) {
   const t = copy[lang];
+  const author = useAuthorSession();
+  const credentialKey = token.trim() || (author.author ? author.csrf : "");
   const [search, setSearch] = useState("");
   const [projects, setProjects] = useState<UploadProject[]>([]);
   const [page, setPage] = useState(0);
@@ -41,10 +44,10 @@ export function VideoProjectPicker({ token, lang, initialProjectId, selected, on
     setProjects([]); setPage(0); setHasMore(false); setLoading(false); setError("");
     onSelect(null);
     return () => request.current?.abort();
-  }, [token, onSelect]);
+  }, [credentialKey, onSelect]);
 
   async function load(nextPage = 1, id?: string) {
-    if (!token.trim()) { setError(t.required); return; }
+    if (!canAuthorize(token)) { setError(t.required); return; }
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
@@ -52,8 +55,9 @@ export function VideoProjectPicker({ token, lang, initialProjectId, selected, on
     const params = new URLSearchParams(id ? { id } : { search, page: String(nextPage) });
     try {
       const response = await fetch(`/api/uploads/video-projects?${params}`, {
-        headers: { Authorization: `Bearer ${token.trim()}` }, signal: controller.signal
+        headers: authorHeaders(token), signal: controller.signal, cache: "no-store"
       });
+      observeAuthorResponse(response.status, token);
       if (!response.ok) throw new Error(t.error);
       const data = await response.json() as { projects: UploadProject[]; hasMore: boolean };
       if (controller.signal.aborted) return;
@@ -68,7 +72,7 @@ export function VideoProjectPicker({ token, lang, initialProjectId, selected, on
   }
 
   return <div className="upload-project-picker">
-    {initialProjectId && !selected ? <button type="button" disabled={loading || !token.trim()}
+    {initialProjectId && !selected ? <button type="button" disabled={loading || !canAuthorize(token)}
       onClick={() => void load(1, initialProjectId)}>{t.linked}</button> : null}
     <label>{t.search}<input value={search} type="search" onChange={event => {
       request.current?.abort(); setLoading(false); setSearch(event.target.value); setPage(0); setHasMore(false);
@@ -76,7 +80,7 @@ export function VideoProjectPicker({ token, lang, initialProjectId, selected, on
       if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); void load(); }
     }} /></label>
     <div className="upload-actions">
-      <button type="button" disabled={loading || !token.trim()} onClick={() => void load()}>{t.load}</button>
+      <button type="button" disabled={loading || !canAuthorize(token)} onClick={() => void load()}>{t.load}</button>
       {search ? <button type="button" onClick={() => {
         request.current?.abort(); setLoading(false); setSearch(""); setProjects([]); setPage(0); setHasMore(false);
       }}>{t.clear}</button> : null}

@@ -1,3 +1,5 @@
+import { authorHeaders, observeAuthorResponse } from "./author-session";
+
 export type ManagedPhoto = {
   id: number;
   albumId: number;
@@ -129,7 +131,7 @@ export async function albumApiRequest<T>(
     signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     redirect: "error",
     headers: {
-      Authorization: `Bearer ${token.trim()}`,
+      ...authorHeaders(token),
       ...(init.body instanceof FormData
         ? {}
         : { "Content-Type": "application/json" }),
@@ -141,6 +143,7 @@ export async function albumApiRequest<T>(
     | (T & { error?: string; message?: string })
     | null;
   if (!response.ok) {
+    observeAuthorResponse(response.status, token);
     throw new Error(
       payload?.error ||
         payload?.message ||
@@ -162,7 +165,7 @@ export function uploadAlbumFormData<T>(
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", pathname);
-    xhr.setRequestHeader("Authorization", `Bearer ${token.trim()}`);
+    for (const [name, value] of Object.entries(authorHeaders(token))) xhr.setRequestHeader(name, value);
     xhr.responseType = "json";
     xhr.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable) {
@@ -170,6 +173,7 @@ export function uploadAlbumFormData<T>(
       }
     });
     xhr.addEventListener("load", () => {
+      observeAuthorResponse(xhr.status, token);
       const payload =
         xhr.response ??
         (() => {
