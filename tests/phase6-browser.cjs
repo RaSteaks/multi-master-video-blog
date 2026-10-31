@@ -59,7 +59,8 @@ async function main() {
       await dialog.getByLabel("上传令牌", { exact: true }).fill(fixture.token);
       await dialog.getByRole("button", { name: "登录", exact: true }).click();
       await page.waitForURL(`${fixture.url}${next === "/albums" ? next : "/"}`);
-      await page.locator(next === "/albums" ? "main" : ".orbital-home").waitFor();
+      // The route skeleton is also a <main>; wait for the page itself.
+      await page.locator(next === "/albums" ? "main:not([data-route-loading])" : ".orbital-home").waitFor();
       await page.waitForLoadState("networkidle");
     }
     await context.route("**/api/author/session", route => route.abort());
@@ -252,6 +253,9 @@ async function main() {
     await fullPage.waitForURL(/\/upload\?projectId=50$/);
     await fullPage.locator("form.upload-form").waitFor();
     await fullPage.waitForLoadState("networkidle");
+    // The browser restores the pre-fullscreen position after fullscreenchange; it must not stick.
+    await fullPage.waitForFunction(() => scrollY === 0, null, { timeout: 2000 });
+    await fullPage.waitForTimeout(500);
     assert.equal(await fullPage.evaluate(() => scrollY), 0);
     assert.equal(await fullPage.evaluate(() => document.documentElement.dataset.watching || null), null);
     await navigation.close();

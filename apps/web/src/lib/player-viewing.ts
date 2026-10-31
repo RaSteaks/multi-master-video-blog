@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 const IDLE_MS = 2500;
+const FULLSCREEN_EXIT_MS = 1000;
 type LockableOrientation = ScreenOrientation & { lock?: (orientation: "landscape") => Promise<void> };
 
 /** Owns surrounding UI only. Never transforms, filters or copies media pixels. */
@@ -166,7 +167,15 @@ export function usePlayerViewing(videoRef: RefObject<HTMLVideoElement | null>, s
   useEffect(() => () => {
     delete document.documentElement.dataset.watching;
     if (orientationLocked.current) screen.orientation?.unlock();
-    // Navigation owns scroll restoration after unmount; never scroll the next page.
+    // Navigation owns scroll restoration after unmount, but removing a fullscreen
+    // player ends fullscreen a moment later, and the browser then restores the
+    // position saved on entry over the next page, after fullscreenchange. Undo
+    // that one scroll and keep what navigation set.
+    if (!expanded.current || immersiveRef.current) return;
+    const top = scrollY;
+    const keep = () => { window.scrollTo({ top, behavior: "instant" }); };
+    window.addEventListener("scroll", keep, { once: true });
+    setTimeout(() => window.removeEventListener("scroll", keep), FULLSCREEN_EXIT_MS);
   }, []);
   return { immersive, fullscreen, idle, playing, toggleFullscreen };
 }
