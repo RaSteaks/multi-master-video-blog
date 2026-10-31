@@ -21,6 +21,23 @@ async function main() {
     assert.equal(await page.locator(".author-menu").count(), 0);
     await page.keyboard.press("Control+Alt+Shift+L");
     const dialog = page.getByRole("dialog", { name: "作者登录", exact: true });
+    // Exercise the real API's origin rejection, using only disposable credentials.
+    // Removing the port creates the same mismatch as an incomplete proxy header.
+    await page.route("**/api/author/session", async route => {
+      if (route.request().method() !== "POST") return route.continue();
+      // WebKit owns Origin on continued browser requests. Fetch at the proxy
+      // boundary instead, then deliver the actual API rejection to the form.
+      const response = await route.fetch({ headers: { ...route.request().headers(), origin: "http://127.0.0.1" } });
+      assert.equal(response.status(), 403);
+      await route.fulfill({ response });
+    });
+    await dialog.getByLabel("上传令牌", { exact: true }).fill(fixture.token);
+    await dialog.getByRole("button", { name: "登录", exact: true }).click();
+    await dialog.getByText("登录请求来源校验失败，请检查反向代理的域名、端口、协议转发及 API 的 TRUST_PROXY 配置。", { exact: true }).waitFor();
+    assert.equal(await dialog.getByLabel("上传令牌", { exact: true }).inputValue(), "");
+    await page.screenshot({ path: path.join(fixture.output, "origin-rejected.png") });
+    await page.unroute("**/api/author/session");
+    pass("origin mismatch explains proxy configuration instead of a nonexistent rotated session");
     await dialog.getByLabel("上传令牌", { exact: true }).fill(fixture.token);
     await dialog.getByRole("button", { name: "登录", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });

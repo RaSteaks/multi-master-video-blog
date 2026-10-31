@@ -65,6 +65,25 @@ function loadTs(filename, dependencies = {}, globals = {}) {
   return module.exports;
 }
 
+test("sign-in reports origin rejection instead of telling users to refresh a nonexistent session", async () => {
+  const methods = [];
+  const author = loadTs(path.join(root, "apps/web/src/lib/author-session.ts"), {}, {
+    fetch: async (url, options) => {
+      assert.equal(url, "/api/author/session");
+      methods.push(options.method);
+      return new Response(JSON.stringify({ error: "请求来源不受信任，请从本站重新操作。" }), { status: 403 });
+    }
+  });
+  await assert.rejects(author.signIn("fixture-token"), error => {
+    assert.equal(error.status, 403);
+    assert.match(error.message, /来源校验失败.*端口.*TRUST_PROXY/);
+    assert.doesNotMatch(error.message, /刷新后重试/);
+    return true;
+  });
+  await assert.rejects(author.refreshStatus(), error => error.status === 403 && error.message === "登录状态已更新，请刷新后重试。");
+  assert.deepEqual(methods, ["POST", "GET"]);
+});
+
 test("all legacy scan files migrate without changing persisted Windows/POSIX paths", async t => {
   const dir = await temp(t), publicRoot = path.join(dir, "media"), privateRoot = path.join(dir, "private/scans");
   await write(path.join(publicRoot, "film-scans/1/sources/previews/7.jpg"));

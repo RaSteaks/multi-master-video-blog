@@ -53,7 +53,11 @@ async function request(method: string, token?: string, forgetDevice = false) {
     if (method !== "POST" && response.status === 401) invalidateAuthorSession();
     const messages: Record<number, string> = {
       401: method === "POST" ? "令牌不正确，请检查后重试。" : "登录已过期，请重新登录。",
-      403: "登录状态已更新，请刷新后重试。",
+      // Sign-in has no session CSRF nonce yet: its 403 indicates origin/proxy
+      // rejection, not a rotated session that another refresh could repair.
+      403: method === "POST"
+        ? "登录请求来源校验失败，请检查反向代理的域名、端口、协议转发及 API 的 TRUST_PROXY 配置。"
+        : "登录状态已更新，请刷新后重试。",
       429: "尝试次数过多，请稍后再试。",
       503: "作者登录尚未配置或服务暂不可用，请检查 Manager。",
     };

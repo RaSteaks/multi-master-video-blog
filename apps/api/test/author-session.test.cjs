@@ -107,6 +107,21 @@ test("trusted Next/Nginx forwarding preserves the external host, port and Secure
   assert.throws(() => fixture().auth.signIn(f.req, f.res, { token: "test-author-token" }), { statusCode: 403 });
 });
 
+test("HTTPS login on a non-default port requires the proxy to preserve the public port", () => {
+  const f = fixture({ trustProxy: true });
+  // Nginx $host omits the public port. $http_host must be forwarded separately.
+  Object.assign(f.req.headers, { host: "blog.test", origin: "https://blog.test:8443", "x-forwarded-proto": "https" });
+  assert.throws(f.login, error => error.statusCode === 403 && /请求来源/.test(error.message));
+  assert.equal(f.headers.has("Set-Cookie"), false);
+  f.req.headers["x-forwarded-host"] = "blog.test:8443";
+  f.login();
+  assert.ok(f.headers.get("Set-Cookie").every(cookie => cookie.endsWith("; Secure")));
+  for (const origin of ["https://blog.test", "https://blog.test:8444", "http://blog.test:8443", "https://other.test:8443"]) {
+    f.req.headers.origin = origin;
+    assert.throws(f.login, { statusCode: 403 });
+  }
+});
+
 test("protected GETs accept normal same-origin reads without Origin but still require CSRF", () => {
   const f = fixture(); const signed = f.login();
   f.req.headers.cookie = f.cookie(); f.req.method = "GET";

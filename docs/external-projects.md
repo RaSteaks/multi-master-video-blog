@@ -19,6 +19,16 @@ flag changes only the new collection, fields and cover relation; it does not
 rewrite unrelated CMS settings. `external_projects` is included in the private
 CMS collection policy. No anonymous Directus collection permissions are needed.
 
+If production shows “实验室暂时无法载入” while local development shows an empty
+list, inspect `GET /api/external-projects`. A Directus 403 saying
+`external_projects` does not exist or is inaccessible means the production
+collection or service permissions are missing, not that there are zero projects.
+Run the narrow setup above on the intended deployment if the collection is
+missing. If it already exists, verify the API and Web service accounts can read
+the listed fields; the authoring API account also needs create/update access.
+Keep anonymous Directus access disabled. Manager's Update API + Web installs
+dependencies and updates services; it does not run database schema migrations.
+
 Fields: `title`, `description`, `url`, `preview_url`, `preview_enabled`,
 `open_mode` (`iframe` or `external`), `cover_image`, `published`, `sort_order`,
 `created_at`, and `updated_at`. Lower sort values appear first. Drafts are the
