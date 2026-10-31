@@ -76,6 +76,19 @@ npm run test:web
 npm run build:web
 ```
 
+Production Web builds use `apps/web/tsconfig.build.json`, which inherits the
+normal strict settings and excludes only `node_modules` and `.next/dev/types`.
+Development keeps `tsconfig.json`; `NEXT_TSCONFIG_PATH` still overrides both for
+isolated fixtures. This prevents validators from an earlier `next dev` session
+from referencing deleted layouts during a later production build. Source files
+and the current `.next/types` production validators are still type-checked.
+Run `node --test tests/web-build-types.test.cjs` for the regression checks.
+
+When diagnosing a type-check failure through Manager, inspect
+`logs/web.build.out.log` as well as `logs/web.build.err.log`: the TypeScript CLI
+writes diagnostics to standard output. After correcting a failed build, use
+**Build + Restart** / `npm run web:rebuild-restart` before attempting Web Start.
+
 Start local services:
 
 ```powershell

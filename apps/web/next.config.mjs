@@ -57,7 +57,11 @@ const directusAdminRoutes = [
 const nextConfig = {
   // Isolated browser fixtures must not share the running author's dev cache/lock.
   ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
-  ...(process.env.NEXT_TSCONFIG_PATH ? { typescript: { tsconfigPath: process.env.NEXT_TSCONFIG_PATH } } : {}),
+  // Old dev-route validators can still reference layouts removed before deployment.
+  typescript: {
+    tsconfigPath: process.env.NEXT_TSCONFIG_PATH ||
+      (process.env.NODE_ENV === "production" ? "tsconfig.build.json" : "tsconfig.json")
+  },
   reactStrictMode: true,
   // Standalone keeps the workspace layout so traced shared modules still resolve.
   ...(process.env.STANDALONE_BUILD === "true" ? { output: "standalone", outputFileTracingRoot: repoRoot } : {}),
