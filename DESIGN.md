@@ -177,6 +177,9 @@ corners and inset preview chips use 4px corners.
   during operations, retain keyboard focus across polling, and show actual named
   phases and terminal failures rather than estimated percentages. The command
   and recovery contract is documented in `docs/deployment.md`.
+  Application updates show dependency installation as a named journal phase and
+  reuse the existing log viewer for Dependencies. Confirmation explains the
+  stop/install/build/start order and failure recovery; percentages are not guessed.
   `managerStyles()` supplies the same tokens and controls to the dashboard and
   `scripts/manager-login.cjs`. The login is a compact Chinese-language form with
   inline validation, password visibility, and stable pending/error space. Browser

@@ -126,10 +126,25 @@ PostgreSQL control may require an Administrator terminal/Manager process.
   Restart in Development or switch to Production. A build failure leaves Web
   stopped and does not start an incomplete bundle. Inspect the **Build** log,
   fix the build and run Build + Restart again.
-- **Update API + Web** / `npm run services:update` restarts API, then builds and
-  restarts production Web (restarts only in Development). PostgreSQL and CMS are
-  untouched. A failed API step prevents the Web step. Install changed dependencies
-  separately first, for example `npm install`; Manager does not fetch packages.
+- **Update API + Web** / `npm run services:update` stops Web and API, installs
+  their workspace dependencies, builds production Web, then starts API followed
+  by Web with health checks. Development skips the build. Installation uses
+  `npm install --workspace=@multi-master-video-blog/api --workspace=@multi-master-video-blog/web --include-workspace-root=false --include=dev --no-audit --no-fund`
+  from the project root, honoring the checked-in package manifests and lockfile.
+  It deliberately avoids `npm ci`, which removes the shared dependency tree.
+  PostgreSQL and CMS are not restarted; CMS-only and root dependency updates
+  still require a separate maintenance procedure. Registry access and write
+  permissions for the project are required. Manager does not pull Git changes.
+  Every failure stops subsequent steps; install/build failure leaves both API
+  and Web stopped. Fix the error, then retry Update API + Web. The persistent
+  operation panel reports installation progress; **Dependencies** displays
+  `logs/app.dependencies.out.log` and `logs/app.dependencies.err.log`.
+  After deploying this controller change, restart Manager once to load it;
+  merely clicking Update in an already-running older Manager uses the old flow.
+  Regression checks: `npm run test:manager` covers sequencing, failures and
+  offline fixture package installation; `node tests/manager-update-browser.cjs`
+  checks the authenticated UI with isolated, simulated Windows service effects.
+  Browser evidence is saved in `test-results/manager-auto-install`.
 - `npm run services:start` starts PostgreSQL → CMS → API → Web, stopping on the
   first failed startup. `services:stop` attempts Web → API → CMS → PostgreSQL,
   retaining every failure. `services:restart` performs both phases and tries to
@@ -137,6 +152,23 @@ PostgreSQL control may require an Administrator terminal/Manager process.
   reports that failure. `services:status` / `services:health` inspect the stack.
 - Single-service actions do not silently restart dependent services. Stop/restart
   confirmation explains the interruption; finish uploads/conversions first.
+
+### API upload-storage lock after a Windows restart
+
+Windows force-stop can leave the upload spool's lock directory behind. Its lease
+expires after 30 seconds without the owning API's heartbeat. API startup now
+waits and retries for up to 35 seconds before failing; the Manager's default
+90-second health deadline allows this recovery. Do not lower that deadline below
+the lock recovery window. A live owner's heartbeat continues to block a second
+API process: the retry does not delete or override an active lock.
+
+`ELOCKED` / `Lock file is already being held` is a storage-ownership conflict,
+not evidence of missing Directus schema. If it persists, stop duplicate API
+instances sharing `VIDEO_UPLOAD_ROOT` and retry; do not manually delete their
+active lock or run schema changes to address this error. For an older deployed
+API, after confirming that its previous process has exited, wait at least
+35 seconds before starting it again. Never delete the upload directory: it holds
+resumable upload data.
 
 Service, stack and Web-mode POST endpoints return **202** once the operation lock
 is acquired, with `{ok:true, operation:{id,...}}`. This is acceptance, not success.

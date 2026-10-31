@@ -56,17 +56,93 @@ test("ordinary production restart reuses a build and missing build gives an acti
   await assert.rejects(second.run('startProcessService(serviceMap.get("web"))'), /No production Web build.*Build \+ Restart/);
 });
 
-test("update application touches only API and Web, and stops after API failure", async () => {
+test("update stops API/Web before installing, builds only in production, then starts in dependency order", async () => {
   const { run } = harness();
-  run('currentWebMode="production"; var calls=[]; handleAction=async(id,action)=>{calls.push(id+":"+action);return {message:"ok"}};');
+  run('currentWebMode="production"; var calls=[]; handleAction=async(id,action)=>{calls.push(id+":"+action);return {message:"ok"}}; installAppDependencies=async()=>calls.push("install"); buildWeb=async()=>calls.push("build");');
   await run('handleStackAction("refresh-app")');
-  assert.equal(run('calls.join(",")'), 'api:restart,web:rebuild-restart');
+  assert.equal(run('calls.join(",")'), 'web:stop,api:stop,install,build,api:start,web:start');
   run('calls=[]; currentWebMode="development";');
   await run('handleStackAction("refresh-app")');
-  assert.equal(run('calls.join(",")'), 'api:restart,web:restart');
-  run('calls=[]; handleAction=async(id)=>{calls.push(id);throw new Error("API failed")};');
-  await assert.rejects(run('handleStackAction("refresh-app")'), error => error.results.length === 1);
-  assert.equal(run('calls.join(",")'), 'api');
+  assert.equal(run('calls.join(",")'), 'web:stop,api:stop,install,api:start,web:start');
+});
+
+test("application update records every completed step and never advances past a failure", async t => {
+  const expected = ['web:stop', 'api:stop', 'app-dependencies:install', 'web:build', 'api:start', 'web:start'];
+  for (const failure of expected) {
+    const { run, context } = harness(temporaryRoot(t), { MANAGER_WEB_MODE: "production" });
+    context.failure = failure;
+    run('currentWebMode="production"; var calls=[]; var invoke=async(key)=>{calls.push(key);if(key===failure)throw new Error("fixture failure");return {message:"ok"}}; stopProcessService=async(s)=>invoke(s.id+":stop"); startProcessService=async(s)=>invoke(s.id+":start"); installAppDependencies=async()=>invoke("app-dependencies:install"); buildWeb=async()=>invoke("web:build");');
+    await assert.rejects(run('withOperation("refresh-app",()=>handleStackAction("refresh-app"))'), error => {
+      assert.equal(error.results.length, expected.indexOf(failure) + 1);
+      assert.equal(error.results.at(-1).ok, false);
+      return /fixture failure/.test(error.message);
+    });
+    assert.equal(run('calls.join(",")'), expected.slice(0, expected.indexOf(failure) + 1).join(','));
+    const journal = await run('operationJournal.read()');
+    assert.equal(journal.state, 'failed');
+    assert.equal(journal.steps.at(-1).state, 'failed');
+    assert.equal(journal.steps.at(-1).serviceId + ':' + journal.steps.at(-1).phase, failure);
+  }
+});
+
+test("dependency install waits for scoped npm with build tools, logs output, and propagates failures", async t => {
+  const root = temporaryRoot(t);
+  const { run } = harness(root);
+  run('var command; runPowerShell=async(value)=>{command=value;return "0"};');
+  await run('installAppDependencies()');
+  const command = run('command');
+  assert.match(command, /-FilePath 'npm\.cmd'/);
+  assert.match(command, /'install','--workspace=@multi-master-video-blog\/api','--workspace=@multi-master-video-blog\/web'/);
+  assert.match(command, /'--include-workspace-root=false','--include=dev','--no-audit','--no-fund'/);
+  assert.match(command, /-Wait -PassThru/);
+  assert.ok(command.includes(root));
+  assert.match(command, /app\.dependencies\.out\.log/);
+  assert.match(command, /app\.dependencies\.err\.log/);
+  assert.doesNotMatch(command, /'ci'|--ignore-scripts|--workspace=.*cms/);
+  fs.writeFileSync(path.join(root, 'logs/app.dependencies.err.log'), 'fixture install failure');
+  assert.equal((await run('readServiceLogs("app-dependencies")')).stderr, 'fixture install failure');
+  for (const result of ['1', '']) {
+    run(`runPowerShell=async()=>${JSON.stringify(result)}`);
+    await assert.rejects(run('installAppDependencies()'), /API and Web remain stopped.*app.dependencies.err.log/);
+  }
+});
+
+test("update installs newly declared workspace dependencies with real npm and retains CMS/root packages", { skip: !process.env.npm_execpath }, async t => {
+  const root = temporaryRoot(t);
+  const execFile = require('node:util').promisify(require('node:child_process').execFile);
+  const writePackage = (directory, data) => {
+    fs.mkdirSync(path.join(root, directory), { recursive: true });
+    fs.writeFileSync(path.join(root, directory, 'package.json'), JSON.stringify(data));
+  };
+  for (const name of ['runtime-fixture', 'build-fixture', 'cms-fixture', 'manager-fixture']) {
+    writePackage('packages/' + name, { name, version: '1.0.0', main: 'index.cjs' });
+    fs.writeFileSync(path.join(root, 'packages', name, 'index.cjs'), `module.exports=${JSON.stringify(name)};`);
+  }
+  writePackage('.', { private: true, workspaces: ['apps/*'], dependencies: { 'manager-fixture': 'file:packages/manager-fixture' } });
+  for (const id of ['api', 'web', 'cms']) writePackage('apps/' + id, { name: '@multi-master-video-blog/' + id, version: '1.0.0',
+    ...(id === 'cms' ? { dependencies: { 'cms-fixture': 'file:../../packages/cms-fixture' } } : {}) });
+  const npm = args => execFile(process.execPath, [process.env.npm_execpath, ...args, '--offline', '--cache', path.join(root, 'npm-cache')],
+    { cwd: root, env: { ...process.env, NODE_ENV: 'production' }, timeout: 30000 });
+  await npm(['install', '--no-audit', '--no-fund']);
+  for (const id of ['api', 'web']) writePackage('apps/' + id, { name: '@multi-master-video-blog/' + id, version: '1.0.0',
+    dependencies: { 'runtime-fixture': 'file:../../packages/runtime-fixture' },
+    ...(id === 'web' ? { devDependencies: { 'build-fixture': 'file:../../packages/build-fixture' } } : {}) });
+  const { run, context } = harness(root);
+  // Translate only the Windows launch boundary; execute the actual generated npm
+  // arguments against local fixtures, with no registry or installed-service access.
+  context.runPowerShell = async command => {
+    const args = [...command.match(/-ArgumentList @\((.*?)\) -WorkingDirectory/)[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
+    await npm(args);
+    return '0';
+  };
+  await run('installAppDependencies()');
+  for (const id of ['api', 'web']) {
+    const localRequire = createRequire(path.join(root, 'apps', id, 'package.json'));
+    assert.equal(localRequire('runtime-fixture'), 'runtime-fixture');
+    if (id === 'web') assert.equal(localRequire('build-fixture'), 'build-fixture');
+  }
+  assert.equal(createRequire(path.join(root, 'apps/cms/package.json'))('cms-fixture'), 'cms-fixture');
+  assert.equal(createRequire(path.join(root, 'package.json'))('manager-fixture'), 'manager-fixture');
 });
 
 test("accepted operations expose progress and survive an independent observer", async t => {

@@ -8442,7 +8442,8 @@ verifyApiSchema().then(() => prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT))
     void videoUploads.drain();
   });
 }).catch(error => {
-  console.error(`API storage/schema is not ready; run setup:cms-schema and verify service permissions: ${error.message}`);
+  if (error.code === "ELOCKED") console.error(`API upload storage is locked: ${error.message}`);
+  else console.error(`API storage/schema is not ready; run setup:cms-schema and verify service permissions: ${error.message}`);
   process.exitCode = 1;
 });
 

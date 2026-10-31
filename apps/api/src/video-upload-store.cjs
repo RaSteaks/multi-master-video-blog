@@ -294,8 +294,23 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
     await fsp.mkdir(mediaRoot, { recursive: true });
     const [realRoot, realMedia] = await Promise.all([fsp.realpath(root), fsp.realpath(mediaRoot)]);
     if (inside(realMedia, realRoot) || inside(realRoot, realMedia)) throw new Error("Video upload storage must not resolve into public media.");
-    // Fail closed if two API workers are configured against the same local spool.
-    unlock = await lockfile.lock(root, { realpath: true, stale: 30000, update: 10000 });
+    // Windows Stop-Process cannot run exit cleanup. Allow its abandoned lock to
+    // age past the 30s lease (plus timestamp precision), without stealing a live
+    // worker's heartbeat. Other storage errors still fail immediately.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        unlock = await lockfile.lock(root, { realpath: true, stale: 30000, update: 10000 });
+        break;
+      } catch (error) {
+        if (error.code !== "ELOCKED") throw error;
+        if (attempt >= 35) {
+          error.message = `Video upload storage is still locked after waiting 35 seconds: ${root}. Stop the other API process using this VIDEO_UPLOAD_ROOT before retrying; do not delete an active lock.`;
+          throw error;
+        }
+        if (attempt === 0) console.warn("[video-upload] Waiting up to 35 seconds for the previous API storage lock to expire.");
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
     try {
       for (const entry of await fsp.readdir(root, { withFileTypes: true })) {
         if (!UUID.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
