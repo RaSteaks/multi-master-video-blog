@@ -68,6 +68,28 @@
   --transition-base: 210ms ease;
   --transition-slow: 300ms ease;
 
+  /* Motion roles shared by panels, reading feedback and future media controls.
+     Keep CSS values canonical; WAAPI consumers read these same tokens. */
+  --motion-control-duration: 130ms;
+  --motion-panel-duration: 260ms;
+  --motion-media-duration: 180ms;
+  --motion-emphasis-duration: 420ms;
+  --motion-reduced-duration: 100ms;
+  --motion-panel-distance: 12px;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Slow enough to follow the divider across a wide screen. The symmetric
+     sine-like in-out moves the film like a transport motor: soft start and
+     stop, near-even speed between, peaking at ~1.6× the average (an
+     asymmetric curve such as 0.4, 0, 0.2, 1 rushes 78% of the way in half
+     the time, then crawls). */
+  --motion-wipe-duration: 1200ms;
+  --motion-wipe-ease: cubic-bezier(0.37, 0, 0.63, 1);
+  /* The wipe edge leans with its travel: like "/" moving left → right, like
+     "\" (mirrored) moving right → left. --wipe-run is how far its top and
+     bottom sit either side of its midpoint (half the viewport height × tan). */
+  --wipe-slant: 8deg;
+  --wipe-run: calc(50vh * tan(var(--wipe-slant)));
+
   /* Typography */
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
@@ -191,7 +213,7 @@ a {
   .collection-links a,
   .github-link,
   .profile-about-link,
-  .orbit-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget
 ):active {
@@ -205,7 +227,9 @@ a {
   *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    /* Fewer and gentler, not none: fades and colour changes still explain a
+       state change; movement, scaling and size changes snap instead. */
+    transition-property: opacity, color, background-color, border-color, outline-color, fill, stroke !important;
     scroll-behavior: auto !important;
   }
 
@@ -258,8 +282,10 @@ a {
   border-radius: 3px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
+@media (hover: hover) and (pointer: fine) {
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--muted);
+  }
 }
 
 /* ---- Skip-to-content ---- */
@@ -310,15 +336,23 @@ body:has(.orbital-home) .orbital-home {
   /* Experiment B (docs/performance-optimization-plan.md §6.1): 24px/150%
      keeps the frosted look at a fraction of the scroll-time GPU cost of
      48px/200%. Re-run visual regression before changing further. */
-  backdrop-filter: blur(24px) saturate(150%) brightness(1.06);
   -webkit-backdrop-filter: blur(24px) saturate(150%) brightness(1.06);
+  backdrop-filter: blur(24px) saturate(150%) brightness(1.06);
   box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.05);
   transition: border-color var(--transition-base);
 }
 
 /* Header gains depth as the page scrolls (scroll-driven, zero JS) */
 @supports (animation-timeline: scroll()) {
-  .site-header {
+  /* The drop shadow is painted once on this layer; scrolling only scrubs its
+     opacity, so the shadow is composited rather than repainted per frame. */
+  .site-header::after {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    box-shadow: 0 14px 36px -16px rgba(0, 0, 0, 0.6);
+    content: "";
+    pointer-events: none;
     animation: header-elevate linear both;
     animation-timeline: scroll();
     animation-range: 0 120px;
@@ -327,13 +361,11 @@ body:has(.orbital-home) .orbital-home {
 
 @keyframes header-elevate {
   from {
-    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+    opacity: 0;
   }
 
   to {
-    box-shadow:
-      inset 0 -1px 0 rgba(255, 255, 255, 0.05),
-      0 14px 36px -16px rgba(0, 0, 0, 0.6);
+    opacity: 1;
   }
 }
 
@@ -345,8 +377,10 @@ body:has(.orbital-home) .orbital-home {
   transition: color var(--transition-fast);
 }
 
-.brand:hover {
-  color: var(--accent);
+@media (hover: hover) and (pointer: fine) {
+  .brand:hover {
+    color: var(--accent);
+  }
 }
 
 .site-header nav {
@@ -392,14 +426,16 @@ body:has(.orbital-home) .orbital-home {
 
 .site-header nav .nav-pill[data-ready="true"] {
   transition:
-    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
-    width 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 220ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 200ms ease;
 }
 
-.site-header nav a:hover {
-  color: var(--text);
-  background: var(--surface-raised);
+@media (hover: hover) and (pointer: fine) {
+  .site-header nav a:hover {
+    color: var(--text);
+    background: var(--surface-raised);
+  }
 }
 
 .site-header nav a:focus-visible {
@@ -464,24 +500,15 @@ html.route-transition-pending body::after {
    document.startViewTransition where supported; the veil above is the
    fallback). The animation runs on root pseudo-elements, so page content and
    its backdrop-filter panels are never composited differently. */
-.site-header {
-  view-transition-name: site-header;
-}
-
-/* The header persists across routes: show it as-is (live) instead of
-   cross-fading it with itself, so the nav pill slide stays visible. */
-::view-transition-group(site-header),
-::view-transition-new(site-header) {
-  animation: none;
-}
-
-/* Hide the old header only once the new one exists. An animation on a
-   view-transition pseudo-element starts when the transition is ready (new
-   state captured); `display: none` instead would blank the header for the
-   whole wait before that. */
-::view-transition-old(site-header) {
-  animation: vt-hide 1ms both;
-}
+/* Keep the header in the root image. The reveal includes its full height from
+   the first frame, avoiding a separate named image that can disappear in WebKit.
+   Home transitions set --wipe-top to zero, so the whole viewport wipes there. */
+.site-header { view-transition-name: none; }
+::view-transition-group(root) { z-index: 0; }
+::view-transition { pointer-events: none; }
+/* The root captures the header once. Settle its pill before capture rather
+   than freezing a half-finished slide and jumping when the snapshot leaves. */
+html[data-vt-direction] .site-header nav .nav-pill[data-ready="true"] { transition: none; }
 
 @keyframes vt-hide {
   to {
@@ -489,17 +516,125 @@ html.route-transition-pending body::after {
   }
 }
 
-::view-transition-old(root),
+/* Navigation wipe: like the comparison slider between two masters, a divider
+   sweeps across and reveals the new page over the old one (forward: left →
+   right; back: right → left, set by PageTransition as data-vt-direction).
+   Both snapshots stay opaque, so blending is turned off: the default
+   plus-lighter cross-fade would brighten where they overlap. The divider is a
+   thin lit line (.route-wipe-line) present only in the new state; its group
+   travels with the clip edge. Snapshots are flat images, so clipping them
+   never affects the live page's backdrop-filter panels. */
+::view-transition-old(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
 ::view-transition-new(root) {
-  animation-duration: 320ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation: vt-wipe-reveal var(--motion-wipe-duration) var(--motion-wipe-ease) both;
+  mix-blend-mode: normal;
+}
+
+::view-transition-group(route-wipe-line) {
+  animation: vt-wipe-line var(--motion-wipe-duration) var(--motion-wipe-ease) both;
+  z-index: 20;
+}
+
+/* The line is sheared to the edge's slant (around the viewport's vertical
+   middle, where the edge crosses its own midpoint); a shear, unlike a
+   rotation, keeps its top end level with the header's lower edge. */
+::view-transition-image-pair(route-wipe-line) {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent calc(50% - 0.75px),
+    color-mix(in srgb, var(--text) 90%, transparent) calc(50% - 0.75px),
+    color-mix(in srgb, var(--text) 90%, transparent) calc(50% + 0.75px), transparent calc(50% + 0.75px));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent-readable) 55%, transparent));
+  transform: skewX(calc(-1 * var(--wipe-slant)));
+  transform-origin: 50% calc(50vh - var(--wipe-top, 0px));
+}
+/* Draw the line on the native animation layer itself: WebKit can leave a
+   newly added element's snapshot image blank even while its group animates. */
+::view-transition-new(route-wipe-line) { animation: none; opacity: 0; }
+
+html[data-vt-direction="back"]::view-transition-new(root) {
+  animation-name: vt-wipe-reveal-back;
+}
+
+html[data-vt-direction="back"]::view-transition-group(route-wipe-line) {
+  animation-name: vt-wipe-line-back;
+}
+
+/* Mirrored slant for the right → left wipe: the top leans left. */
+html[data-vt-direction="back"]::view-transition-image-pair(route-wipe-line) {
+  transform: skewX(var(--wipe-slant));
+}
+
+/* The slanted edge's midpoint travels from -run to 100% + run (forward) or
+   back again, so it starts and ends fully off screen; top and bottom stay
+   2 × run apart throughout. Forward the top leads (on the right); back the
+   top leads too (on the left), mirroring the slant. */
+@keyframes vt-wipe-reveal {
+  from { clip-path: polygon(0 0, 100% 0, 100% var(--wipe-top, 0px),
+    calc(-1 * var(--wipe-top, 0px) * tan(var(--wipe-slant))) var(--wipe-top, 0px),
+    calc(-2 * var(--wipe-run)) 100%, 0 100%); }
+  to { clip-path: polygon(0 0, 100% 0, 100% var(--wipe-top, 0px),
+    calc(100% + 2 * var(--wipe-run) - var(--wipe-top, 0px) * tan(var(--wipe-slant))) var(--wipe-top, 0px),
+    100% 100%, 0 100%); }
+}
+
+@keyframes vt-wipe-reveal-back {
+  from {
+    clip-path: polygon(
+      0 0, 100% 0, 100% 100%, calc(100% + 2 * var(--wipe-run)) 100%,
+      calc(100% + var(--wipe-top, 0px) * tan(var(--wipe-slant))) var(--wipe-top, 0px), 0 var(--wipe-top, 0px)
+    );
+  }
+  to {
+    clip-path: polygon(
+      0 0, 100% 0, 100% 100%, 0 100%,
+      calc(-2 * var(--wipe-run) + var(--wipe-top, 0px) * tan(var(--wipe-slant))) var(--wipe-top, 0px), 0 var(--wipe-top, 0px)
+    );
+  }
+}
+
+/* `translate`, not `transform`: the browser places the group with its
+   `transform`, and overriding that would drop the line's own offset. The
+   line tracks the edge's midpoint. */
+@keyframes vt-wipe-line {
+  from { translate: calc(-1 * var(--wipe-run)) 0; }
+  to { translate: calc(100vw + var(--wipe-run)) 0; }
+}
+
+@keyframes vt-wipe-line-back {
+  from { translate: calc(100vw + var(--wipe-run)) 0; }
+  to { translate: calc(-1 * var(--wipe-run)) 0; }
+}
+
+/* The divider's native group bounds. The image-pair paints its line and glow
+   directly, so the live DOM element never flashes at the viewport edge.
+   It runs from --wipe-top
+   (the header's lower edge, set by PageTransition on the root so the
+   transition pseudo-elements can read it too) to the bottom, leaving the
+   navigation alone. The box is wider than the line to leave room for its glow;
+   its centre sits on the viewport's left edge. */
+.route-wipe-line {
+  position: fixed;
+  top: var(--wipe-top, 0px);
+  bottom: 0;
+  left: -12px;
+  z-index: 300;
+  width: 24px;
+  pointer-events: none;
+  view-transition-name: route-wipe-line;
 }
 
 /* Shared cover/title morph ("Morph"-style): the group interpolates position
-   and size between the card and the detail page. */
+   and size between the card and the detail page. It lasts as long as the
+   wipe, so the cover does not settle over the old page before the divider
+   has revealed its destination. */
 ::view-transition-group(vt-cover),
 ::view-transition-group(vt-title) {
-  animation-duration: 420ms;
+  animation-duration: var(--motion-wipe-duration);
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -517,6 +652,7 @@ html.route-transition-pending body::after {
     animation: none !important;
   }
 }
+
 
 @keyframes route-progress {
   from { transform: scaleX(.06); }
@@ -570,14 +706,16 @@ html.route-transition-pending body::after {
   transition: translate var(--transition-fast);
 }
 
-.back-link:hover {
-  border-color: rgba(255, 255, 255, 0.24);
-  background: rgba(12, 14, 16, 0.72);
-  color: var(--text);
-}
+@media (hover: hover) and (pointer: fine) {
+  .back-link:hover {
+    border-color: rgba(255, 255, 255, 0.24);
+    background: rgba(12, 14, 16, 0.72);
+    color: var(--text);
+  }
 
-.back-link:hover svg {
-  translate: -2px 0;
+  .back-link:hover svg {
+    translate: -2px 0;
+  }
 }
 
 .back-link:active {
@@ -644,46 +782,270 @@ html.route-transition-pending body::after {
   margin-bottom: 0;
 }
 
-.page-action-link {
+/* ---- Action menu (ActionMenu.tsx) ----
+   A trigger that discloses a short panel of actions, aligned to the trigger's
+   end edge, opening down (default) or up (data-placement="up"). It opens and
+   closes exactly like the appearance panel (.bg-control-panel): the same
+   circular reveal from the trigger's centre (--reveal-* set by ActionMenu)
+   and collapse back into it, with the same settle of opacity, scale and
+   offset. The panel is mounted while open or closing. */
+.action-menu {
+  position: relative;
   display: inline-flex;
-  min-height: 44px;
-  flex: 0 0 auto;
+}
+
+.action-menu-chevron {
+  transition: rotate var(--motion-control-duration) var(--motion-ease);
+}
+
+.action-menu-trigger[aria-expanded="true"] .action-menu-chevron {
+  rotate: 180deg;
+}
+
+.action-menu-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  display: grid;
+  min-width: 212px;
+  border: 1px solid var(--line-light);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-strong) 94%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 18px 44px -12px rgb(0 0 0 / 0.6);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  padding: 6px;
+  visibility: hidden;
+  opacity: 0;
+  scale: 0.985;
+  translate: 0 -5px;
+  transform-origin: right top;
+  pointer-events: none;
+  transition:
+    opacity var(--transition-base),
+    scale var(--transition-base),
+    translate var(--transition-base),
+    visibility 0s var(--transition-base);
+}
+
+.action-menu[data-placement="up"] .action-menu-panel {
+  top: auto;
+  bottom: calc(100% + 10px);
+  translate: 0 5px;
+  transform-origin: right bottom;
+}
+
+.action-menu-panel.open {
+  visibility: visible;
+  opacity: 1;
+  scale: 1;
+  translate: 0 0;
+  pointer-events: auto;
+  transition:
+    opacity var(--transition-base),
+    scale var(--transition-base),
+    translate var(--transition-base),
+    visibility 0s 0s;
+  animation: bg-panel-reveal 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.action-menu-panel.closing {
+  pointer-events: none;
+  animation: bg-panel-conceal 300ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
+.action-menu-group {
+  display: grid;
+  gap: 2px;
+}
+
+.action-menu-group + .action-menu-group {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+
+.action-menu-group-label {
+  margin: 4px 12px 4px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.action-menu-footer {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+
+.action-menu-footer button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 6px 0;
+}
+
+.action-menu-footer button:hover { color: var(--text); }
+.action-menu-footer button:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 3px; }
+.action-menu-footer button:disabled { opacity: 0.55; cursor: wait; }
+.author-session-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.create-menu-notice { margin: 0; white-space: normal; max-width: 260px; }
+.create-menu-notice:empty { display: none; }
+.author-sign-in { max-width: min(440px, calc(100vw - 24px)); }
+.author-sign-in-error { min-height: 2.8em; margin: 0; color: var(--text); font-size: 0.88rem; }
+.author-sign-in .album-submit { background: var(--accent-soft); border-color: var(--accent-readable); color: var(--text); }
+.author-sign-in .album-action-button:hover:not(:disabled) { background: var(--surface-overlay); border-color: var(--accent-readable); }
+.author-sign-in button:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 3px; }
+.author-credential { display: grid; gap: 8px; width: 100%; }
+.author-credential p { margin: 0; color: var(--text); font-size: 0.86rem; }
+.author-credential summary { color: var(--text-secondary); cursor: pointer; margin-bottom: 8px; font-size: 0.78rem; }
+.author-credential summary:hover { color: var(--text); }
+.author-credential summary:focus-visible { outline: 2px solid var(--accent-readable); }
+
+.action-menu-item {
+  appearance: none;
+  display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 9px;
-  border: 1px solid rgb(var(--accent-rgb) / 0.55);
-  border-radius: 999px;
-  background: var(--accent-base);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.16),
-    0 10px 26px rgb(var(--accent-rgb) / 0.14);
-  color: var(--on-accent);
-  padding: 10px 18px;
-  font-size: 0.86rem;
-  font-weight: 750;
-  line-height: 1;
+  gap: 11px;
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 0 12px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-align: left;
   white-space: nowrap;
-  touch-action: manipulation;
-  transition: translate var(--transition-fast);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
-.page-action-link:hover {
-  border-color: var(--accent-readable);
-  background: var(--accent-hover);
+.action-menu-item svg {
+  flex: none;
+  color: var(--text-secondary);
+  transition: color var(--transition-fast);
+}
+
+.action-menu-copy { display: grid; gap: 3px; }
+.action-menu-copy small { color: var(--text-secondary); font-size: 0.7rem; font-weight: 400; white-space: normal; }
+.action-menu-item kbd { margin-left: auto; color: var(--text-secondary); font: 0.7rem var(--font-mono); }
+.create-menu .action-menu-item { padding-block: 9px; }
+
+@media (hover: hover) and (pointer: fine) {
+  .action-menu-item:hover {
+    background: var(--surface-overlay);
+  }
+
+  .action-menu-item:hover svg {
+    color: var(--text);
+  }
+}
+
+.action-menu-item:focus-visible {
+  outline: 2px solid var(--accent-readable);
+  outline-offset: -2px;
+  background: var(--surface-overlay);
+}
+
+@media (pointer: coarse) {
+  .action-menu-item {
+    min-height: 46px;
+  }
+}
+
+/* ---- Public page tools (PageTools.tsx), separate from author controls ---- */
+.create-menu {
+  position: fixed;
+  right: max(20px, calc(env(safe-area-inset-right) + 14px));
+  bottom: max(20px, calc(env(safe-area-inset-bottom) + 14px));
+  z-index: 70;
+  view-transition-name: create-menu;
+  transition: opacity var(--transition-base);
+}
+
+::view-transition-group(create-menu), ::view-transition-new(create-menu) { animation: none; }
+::view-transition-old(create-menu) { animation: vt-hide 1ms both; }
+.create-menu--hidden { opacity: 0; pointer-events: none; }
+.create-menu--retreated:not(:focus-within) { opacity: 0.55; }
+.create-menu--retreated:not(:focus-within) .action-menu-trigger { scale: 0.7692; }
+.create-menu .action-menu-panel { max-width: calc(100vw - 40px); max-height: calc(100dvh - 100px); overflow-y: auto; }
+.author-tasks { border-bottom: 1px solid var(--line); padding: 8px 12px; display: grid; gap: 8px; max-width: 300px; }
+.author-tasks p { margin: 0; color: var(--text-secondary); font-size: 0.72rem; }
+.author-tasks > div, .author-tasks > a { display: grid; gap: 3px; color: var(--text); font-size: 0.8rem; overflow-wrap: anywhere; }
+.author-tasks > a { margin: -4px -6px; border-radius: var(--radius-sm); padding: 4px 6px; text-decoration: none; }
+@media (hover: hover) { .author-tasks > a:hover { background: var(--surface-strong); } }
+.author-tasks small { color: var(--text-secondary); font-size: 0.7rem; }
+
+.create-menu .action-menu-trigger {
+  appearance: none;
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid var(--line-light);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface-raised) 90%, transparent);
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.18),
-    0 13px 30px rgb(var(--accent-rgb) / 0.22);
-  translate: 0 -2px;
+    inset 0 1px 0 rgb(255 255 255 / 0.07),
+    0 10px 28px -8px rgb(0 0 0 / 0.65);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  color: var(--text);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    scale var(--transition-fast);
 }
 
-.page-action-link:active {
-  scale: 0.97;
-  translate: 0;
+@media (hover: hover) and (pointer: fine) {
+  .create-menu .action-menu-trigger:hover {
+    border-color: var(--accent-2);
+    background: var(--surface-overlay);
+  }
 }
 
-.page-action-link:focus-visible {
-  outline-color: var(--accent-readable);
-  outline-offset: 4px;
+.create-menu .action-menu-trigger:active {
+  scale: 0.96;
+}
+
+.create-menu .action-menu-trigger:focus-visible {
+  outline: 2px solid var(--accent-readable);
+  outline-offset: 3px;
+}
+
+.create-menu .action-menu-trigger[aria-expanded="true"] {
+  border-color: rgb(var(--accent-rgb) / 0.55);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .create-menu .action-menu-trigger {
+    width: 48px;
+    height: 48px;
+  }
+  .create-menu--retreated:not(:focus-within) .action-menu-trigger { scale: 0.8333; }
+}
+
+@media print {
+  .create-menu {
+    display: none;
+  }
 }
 
 /* ---- Video title (single reading column: title → description → meta/action) ---- */
@@ -794,12 +1156,14 @@ h3 {
     transform var(--transition-base);
 }
 
-.content-card:hover {
-  border-color: var(--line-light);
-  box-shadow:
+@media (hover: hover) and (pointer: fine) {
+  .content-card:hover {
+    border-color: var(--line-light);
+    box-shadow:
     0 8px 32px -6px rgba(0, 0, 0, 0.55),
     0 0 0 1px rgb(var(--accent-rgb) / 0.18);
-  transform: translateY(-2px);
+    transform: translateY(-2px);
+  }
 }
 
 .content-card:focus-visible {
@@ -816,14 +1180,16 @@ h3 {
   transition: transform 650ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.content-card:hover img,
-.content-card:hover .media-placeholder {
-  transform: scale(1.045);
+@media (hover: hover) and (pointer: fine) {
+  .content-card:hover img,
+  .content-card:hover .media-placeholder {
+    transform: scale(1.045);
+  }
 }
 
 .content-card:active {
-  transform: translateY(-1px);
-  transition-duration: 90ms;
+  transform: scale(0.985);
+  transition-duration: 100ms;
 }
 
 .media-placeholder {
@@ -913,18 +1279,26 @@ h3 {
     transform var(--transition-base);
 }
 
-.list-panel a:hover::before,
 .list-panel a:focus-visible::before {
   opacity: 1;
   transform: scaleY(1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .list-panel a:hover::before {
+    opacity: 1;
+    transform: scaleY(1);
+  }
 }
 
 .list-panel a + a {
   border-top: 1px solid var(--line);
 }
 
-.list-panel a:hover {
-  background: var(--surface-raised);
+@media (hover: hover) and (pointer: fine) {
+  .list-panel a:hover {
+    background: var(--surface-raised);
+  }
 }
 
 .list-panel a:focus-visible {
@@ -1099,8 +1473,8 @@ h3 {
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 20px;
   background: rgba(16, 19, 23, 0.52);
-  backdrop-filter: blur(28px) saturate(160%);
   -webkit-backdrop-filter: blur(28px) saturate(160%);
+  backdrop-filter: blur(28px) saturate(160%);
   padding: clamp(24px, 5vw, 48px);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
@@ -1129,13 +1503,15 @@ h3 {
 .glass-cards .content-card {
   border-color: rgba(255, 255, 255, 0.10);
   background: rgba(16, 19, 23, 0.55);
-  backdrop-filter: blur(22px) saturate(160%);
   -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
 }
 
-.glass-cards .content-card:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(20, 24, 29, 0.66);
+@media (hover: hover) and (pointer: fine) {
+  .glass-cards .content-card:hover {
+    border-color: rgba(255, 255, 255, 0.18);
+    background: rgba(20, 24, 29, 0.66);
+  }
 }
 
 .glass-cards .content-card p {
@@ -1144,8 +1520,8 @@ h3 {
 
 .glass-cards .empty-state {
   background: rgba(16, 19, 23, 0.55);
-  backdrop-filter: blur(22px) saturate(160%);
   -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
   color: var(--text-secondary);
 }
 
@@ -1179,9 +1555,11 @@ h3 {
     background var(--transition-fast);
 }
 
-.bg-control-toggle:hover {
-  color: var(--text);
-  background: var(--surface-raised);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-toggle:hover {
+    color: var(--text);
+    background: var(--surface-raised);
+  }
 }
 
 .bg-control-toggle.active {
@@ -1207,18 +1585,20 @@ h3 {
   height: 44px;
   border: 1px solid rgba(255, 255, 255, 0.13);
   background: rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(24px) saturate(170%);
   -webkit-backdrop-filter: blur(24px) saturate(170%);
+  backdrop-filter: blur(24px) saturate(170%);
   color: var(--text-secondary);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     0 6px 20px rgba(0, 0, 0, 0.35);
 }
 
-.bg-control-floating .bg-control-toggle:hover {
-  color: var(--text);
-  border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.11);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-floating .bg-control-toggle:hover {
+    color: var(--text);
+    border-color: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.11);
+  }
 }
 
 .bg-control-floating .bg-control-toggle.active {
@@ -1312,7 +1692,7 @@ h3 {
 
 .bg-control-panel.closing {
   pointer-events: none;
-  animation: bg-panel-conceal 300ms cubic-bezier(0.55, 0, 0.7, 0.2) forwards;
+  animation: bg-panel-conceal 300ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
 }
 
 @keyframes bg-panel-reveal {
@@ -1392,9 +1772,11 @@ h3 {
     color var(--transition-fast);
 }
 
-.appearance-panel-close:hover {
-  background: var(--surface-overlay);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .appearance-panel-close:hover {
+    background: var(--surface-overlay);
+    color: var(--text);
+  }
 }
 
 .appearance-panel-close:active {
@@ -1409,12 +1791,12 @@ h3 {
 /* Segmented controls (panel tabs, colour picker tabs, background mode): one
    pill slides between the two options, like the navigation pill. --i (0/1)
    is set inline; --seg-w is one segment's width (2 columns, 3px padding,
-   2px gap, 1px border excluded from the padding box). */
+   2px gap, 1px border excluded from the padding box). The pill moves by
+   translate, whose percentage is its own width, i.e. one segment. */
 .appearance-panel-tabs,
 .theme-editor-tabs,
 .bg-control-modes {
   --seg-w: calc((100% - 8px) / 2);
-  --seg-x: calc(3px + var(--i, 0) * (var(--seg-w) + 2px));
   position: relative;
 }
 
@@ -1425,10 +1807,11 @@ h3 {
   position: absolute;
   top: 3px;
   bottom: 3px;
-  left: var(--seg-x);
+  left: 3px;
   width: var(--seg-w);
   pointer-events: none;
-  transition: left 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform: translateX(calc(var(--i, 0) * (100% + 2px)));
+  transition: transform var(--motion-panel-duration) var(--motion-ease);
 }
 
 .appearance-panel-tabs button,
@@ -1472,9 +1855,11 @@ h3 {
     color var(--transition-fast);
 }
 
-.appearance-panel-tabs button:hover:not(.active) {
-  background: var(--surface-overlay);
-  color: var(--text-secondary);
+@media (hover: hover) and (pointer: fine) {
+  .appearance-panel-tabs button:hover:not(.active) {
+    background: var(--surface-overlay);
+    color: var(--text-secondary);
+  }
 }
 
 .appearance-panel-tabs button.active {
@@ -1527,9 +1912,11 @@ h3 {
     color var(--transition-fast);
 }
 
-.bg-control-modes button:hover:not(.active) {
-  color: var(--text);
-  background: var(--surface-overlay);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-modes button:hover:not(.active) {
+    color: var(--text);
+    background: var(--surface-overlay);
+  }
 }
 
 .bg-control-modes button.active {
@@ -1563,8 +1950,10 @@ h3 {
     box-shadow var(--transition-fast);
 }
 
-.bg-control-thumbs button:hover {
-  opacity: 1;
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-thumbs button:hover {
+    opacity: 1;
+  }
 }
 
 .bg-control-thumbs button.active {
@@ -1642,8 +2031,10 @@ h3 {
   transition: transform 120ms ease;
 }
 
-.bg-control input[type="range"]::-webkit-slider-thumb:hover {
-  transform: scale(1.15);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+  }
 }
 
 .bg-control input[type="range"]::-moz-range-thumb {
@@ -1679,10 +2070,12 @@ h3 {
     background var(--transition-fast);
 }
 
-.bg-control-reset:hover {
-  color: var(--text);
-  border-color: rgb(var(--accent-rgb) / 0.55);
-  background: var(--accent-soft);
+@media (hover: hover) and (pointer: fine) {
+  .bg-control-reset:hover {
+    color: var(--text);
+    border-color: rgb(var(--accent-rgb) / 0.55);
+    background: var(--accent-soft);
+  }
 }
 
 .bg-control-reset:active {
@@ -1822,49 +2215,31 @@ h3 {
     color var(--transition-fast);
 }
 
-.theme-editor-tabs button:hover:not(.active) {
-  background: var(--surface-overlay);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .theme-editor-tabs button:hover:not(.active) {
+    background: var(--surface-overlay);
+    color: var(--text);
+  }
 }
 
 .theme-editor-tabs button.active {
   color: var(--text);
 }
 
-/* Content swaps inside the panel: the incoming section fades and rises in
-   (same easing as page transitions); the panel's height morphs in JS. */
+/* Only the live content region resizes. The primary tabs remain independently
+   operable, and text is never scaled through a document-transition snapshot. */
+.appearance-panel-content {
+  min-width: 0;
+}
+
+.appearance-panel-content[data-panel-animating="true"] {
+  overflow: clip;
+}
+
 .appearance-swap {
   display: grid;
   gap: 10px;
   min-width: 0;
-}
-
-/* Content swaps inside the panel are cross-faded by the view transition (see
-   runPanelTransition); there is deliberately no CSS entrance animation here —
-   toggling one off during the transition would restart it when it ends. */
-
-/* Panel-scoped view transition: only the panel animates. The page root keeps
-   rendering live (old snapshot hidden, no cross-fade), the header keeps its
-   own name, and the panel group morphs size while clipping its images. */
-html.vt-panel::view-transition-old(root) {
-  animation: vt-hide 1ms both;
-}
-
-html.vt-panel::view-transition-new(root) {
-  animation: none;
-}
-
-::view-transition-group(appearance-panel) {
-  overflow: clip;
-  border-radius: 16px;
-  animation-duration: 340ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-::view-transition-old(appearance-panel),
-::view-transition-new(appearance-panel) {
-  animation-duration: 340ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .color-checker-picker {
@@ -1905,8 +2280,10 @@ html.vt-panel::view-transition-new(root) {
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.46));
 }
 
-.color-checker-grid button:hover {
-  filter: brightness(1.1) saturate(1.04);
+@media (hover: hover) and (pointer: fine) {
+  .color-checker-grid button:hover {
+    filter: brightness(1.1) saturate(1.04);
+  }
 }
 
 .color-checker-grid button.active {
@@ -2011,9 +2388,11 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.color-checker-fold:hover {
-  background: var(--accent-soft);
-  color: var(--accent-readable);
+@media (hover: hover) and (pointer: fine) {
+  .color-checker-fold:hover {
+    background: var(--accent-soft);
+    color: var(--accent-readable);
+  }
 }
 
 .color-checker-fold:focus-visible {
@@ -2061,7 +2440,9 @@ html.vt-panel::view-transition-new(root) {
 }
 .liquid-save-feedback { display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--text-secondary); font-size: 0.68rem; line-height: 1.5; }
 .liquid-save-feedback span { flex: 1; }
-.liquid-settings button:hover { border-color: var(--accent-readable); background-color: var(--surface-overlay); color: var(--text); }
+@media (hover: hover) and (pointer: fine) {
+  .liquid-settings button:hover { border-color: var(--accent-readable); background-color: var(--surface-overlay); color: var(--text); }
+}
 .liquid-settings button:active { background-color: var(--surface-raised); }
 .liquid-settings button:focus-visible,
 .sv-plane:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 2px; }
@@ -2319,8 +2700,8 @@ html.vt-panel::view-transition-new(root) {
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 16px;
   background: rgba(14, 17, 21, 0.58);
-  backdrop-filter: blur(24px) saturate(160%);
   -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
   padding: 16px 14px;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
@@ -2365,9 +2746,11 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.article-toc a:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .article-toc a:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text);
+  }
 }
 
 .article-toc a:focus-visible {
@@ -2449,8 +2832,10 @@ html.vt-panel::view-transition-new(root) {
   transition: color var(--transition-fast);
 }
 
-.markdown-body a:hover {
-  color: var(--accent-hover);
+@media (hover: hover) and (pointer: fine) {
+  .markdown-body a:hover {
+    color: var(--accent-hover);
+  }
 }
 
 .markdown-body code {
@@ -2565,9 +2950,11 @@ html.vt-panel::view-transition-new(root) {
     filter var(--transition-slow);
 }
 
-.gaussian-splat-launch:hover > img {
-  filter: contrast(1.04) brightness(0.9);
-  scale: 1.035;
+@media (hover: hover) and (pointer: fine) {
+  .gaussian-splat-launch:hover > img {
+    filter: contrast(1.04) brightness(0.9);
+    scale: 1.035;
+  }
 }
 
 .gaussian-splat-grid {
@@ -2609,10 +2996,12 @@ html.vt-panel::view-transition-new(root) {
     transform var(--transition-fast);
 }
 
-.gaussian-splat-launch:hover .gaussian-splat-launch-copy {
-  border-color: rgba(200, 216, 226, 0.32);
-  background: rgba(18, 22, 25, 0.86);
-  transform: translateY(-2px);
+@media (hover: hover) and (pointer: fine) {
+  .gaussian-splat-launch:hover .gaussian-splat-launch-copy {
+    border-color: rgba(200, 216, 226, 0.32);
+    background: rgba(18, 22, 25, 0.86);
+    transform: translateY(-2px);
+  }
 }
 
 .gaussian-splat-launch-icon {
@@ -2742,10 +3131,12 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.gaussian-splat-toolbar button:hover {
-  border-color: rgba(202, 216, 226, 0.32);
-  background: rgba(20, 24, 27, 0.88);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .gaussian-splat-toolbar button:hover {
+    border-color: rgba(202, 216, 226, 0.32);
+    background: rgba(20, 24, 27, 0.88);
+    color: var(--text);
+  }
 }
 
 .gaussian-splat-toolbar svg {
@@ -2849,10 +3240,12 @@ html.vt-panel::view-transition-new(root) {
   text-decoration: none;
 }
 
-.gaussian-splat-error button:hover,
-.gaussian-splat-error a:hover {
-  border-color: var(--neutral-ref);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .gaussian-splat-error button:hover,
+  .gaussian-splat-error a:hover {
+    border-color: var(--neutral-ref);
+    color: var(--text);
+  }
 }
 
 .gaussian-splat-embed figcaption {
@@ -3026,15 +3419,8 @@ html.vt-panel::view-transition-new(root) {
   opacity: 0.70;
 }
 
-.player-frame[data-state="loading"]::before {
-  opacity: 0.3;
-  animation: loading-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes loading-pulse {
-  0%, 100% { opacity: 0.15; }
-  50% { opacity: 0.6; }
-}
+/* MediaPlayer owns delayed loading feedback; the frame line only marks playback.
+   Keep the loading state quiet instead of flashing a second, global indicator. */
 
 .video-player {
   width: 100%;
@@ -3081,10 +3467,16 @@ html.vt-panel::view-transition-new(root) {
   cursor: pointer;
 }
 
-.upload-source-file button:hover:not(:disabled),
 .upload-source-file button:focus-visible {
   color: var(--text);
   border-color: var(--text-secondary);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .upload-source-file button:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--text-secondary);
+  }
 }
 
 .upload-source-file button:disabled {
@@ -3163,10 +3555,12 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.master-add:hover {
-  border-color: var(--neutral-ref);
-  background: var(--surface);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .master-add:hover {
+    border-color: var(--neutral-ref);
+    background: var(--surface);
+    color: var(--text);
+  }
 }
 
 .master-add:focus-visible {
@@ -3174,10 +3568,12 @@ html.vt-panel::view-transition-new(root) {
   box-shadow: 0 0 0 3px var(--neutral-ref-glow);
 }
 
-.master-button:hover {
-  border-color: var(--line-light);
-  background: var(--surface-raised);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .master-button:hover {
+    border-color: var(--line-light);
+    background: var(--surface-raised);
+    color: var(--text);
+  }
 }
 
 .master-button:focus-visible {
@@ -3252,12 +3648,14 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.info-toggle:hover,
-.info-close:hover,
-.retry-button:hover {
-  border-color: var(--line-light);
-  background: var(--surface-raised);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .info-toggle:hover,
+  .info-close:hover,
+  .retry-button:hover {
+    border-color: var(--line-light);
+    background: var(--surface-raised);
+    color: var(--text);
+  }
 }
 
 .info-toggle.active {
@@ -3547,12 +3945,19 @@ html.vt-panel::view-transition-new(root) {
   opacity: 0;
 }
 
-.source-mode:hover,
 .source-mode.active,
 .source-mode:has(input:focus-visible) {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent-base) 9%, var(--surface-raised));
   box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .source-mode:hover {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-base) 9%, var(--surface-raised));
+    box-shadow: 0 0 0 1px var(--accent-glow);
+  }
 }
 
 .source-mode span {
@@ -3673,10 +4078,12 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.slug-input button:hover {
-  border-color: var(--line-light);
-  background: var(--surface-raised);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .slug-input button:hover {
+    border-color: var(--line-light);
+    background: var(--surface-raised);
+    color: var(--text);
+  }
 }
 
 .slug-input button:focus-visible {
@@ -3759,8 +4166,10 @@ html.vt-panel::view-transition-new(root) {
   transition: border-color var(--transition-fast);
 }
 
-.upload-checks label:hover {
-  border-color: var(--line-light);
+@media (hover: hover) and (pointer: fine) {
+  .upload-checks label:hover {
+    border-color: var(--line-light);
+  }
 }
 
 .upload-checks input {
@@ -3834,9 +4243,11 @@ html.vt-panel::view-transition-new(root) {
   transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
-.upload-actions button:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+@media (hover: hover) and (pointer: fine) {
+  .upload-actions button:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
 }
 
 .upload-actions button:disabled {
@@ -3897,6 +4308,56 @@ html.vt-panel::view-transition-new(root) {
   color: var(--accent);
 }
 
+/* Upload success: a rare moment, so it gets a one-time drawn check. The ring
+   draws first, the tick lands as it closes; ~560ms in total, all ease-out.
+   Reduced motion: the global rule collapses the animations to their end state. */
+.upload-status .upload-status-done {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.upload-done-mark {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  animation: upload-done-pop 360ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.upload-done-mark circle,
+.upload-done-mark path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.upload-done-mark circle {
+  transform: rotate(-90deg);
+  transform-origin: center;
+  animation: upload-done-draw 360ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
+.upload-done-mark path {
+  animation: upload-done-draw 260ms cubic-bezier(0.23, 1, 0.32, 1) 300ms forwards;
+}
+
+@keyframes upload-done-pop {
+  from {
+    opacity: 0;
+    scale: 0.92;
+  }
+}
+
+@keyframes upload-done-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
 /* ---- Upload page — follows the global semantic accent tokens ---- */
 .upload-page-header h1 {
   color: var(--text);
@@ -3948,9 +4409,11 @@ html.vt-panel::view-transition-new(root) {
   color: var(--on-accent);
 }
 
-.lang-switcher button:hover:not(.active) {
-  color: var(--text);
-  background: var(--surface-overlay);
+@media (hover: hover) and (pointer: fine) {
+  .lang-switcher button:hover:not(.active) {
+    color: var(--text);
+    background: var(--surface-overlay);
+  }
 }
 
 /* ---- Panel header accent ---- */
@@ -3992,10 +4455,16 @@ html.vt-panel::view-transition-new(root) {
   outline: none;
 }
 
-.file-drop-zone:hover,
 .file-drop-zone:focus-within {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent-base) 5%, var(--surface-raised));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .file-drop-zone:hover {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-base) 5%, var(--surface-raised));
+  }
 }
 
 .file-drop-zone.drag-active {
@@ -4019,10 +4488,16 @@ html.vt-panel::view-transition-new(root) {
   pointer-events: none;
 }
 
-.file-drop-zone:hover .file-drop-zone-icon,
 .file-drop-zone.drag-active .file-drop-zone-icon {
   color: var(--accent);
   transform: translateY(-3px);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .file-drop-zone:hover .file-drop-zone-icon {
+    color: var(--accent);
+    transform: translateY(-3px);
+  }
 }
 
 .file-drop-zone.has-file .file-drop-zone-icon {
@@ -4125,48 +4600,48 @@ html.vt-panel::view-transition-new(root) {
   background: radial-gradient(circle at 40% 40%,
     rgb(var(--liquid-blob-1, 130 134 138) / 0.18), transparent 64%);
   top: -20%; left: -15%;
-  animation: float-blob-1 var(--liquid-duration-1, 20s) ease-in-out infinite;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-1 calc(var(--liquid-duration-1, 20s) / var(--liquid-route-scale, 1)) ease-in-out infinite;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-2 {
   width: 50vw; height: 50vw; max-width: 750px; max-height: 750px;
   background: radial-gradient(circle at 55% 40%,
     rgb(var(--liquid-blob-2, 108 112 116) / 0.16), transparent 64%);
   top: 30%; right: -16%;
-  animation: float-blob-2 var(--liquid-duration-2, 23s) ease-in-out infinite;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-2 calc(var(--liquid-duration-2, 23s) / var(--liquid-route-scale, 1)) ease-in-out infinite;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-3 {
   width: 46vw; height: 46vw; max-width: 700px; max-height: 700px;
   background: radial-gradient(circle at 50% 50%,
     rgb(var(--liquid-blob-3, 118 122 126) / 0.15), transparent 64%);
   bottom: -22%; left: 20%;
-  animation: float-blob-3 var(--liquid-duration-3, 22s) ease-in-out infinite;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-3 calc(var(--liquid-duration-3, 22s) / var(--liquid-route-scale, 1)) ease-in-out infinite;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-4 {
   width: 44vw; height: 44vw; max-width: 660px; max-height: 660px;
   background: radial-gradient(circle at 50% 50%,
     rgb(var(--liquid-blob-2, 108 112 116) / 0.14), transparent 64%);
   top: -15%; right: 8%;
-  animation: float-blob-2 var(--liquid-duration-2, 23s) ease-in-out infinite reverse;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-2 calc(var(--liquid-duration-2, 23s) / var(--liquid-route-scale, 1)) ease-in-out infinite reverse;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-5 {
   width: 42vw; height: 42vw; max-width: 630px; max-height: 630px;
   background: radial-gradient(circle at 50% 50%,
     rgb(var(--liquid-blob-3, 118 122 126) / 0.13), transparent 64%);
   top: 43%; left: -10%;
-  animation: float-blob-3 var(--liquid-duration-3, 22s) ease-in-out infinite reverse;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-3 calc(var(--liquid-duration-3, 22s) / var(--liquid-route-scale, 1)) ease-in-out infinite reverse;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 .liquid-bg .blob-6 {
   width: 40vw; height: 40vw; max-width: 600px; max-height: 600px;
   background: radial-gradient(circle at 50% 50%,
     rgb(var(--liquid-blob-1, 130 134 138) / 0.14), transparent 64%);
   bottom: -10%; right: -7%;
-  animation: float-blob-1 var(--liquid-duration-1, 20s) ease-in-out infinite reverse;
-  animation-play-state: var(--liquid-play-state, running);
+  animation: float-blob-1 calc(var(--liquid-duration-1, 20s) / var(--liquid-route-scale, 1)) ease-in-out infinite reverse;
+  animation-play-state: var(--liquid-watching-play-state, var(--liquid-play-state, running));
 }
 /* ---- Blob keyframes (slower = less distraction) ---- */
 @keyframes float-blob-1 {
@@ -4217,9 +4692,6 @@ html.vt-panel::view-transition-new(root) {
   min-height: 100dvh;
   padding: 42px 24px 72px;
   place-items: center;
-  transition:
-    padding var(--home-motion-duration) var(--home-motion-ease),
-    min-height var(--home-motion-duration) var(--home-motion-ease);
 }
 
 .orbital-stage {
@@ -4231,12 +4703,6 @@ html.vt-panel::view-transition-new(root) {
   pointer-events: auto;
   transform: translate3d(0, 0, 0) scale(1);
   transform-origin: center;
-  transition:
-    width var(--home-motion-duration) var(--home-motion-ease),
-    min-height var(--home-motion-duration) var(--home-motion-ease),
-    gap var(--home-motion-duration) var(--home-motion-ease),
-    grid-template-columns var(--home-motion-duration) var(--home-motion-ease),
-    grid-template-rows var(--home-motion-duration) var(--home-motion-ease);
 }
 
 
@@ -4340,12 +4806,14 @@ html.vt-panel::view-transition-new(root) {
     transform var(--transition-fast);
 }
 
-.github-link:hover,
-.profile-about-link:hover {
-  border-color: rgb(var(--accent-rgb) / 0.6);
-  background: var(--accent-soft);
-  color: var(--text);
-  transform: translateY(-1px);
+@media (hover: hover) and (pointer: fine) {
+  .github-link:hover,
+  .profile-about-link:hover {
+    border-color: rgb(var(--accent-rgb) / 0.6);
+    background: var(--accent-soft);
+    color: var(--text);
+    transform: translateY(-1px);
+  }
 }
 
 /* ==========================================================================
@@ -4357,8 +4825,8 @@ html.vt-panel::view-transition-new(root) {
   --motion-y: var(--dy, 0px);
   --motion-scale: 1;
   background: rgba(255, 255, 255, 0.072);
-  backdrop-filter: blur(40px) saturate(180%) brightness(1.07);
   -webkit-backdrop-filter: blur(40px) saturate(180%) brightness(1.07);
+  backdrop-filter: blur(40px) saturate(180%) brightness(1.07);
   border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 24px;
   box-shadow:
@@ -4374,38 +4842,34 @@ html.vt-panel::view-transition-new(root) {
     scale(var(--motion-scale));
   transition:
     transform var(--home-motion-duration) var(--home-motion-ease),
-    width var(--home-motion-duration) var(--home-motion-ease),
-    height var(--home-motion-duration) var(--home-motion-ease),
-    min-height var(--home-motion-duration) var(--home-motion-ease),
-    max-width var(--home-motion-duration) var(--home-motion-ease),
-    padding var(--home-motion-duration) var(--home-motion-ease),
-    border-radius var(--home-motion-duration) var(--home-motion-ease),
     box-shadow var(--transition-base),
     border-color var(--transition-base),
     background var(--transition-base);
   will-change: transform;
 }
 
-.floating-widget:hover {
-  transform:
+@media (hover: hover) and (pointer: fine) {
+  .floating-widget:hover {
+    transform:
     translate3d(
       var(--motion-x),
       calc(var(--motion-y) + var(--wy, 0px) + var(--home-hover-lift, -5px)),
       0
     )
     scale(var(--motion-scale));
-  box-shadow:
+    box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.20),
     0 16px 44px rgba(0, 0, 0, 0.34),
     0 4px 10px rgba(0, 0, 0, 0.20);
-  border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.096);
+    border-color: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.096);
+  }
 }
 
 /* Profile hub: deeper blur + deeper shadow for visual prominence */
 .profile-hub.floating-widget {
-  backdrop-filter: blur(80px) saturate(220%) brightness(1.06);
   -webkit-backdrop-filter: blur(80px) saturate(220%) brightness(1.06);
+  backdrop-filter: blur(80px) saturate(220%) brightness(1.06);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     0 20px 60px rgba(0, 0, 0, 0.38),
@@ -4493,9 +4957,11 @@ html.vt-panel::view-transition-new(root) {
     background var(--transition-fast);
 }
 
-.collection-links a:hover {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.08);
+@media (hover: hover) and (pointer: fine) {
+  .collection-links a:hover {
+    border-color: rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.08);
+  }
 }
 
 .collection-links span {
@@ -4513,7 +4979,7 @@ html.vt-panel::view-transition-new(root) {
   padding: 2px 7px;
 }
 
-.orbit-upload {
+.orbit-lab-entry {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4529,27 +4995,20 @@ html.vt-panel::view-transition-new(root) {
   text-align: center;
 }
 
-.orbit-upload:hover {
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .orbit-lab-entry:hover {
+    color: var(--text);
+  }
 }
 
-.orbit-blog-upload {
+.orbit-lab-entry {
   --wy: 0px;
   grid-column: 4 / 6;
   grid-row: 3;
   justify-self: end;
 }
 
-.orbit-album-upload {
-  --wy: 0px;
-}
 
-.orbit-post-upload {
-  --wy: 0px;
-  grid-column: 8 / 10;
-  grid-row: 3;
-  justify-self: start;
-}
 
 /* ---- GitHub / Bilibili standalone widgets ---- */
 .github-widget,
@@ -4587,7 +5046,7 @@ html.vt-panel::view-transition-new(root) {
   display: contents;
 }
 
-.home-action-row > :is(.orbit-upload, .github-widget, .bilibili-widget) {
+.home-action-row > :is(.orbit-lab-entry, .github-widget, .bilibili-widget) {
   align-items: center;
   justify-content: center;
   text-align: center;
@@ -4618,9 +5077,11 @@ html.vt-panel::view-transition-new(root) {
   line-height: 1;
 }
 
-.github-widget:hover,
-.bilibili-widget:hover {
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .github-widget:hover,
+  .bilibili-widget:hover {
+    color: var(--text);
+  }
 }
 
 /* Desktop: the stage stacks a positioning canvas (profile card + collection
@@ -4673,7 +5134,7 @@ html.vt-panel::view-transition-new(root) {
     width: max-content;
     max-width: 100%;
     margin-top: clamp(20px, 4dvh, 44px);
-    grid-template-columns: repeat(5, 140px);
+    grid-template-columns: repeat(3, 140px);
     align-items: center;
     justify-content: center;
     gap: clamp(10px, 1.25vw, 18px);
@@ -4742,7 +5203,7 @@ html.vt-panel::view-transition-new(root) {
   }
 
   .orbit-collection,
-  .orbit-blog-upload, .orbit-album-upload, .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget, .bilibili-widget {
     grid-column: auto;
     grid-row: auto;
@@ -4751,9 +5212,7 @@ html.vt-panel::view-transition-new(root) {
     --wy: 0px;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     width: fit-content;
@@ -4834,11 +5293,9 @@ html.vt-panel::view-transition-new(root) {
     line-clamp: 2;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
+  .orbit-lab-entry,
   .github-widget,
-  .bilibili-widget,
-  .orbit-post-upload {
+  .bilibili-widget {
     grid-column: 2 / 3;
     justify-self: stretch;
     align-self: start;
@@ -4851,30 +5308,22 @@ html.vt-panel::view-transition-new(root) {
     --motion-y: 0px;
   }
 
-  .orbit-blog-upload {
+  .orbit-lab-entry {
     grid-row: 2;
   }
 
-  .orbit-album-upload {
+
+
+  .github-widget {
     grid-row: 3;
+    justify-content: center;
     --motion-y: clamp(15px, calc(153.5px - 15.4vw), 55px);
   }
 
-  .orbit-post-upload {
-    grid-row: 4;
-    --motion-y: clamp(32px, calc(302px - 30vw), 110px);
-  }
-
-  .github-widget {
-    grid-row: 5;
-    justify-content: center;
-    --motion-y: clamp(49px, calc(450px - 45vw), 165px);
-  }
-
   .bilibili-widget {
-    grid-row: 6;
+    grid-row: 4;
     justify-content: center;
-    --motion-y: clamp(66px, calc(598px - 60vw), 220px);
+    --motion-y: clamp(32px, calc(302px - 30vw), 110px);
   }
 }
 
@@ -4887,11 +5336,9 @@ html.vt-panel::view-transition-new(root) {
       clamp(34px, 6svh, 52px);
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
+  .orbit-lab-entry,
   .github-widget,
-  .bilibili-widget,
-  .orbit-post-upload {
+  .bilibili-widget {
     width: 70%;
     justify-self: center;
     padding: 0 12px;
@@ -4935,9 +5382,7 @@ html.vt-panel::view-transition-new(root) {
     line-clamp: 2;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     grid-row: auto;
@@ -4951,25 +5396,19 @@ html.vt-panel::view-transition-new(root) {
     --wy: 0px;
   }
 
-  .orbit-blog-upload {
+  .orbit-lab-entry {
     grid-column: 1 / 3;
   }
 
-  .orbit-album-upload {
-    grid-column: 3 / 5;
-  }
 
-  .orbit-post-upload {
-    grid-column: 5 / 7;
-  }
 
   .github-widget {
-    grid-column: 1 / 4;
+    grid-column: 3 / 5;
     justify-content: center;
   }
 
   .bilibili-widget {
-    grid-column: 4 / 7;
+    grid-column: 5 / 7;
     justify-content: center;
   }
 
@@ -5009,9 +5448,7 @@ html.vt-panel::view-transition-new(root) {
     gap: 10px;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     padding: 0 10px;
@@ -5111,7 +5548,7 @@ html.vt-panel::view-transition-new(root) {
     line-clamp: 2;
   }
 
-  /* Upload actions share one row; social links wrap below. */
+  /* The laboratory and social links share one row. */
   .home-action-row {
     display: flex;
     order: 3;
@@ -5121,7 +5558,7 @@ html.vt-panel::view-transition-new(root) {
     width: 100%;
   }
 
-  .orbit-upload {
+  .orbit-lab-entry {
     grid-column: auto;
     grid-row: auto;
     justify-self: auto;
@@ -5129,7 +5566,7 @@ html.vt-panel::view-transition-new(root) {
     height: 44px;
     min-height: 44px;
     padding: 0 16px;
-    flex: 1 1 88px;
+    flex: 1 1 0;
     --motion-x: 0px;
     --motion-y: 0px;
     --wy: 0px;
@@ -5143,7 +5580,7 @@ html.vt-panel::view-transition-new(root) {
     height: 44px;
     min-height: 44px;
     padding: 0 16px;
-    flex: 1 1 120px;
+    flex: 1 1 0;
     justify-content: center;
     --motion-x: 0px;
     --motion-y: 0px;
@@ -5156,7 +5593,7 @@ html.vt-panel::view-transition-new(root) {
     gap: clamp(10px, 2svh, 18px);
   }
 
-  .orbit-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     padding: 0 10px;
@@ -5483,13 +5920,6 @@ html.vt-panel::view-transition-new(root) {
   gap: 8px;
 }
 
-.album-toolbar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
 .album-toolbar-status {
   min-height: 1.3em;
   margin: 0;
@@ -5531,10 +5961,12 @@ html.vt-panel::view-transition-new(root) {
     translate var(--transition-fast);
 }
 
-.album-action-button:hover:not(:disabled) {
-  border-color: rgba(215, 160, 82, 0.44);
-  background: var(--album-amber-soft);
-  translate: 0 -1px;
+@media (hover: hover) and (pointer: fine) {
+  .album-action-button:hover:not(:disabled) {
+    border-color: rgba(215, 160, 82, 0.44);
+    background: var(--album-amber-soft);
+    translate: 0 -1px;
+  }
 }
 
 .album-action-button--primary {
@@ -5546,9 +5978,11 @@ html.vt-panel::view-transition-new(root) {
   color: #17110a;
 }
 
-.album-action-button--primary:hover:not(:disabled) {
-  border-color: #efbd78;
-  background: #e2ad62;
+@media (hover: hover) and (pointer: fine) {
+  .album-action-button--primary:hover:not(:disabled) {
+    border-color: #efbd78;
+    background: #e2ad62;
+  }
 }
 
 .album-action-button:disabled,
@@ -5611,12 +6045,14 @@ html.vt-panel::view-transition-new(root) {
   right: 8px;
 }
 
-.album-card:hover {
-  border-color: rgba(215, 160, 82, 0.4);
-  box-shadow:
+@media (hover: hover) and (pointer: fine) {
+  .album-card:hover {
+    border-color: rgba(215, 160, 82, 0.4);
+    box-shadow:
     0 24px 64px rgba(0, 0, 0, 0.32),
     0 0 0 1px rgba(215, 160, 82, 0.1);
-  translate: 0 -3px;
+    translate: 0 -3px;
+  }
 }
 
 .album-card:focus-visible {
@@ -5643,9 +6079,11 @@ html.vt-panel::view-transition-new(root) {
     filter 260ms ease;
 }
 
-.album-card:hover .album-card-frame img {
-  filter: saturate(1.05) contrast(1.02);
-  scale: 1.025;
+@media (hover: hover) and (pointer: fine) {
+  .album-card:hover .album-card-frame img {
+    filter: saturate(1.05) contrast(1.02);
+    scale: 1.025;
+  }
 }
 
 .album-card-placeholder {
@@ -5713,6 +6151,29 @@ html.vt-panel::view-transition-new(root) {
   color: #73d8ee;
 }
 
+/* HDR displays only: the "HDR" label is painted from a 4x4 BT.2020/PQ PNG
+   (cICP-tagged, ~350-460 nits, about 2.5x SDR reference white), so it renders
+   brighter than any SDR white on the page. Where the image is tone-mapped it
+   is a pale cyan; where it cannot be decoded the background colour shows
+   through the text instead. Static on purpose: the badge is seen on every
+   visit to the album list. */
+@media (dynamic-range: high) {
+  :root {
+    --hdr-glow-swatch: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAEEAIAAAB2A9VqAAAABGNJQ1AJEAABTSMj/gAAABRJREFUeNpjWGy1Ina1GibJQD0JAHuEKzG8QhY/AAAAAElFTkSuQmCC");
+  }
+
+  .album-hdr-badge {
+    dynamic-range-limit: no-limit;
+  }
+
+  .album-hdr-glow {
+    background: var(--hdr-glow-swatch) center / cover, #e9f8ff;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
 .album-card-copy {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -5762,9 +6223,11 @@ html.vt-panel::view-transition-new(root) {
     translate var(--transition-fast);
 }
 
-.album-card:hover .album-card-arrow {
-  color: var(--album-amber);
-  translate: 2px -2px;
+@media (hover: hover) and (pointer: fine) {
+  .album-card:hover .album-card-arrow {
+    color: var(--album-amber);
+    translate: 2px -2px;
+  }
 }
 
 .album-empty-state {
@@ -5825,8 +6288,8 @@ html.vt-panel::view-transition-new(root) {
 
 .album-dialog::backdrop {
   background: rgba(4, 5, 6, 0.78);
-  backdrop-filter: blur(12px) saturate(0.7);
   -webkit-backdrop-filter: blur(12px) saturate(0.7);
+  backdrop-filter: blur(12px) saturate(0.7);
 }
 
 .album-dialog-surface {
@@ -5857,6 +6320,13 @@ html.vt-panel::view-transition-new(root) {
   font-size: clamp(1.45rem, 3vw, 2rem);
 }
 
+/* Native project dialogs reuse the site's modal geometry and semantic controls. */
+.site-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .album-icon-button {
   display: grid;
   width: 40px;
@@ -5869,10 +6339,12 @@ html.vt-panel::view-transition-new(root) {
   color: var(--text-secondary);
 }
 
-.album-icon-button:hover {
-  border-color: rgba(255, 255, 255, 0.23);
-  background: rgba(255, 255, 255, 0.09);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .album-icon-button:hover {
+    border-color: rgba(255, 255, 255, 0.23);
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--text);
+  }
 }
 
 .album-form {
@@ -6014,9 +6486,11 @@ html.vt-panel::view-transition-new(root) {
   font-weight: 700;
 }
 
-.album-text-button:hover:not(:disabled) {
-  border-color: var(--album-amber);
-  color: #f0bf7c;
+@media (hover: hover) and (pointer: fine) {
+  .album-text-button:hover:not(:disabled) {
+    border-color: var(--album-amber);
+    color: #f0bf7c;
+  }
 }
 
 .album-upload-context {
@@ -6303,8 +6777,10 @@ html.vt-panel::view-transition-new(root) {
   transition: color var(--transition-fast);
 }
 
-.album-back-link:hover {
-  color: var(--album-amber);
+@media (hover: hover) and (pointer: fine) {
+  .album-back-link:hover {
+    color: var(--album-amber);
+  }
 }
 
 .album-detail-header {
@@ -6461,10 +6937,12 @@ html.vt-panel::view-transition-new(root) {
     translate var(--transition-base);
 }
 
-.album-photo-tile:hover {
-  border-color: rgba(255, 255, 255, 0.2);
-  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.3);
-  translate: 0 -2px;
+@media (hover: hover) and (pointer: fine) {
+  .album-photo-tile:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 20px 52px rgba(0, 0, 0, 0.3);
+    translate: 0 -2px;
+  }
 }
 
 .album-photo-grid > li.is-draft .album-photo-tile {
@@ -6496,9 +6974,11 @@ html.vt-panel::view-transition-new(root) {
     filter 220ms ease;
 }
 
-.album-photo-open:hover img {
-  filter: saturate(1.06);
-  scale: 1.025;
+@media (hover: hover) and (pointer: fine) {
+  .album-photo-open:hover img {
+    filter: saturate(1.06);
+    scale: 1.025;
+  }
 }
 
 .album-photo-open:focus-visible {
@@ -6590,14 +7070,16 @@ html.vt-panel::view-transition-new(root) {
   font-weight: 700;
 }
 
-.album-photo-controls button:hover:not(:disabled) {
-  border-color: rgba(215, 160, 82, 0.34);
-  color: var(--album-amber);
-}
+@media (hover: hover) and (pointer: fine) {
+  .album-photo-controls button:hover:not(:disabled) {
+    border-color: rgba(215, 160, 82, 0.34);
+    color: var(--album-amber);
+  }
 
-.album-photo-controls button.is-danger:hover:not(:disabled) {
-  border-color: rgba(212, 82, 82, 0.4);
-  color: #ed8a7d;
+  .album-photo-controls button.is-danger:hover:not(:disabled) {
+    border-color: rgba(212, 82, 82, 0.4);
+    color: #ed8a7d;
+  }
 }
 
 .album-photo-edit-dialog {
@@ -6743,7 +7225,7 @@ html.vt-panel::view-transition-new(root) {
 }
 
 .album-lightbox-rail ol.is-animated {
-  transition: transform 560ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -6788,10 +7270,16 @@ html.vt-panel::view-transition-new(root) {
   letter-spacing: 0.06em;
 }
 
-.album-rail-thumb:hover,
 .album-rail-thumb:focus-visible {
   border-color: rgba(255, 255, 255, 0.34);
   opacity: 0.92;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .album-rail-thumb:hover {
+    border-color: rgba(255, 255, 255, 0.34);
+    opacity: 0.92;
+  }
 }
 
 .album-rail-thumb.active {
@@ -6855,10 +7343,12 @@ html.vt-panel::view-transition-new(root) {
     color var(--transition-fast);
 }
 
-.album-version-button:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.23);
-  background: rgba(255, 255, 255, 0.075);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .album-version-button:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.23);
+    background: rgba(255, 255, 255, 0.075);
+    color: var(--text);
+  }
 }
 
 .album-version-button.active {
@@ -6906,6 +7396,13 @@ html.vt-panel::view-transition-new(root) {
 .album-version-dot.is-hdr {
   background: #48b8d7;
   box-shadow: 0 0 12px rgba(72, 184, 215, 0.46);
+}
+
+@media (dynamic-range: high) {
+  .album-version-dot.is-hdr {
+    dynamic-range-limit: no-limit;
+    background: var(--hdr-glow-swatch) center / cover, #48b8d7;
+  }
 }
 
 .album-lightbox figure {
@@ -6979,9 +7476,11 @@ html.vt-panel::view-transition-new(root) {
   font-size: 0.76rem;
 }
 
-.album-lightbox-navigation button:hover {
-  border-color: rgba(215, 160, 82, 0.36);
-  background: rgba(215, 160, 82, 0.08);
+@media (hover: hover) and (pointer: fine) {
+  .album-lightbox-navigation button:hover {
+    border-color: rgba(215, 160, 82, 0.36);
+    background: rgba(215, 160, 82, 0.08);
+  }
 }
 
 @media (max-width: 900px) {
@@ -6999,10 +7498,6 @@ html.vt-panel::view-transition-new(root) {
   .album-toolbar,
   .album-detail-aside {
     justify-items: start;
-  }
-
-  .album-toolbar-actions {
-    justify-content: flex-start;
   }
 
   .album-toolbar-status {
@@ -7067,24 +7562,13 @@ html.vt-panel::view-transition-new(root) {
     gap: 20px;
   }
 
-  .page-action-link {
-    width: 100%;
-  }
-
   .album-index,
   .album-detail {
     gap: 38px;
   }
 
-  .album-toolbar,
-  .album-toolbar-actions,
-  .album-toolbar-actions .album-action-button {
+  .album-toolbar {
     width: 100%;
-  }
-
-  .album-toolbar-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .album-card-frame {
@@ -7283,10 +7767,6 @@ html.vt-panel::view-transition-new(root) {
 }
 
 @media (max-width: 390px) {
-  .album-toolbar-actions {
-    grid-template-columns: 1fr;
-  }
-
   .album-empty-state {
     flex-direction: column;
     gap: 14px;
@@ -7420,11 +7900,18 @@ html.vt-panel::view-transition-new(root) {
   appearance: none;
 }
 
-.film-stock-toggle:hover,
 .film-stock-toggle:focus-visible {
   background: rgba(214, 157, 88, 0.12);
   color: #e4b675;
   outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .film-stock-toggle:hover {
+    background: rgba(214, 157, 88, 0.12);
+    color: #e4b675;
+    outline: none;
+  }
 }
 
 .film-stock-toggle > span {
@@ -7925,9 +8412,11 @@ html.vt-panel::view-transition-new(root) {
     opacity var(--transition-fast);
 }
 
-.film-contact-frame:hover {
-  border-color: rgba(214,157,88,.5);
-  transform: translateY(-2px);
+@media (hover: hover) and (pointer: fine) {
+  .film-contact-frame:hover {
+    border-color: rgba(214,157,88,.5);
+    transform: translateY(-2px);
+  }
 }
 
 .film-contact-frame:focus-visible {
@@ -8153,9 +8642,11 @@ html.vt-panel::view-transition-new(root) {
   cursor: pointer;
 }
 
-.film-frame-actions button:hover:not(:disabled) {
-  border-color: rgba(214,157,88,.42);
-  color: #e4b675;
+@media (hover: hover) and (pointer: fine) {
+  .film-frame-actions button:hover:not(:disabled) {
+    border-color: rgba(214,157,88,.42);
+    color: #e4b675;
+  }
 }
 
 .film-commit-bar {
@@ -8364,12 +8855,9 @@ object {
   .slug-rules,
   .slug-error,
   .collection-links strong,
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget,
-  .orbit-upload,
   .album-toolbar-status,
   .album-card-placeholder,
   .album-field > span,
@@ -8535,9 +9023,7 @@ object {
     width: 100%;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload,
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
     grid-column: auto;
@@ -8555,14 +9041,153 @@ object {
     --wy: 0px;
   }
 
-  .orbit-blog-upload,
-  .orbit-album-upload,
-  .orbit-post-upload {
-    flex: 1 1 calc((100% - 24px) / 3);
-  }
-
+  .orbit-lab-entry,
   .github-widget,
   .bilibili-widget {
-    flex: 1 1 calc(50% - 6px);
+    flex: 1 1 calc((100% - 24px) / 3);
   }
 }
+
+/* Page-tool swatches rotate tones only; media and geometry remain unchanged. */
+.page-tools-swatches rect { transition: fill var(--motion-panel-duration); }
+.page-tools-swatches rect:nth-child(1) { fill: #E2E8EE; }
+.page-tools-swatches rect:nth-child(2), .page-tools-swatches rect:nth-child(4) { fill: #A9B3BD; }
+.page-tools-swatches rect:nth-child(3) { fill: #737D88; }
+[data-open="true"] .page-tools-swatches rect:nth-child(1), [data-open="true"] .page-tools-swatches rect:nth-child(3) { fill: #A9B3BD; }
+[data-open="true"] .page-tools-swatches rect:nth-child(2) { fill: #E2E8EE; }
+[data-open="true"] .page-tools-swatches rect:nth-child(4) { fill: #737D88; }
+.create-menu .action-menu-trigger, .create-menu .action-menu-trigger[aria-expanded="true"] { background: #1e2328; }
+.author-menu { position: relative; }
+/* The header creates a backdrop root; a solid token surface also keeps home text from bleeding through. */
+.author-menu .action-menu-panel { background: var(--surface-strong); max-width: calc(100vw - 40px); max-height: calc(100dvh - 100px); overflow-y: auto; }
+.author-menu-floating { position: fixed; right: calc(max(20px, env(safe-area-inset-right)) + 54px); bottom: max(22px, env(safe-area-inset-bottom)); z-index: 60; }
+.author-menu .bg-control-toggle { position: relative; }
+.author-task-dot { position: absolute; right: 5px; top: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--text-secondary); }
+.author-task-dot[data-state="completed"] { background: var(--success); }
+.author-task-dot[data-state="failed"] { background: var(--danger); }
+.author-session-status { flex-wrap: wrap; }
+.author-drop-layer { position: fixed; inset: 12px; z-index: 90; display: grid; place-content: center; border: 2px dashed var(--text-secondary); border-radius: var(--radius-lg); background: rgb(12 14 16 / 0.94); color: var(--text); pointer-events: none; }
+/* Prevent long project names from contributing a min-content width to the home grid. */
+.orbital-stage, .home-action-row { min-width: 0; }
+.home-action-row > .orbit-lab-entry { min-width: 0; max-width: 100%; }
+.orbit-lab-entry strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Watching changes only chrome opacity: its layout footprint stays reserved. */
+.site-header, .video-detail > .back-link, .video-detail > .video-title,
+.player-controls-row { transition: opacity var(--motion-panel-duration); }
+html[data-watching="idle"] .site-header:not(:focus-within),
+html[data-watching="idle"] .video-detail > .back-link:not(:focus-within),
+html[data-watching="idle"] .video-detail > .video-title:not(:focus-within),
+html[data-watching="fullscreen"] .site-header,
+html[data-watching="fullscreen"] .video-detail > .back-link,
+html[data-watching="fullscreen"] .video-detail > .video-title,
+html[data-watching="fullscreen"] .create-menu { opacity: 0; pointer-events: none; }
+.player-shell:fullscreen, .player-shell.player-immersive {
+  position: fixed; inset: 0; z-index: 100; width: 100%; height: 100dvh; max-width: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: #000; overflow: hidden; overscroll-behavior: contain; display: block;
+}
+/* Let the real toolbar height reserve space, including wrapped/mobile controls. */
+.player-shell[data-player-fullscreen="true"] .player-layout { height: 100%; min-height: 0; }
+.player-shell[data-player-fullscreen="true"] .player-main { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.player-shell[data-player-fullscreen="true"] .player-frame { flex: 1; min-height: 0; border-radius: 0; box-shadow: none; }
+.player-shell[data-player-fullscreen="true"] .video-player { height: 100%; aspect-ratio: auto; object-fit: contain; }
+.player-shell[data-player-fullscreen="true"] .player-info-panel.open { max-height: 30dvh; overflow-y: auto; flex-shrink: 0; }
+.player-shell[data-player-fullscreen="true"] .player-controls-row { padding: 0 12px 8px; flex-shrink: 0; }
+.info-toggle-row { gap: 8px; }
+.player-shell[data-player-fullscreen="true"][data-controls-idle="true"] .player-controls-row { opacity: 0; pointer-events: none; }
+.player-fullscreen-button { min-width: 88px; min-height: 44px; justify-content: center; }
+.player-shell[data-player-fullscreen="true"] .master-bar { flex-wrap: nowrap; overflow-x: auto; }
+.player-shell[data-player-fullscreen="true"] .master-button { flex-shrink: 0; }
+@media (pointer: coarse) {
+  .player-shell .master-bar { flex-wrap: nowrap; overflow-x: auto; }
+  .player-shell .master-button { min-height: 44px; flex-shrink: 0; }
+  .player-shell :is(.master-add, .info-toggle) { min-height: 44px; }
+}
+@media (pointer: coarse) and (orientation: portrait) {
+  .player-shell[data-playing="true"] .player-frame { position: sticky; top: env(safe-area-inset-top); z-index: 51; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-tools-swatches rect { transition: none; }
+  .site-header, .video-detail > .back-link, .video-detail > .video-title, .player-controls-row { transition-duration: var(--motion-reduced-duration, 100ms); }
+}
+@media print { .author-menu, .author-drop-layer { display: none; } }
+
+/* Hold-to-select author tray: above utility panels, below modal/fullscreen UI.
+   Keep the page and media pixels untouched; only the tray has a solid surface. */
+:root { --z-author-tray: 90; }
+.author-tray-layer { position: fixed; inset: 0; z-index: var(--z-author-tray); user-select: none; }
+.author-tray-layer[data-closing] { pointer-events: none; }
+/* The disk's center always equals the invocation pointer; it is never offset
+   or edge-clamped. HTML links use annular clips to preserve existing navigation. */
+.author-tray {
+  position: fixed; width: var(--author-tray-size); height: var(--author-tray-size);
+  border-radius: 50%; overflow: hidden; background: var(--surface-strong); color: var(--text);
+  box-shadow: 0 18px 44px -12px rgb(0 0 0 / 0.6);
+  /* The appearance panel's circular reveal, centred on the pointer. Sectors are
+     live from the first frame, so a fast flick never waits for the animation. */
+  --reveal-x: 50%;
+  --reveal-y: 50%;
+  --reveal-r: 52%;
+  animation: bg-panel-reveal 220ms var(--motion-ease);
+}
+.author-tray:focus { outline: none; }
+.author-tray-action { position: absolute; inset: 0; background: transparent; color: var(--text); cursor: pointer; transition: none; }
+.author-tray-action:hover { color: var(--text); }
+.author-tray-action[data-selected="true"] { background: color-mix(in srgb, var(--accent-readable) 22%, var(--surface-overlay)); color: var(--text); }
+/* Labels wrap after about four characters to stay clear of the curved blade edges. */
+.author-tray-action-copy { position: absolute; width: max-content; max-width: 4.3em; display: flex; flex-direction: column; align-items: center; gap: 5px; transform: translate(-50%, -50%); text-align: center; font-size: 12.5px; line-height: 1.3; font-weight: 600; }
+.author-tray-action svg { width: 20px; height: 20px; }
+/* Decoration only: blades turn and the opening dilates here, while the Links'
+   hit areas above stay fixed, so a fast flick never lands on a moving target. */
+.author-tray-iris { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.author-tray-metal-inner { stop-color: var(--surface-overlay); }
+.author-tray-metal-outer { stop-color: var(--surface-strong); }
+.author-tray-blades, .author-tray-hole { transform-box: view-box; transform-origin: 50% 50%; }
+/* Each blade casts onto the next from one side, which is what reads as overlap. */
+.author-tray-blade-shade { fill: none; stroke: #000; stroke-opacity: 0.09; stroke-linecap: round; }
+.author-tray-blade-edge { fill: none; stroke: var(--line-light); stroke-width: 0.28; }
+.author-tray-hole { fill: var(--background); stroke: var(--line-light); stroke-width: 0.35; transition: stroke var(--motion-control-duration); }
+.author-tray-hole[data-active="true"] { stroke: var(--accent-readable); }
+.author-tray-center { position: absolute; left: 50%; top: 50%; width: var(--author-tray-inner-size); height: var(--author-tray-inner-size); transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; pointer-events: none; }
+.author-tray-center kbd { color: var(--text-secondary); font: 16px var(--font-mono); }
+.author-tray-center strong { font-size: 12px; font-weight: 600; }
+.author-tray-center span { color: var(--text-secondary); font-size: 11px; }
+/* Opening: the disk grows from the pointer while the blades turn back and the
+   opening dilates; then the labels arrive clockwise from the top. */
+.author-tray-blades { animation: author-tray-blades-open 220ms var(--motion-ease); }
+.author-tray-hole { animation: author-tray-hole-open 220ms var(--motion-ease); }
+.author-tray-center { animation: author-tray-fade-in var(--motion-media-duration) var(--motion-ease) 50ms both; }
+.author-tray-action-copy { animation: author-tray-label var(--motion-control-duration) var(--motion-ease) both; animation-delay: calc(60ms + var(--author-tray-index, 0) * 12ms); }
+/* Exits last EXIT_MS (AuthorTray.tsx). Cancelling stops the iris down onto the
+   pointer. Committing clears the disk around the chosen blade, which lifts
+   outward and fades, so nothing is left when navigation starts. */
+.author-tray[data-closing="cancel"] { animation: bg-panel-conceal 150ms cubic-bezier(0.4, 0, 1, 1) forwards; }
+.author-tray[data-closing="cancel"] .author-tray-blades { animation: author-tray-blades-close 150ms cubic-bezier(0.4, 0, 1, 1) forwards; }
+.author-tray[data-closing="cancel"] .author-tray-hole { animation: author-tray-hole-close 150ms cubic-bezier(0.4, 0, 1, 1) forwards; }
+.author-tray[data-closing="cancel"] .author-tray-center,
+.author-tray[data-closing="cancel"] .author-tray-action-copy { animation: author-tray-fade 80ms ease-out forwards; }
+.author-tray[data-closing="commit"] { overflow: visible; animation: author-tray-commit-disk 90ms ease-out forwards; }
+.author-tray[data-closing="commit"] .author-tray-action:not([data-selected="true"]),
+.author-tray[data-closing="commit"] .author-tray-iris,
+.author-tray[data-closing="commit"] .author-tray-center { animation: author-tray-fade 90ms ease-out forwards; }
+.author-tray[data-closing="commit"] .author-tray-action[data-selected="true"] { animation: author-tray-commit-sector 150ms var(--motion-ease) forwards; }
+.author-tray-hint { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.author-tray-edge-hint { position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%); width: max-content; max-width: calc(100vw - 24px); padding: 12px 16px; border: 1px solid var(--line-light); border-radius: var(--radius); background: var(--surface-strong); color: var(--text-secondary); font-size: 0.8rem; text-align: center; }
+@keyframes author-tray-blades-open { from { transform: rotate(-36deg); } }
+@keyframes author-tray-blades-close { to { transform: rotate(-28deg); } }
+@keyframes author-tray-hole-open { from { transform: scale(0.28); } }
+@keyframes author-tray-hole-close { to { transform: scale(0.3); } }
+@keyframes author-tray-fade-in { from { opacity: 0; } }
+@keyframes author-tray-label { from { opacity: 0; scale: 0.9; } }
+@keyframes author-tray-fade { to { opacity: 0; } }
+@keyframes author-tray-commit-disk { to { background-color: transparent; box-shadow: none; } }
+@keyframes author-tray-commit-sector {
+  55% { opacity: 1; scale: 1.04; }
+  to { opacity: 0; scale: 1.04; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .author-tray, .author-tray-center, .author-tray-action-copy, .author-tray-blades, .author-tray-hole { animation: none; }
+  .author-tray-action { transition: none; }
+}
+@media print { .author-tray-layer { display: none; } }

@@ -29,8 +29,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     });
     // Manually declared public branding assets are owned by the API configuration.
     // Fall back only as an anonymous caller; never forward CMS credentials to that path.
+    // Standalone containers use a separate API service rather than Web loopback.
+    const apiBase = (process.env.API_INTERNAL_URL || "http://127.0.0.1:8060").replace(/\/$/, "");
     const response = allowed ? await fetchDirectusPreview(upstreamPath)
-      : await fetch(`http://127.0.0.1:8060${upstreamPath}`, {
+      : await fetch(`${apiBase}${upstreamPath}`, {
         cache: "no-store", redirect: "error", signal: AbortSignal.timeout(10_000),
       });
     if (!response.ok) { await response.body?.cancel(); return hidden(); }

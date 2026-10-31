@@ -16,6 +16,37 @@ Default local URL:
 http://127.0.0.1:8060
 ```
 
+## Development and verification
+
+`src/server.cjs` wires the HTTP handlers and media workflows. CMS transport lives in
+`src/directus-client.cjs`, which owns JSON requests, file uploads, asset streaming,
+authentication retries, and file-upload reconciliation. It reuses the token cache in
+`src/directus-auth.cjs`. Tests can import the client and provide its `fetch` dependency
+without starting the API or contacting a real CMS.
+
+JSON requests and file uploads share response parsing: HTTP failures retain the
+upstream status even when the error body is HTML or unreadable. A successful POST/PATCH/PUT
+with an unreadable, empty, or invalid JSON response remains uncertain and must be
+reconciled before its uploaded files can be rolled back.
+
+The root `package.json` declares the runtime requirement. Run the API suite from
+the repository root:
+
+```sh
+npm run test:api
+```
+
+For focused CMS transport checks, run from `apps/api`:
+
+```sh
+node --test test/directus-client.test.cjs test/directus-auth.test.cjs
+```
+
+The full suite also exercises real media processing and temporary local HTTP servers.
+Set `FFMPEG_PATH` and `FFPROBE_PATH` to a matching build that supports the required
+codecs and metadata; HDR-to-SDR checks additionally require libplacebo and working
+Vulkan. These capabilities are not guaranteed by the bundled static binaries.
+
 ## Endpoints
 
 - `GET /health`

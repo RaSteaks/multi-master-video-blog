@@ -14,13 +14,20 @@ const apiSource = fs.readFileSync(path.join(root, "apps/api/src/server.cjs"), "u
 const media = require("../apps/api/src/media-security.cjs");
 const { canReadAsset } = require("../apps/api/src/asset-access.cjs");
 const { createCachedProbe } = require("../apps/api/src/cached-probe.cjs");
+const { createDirectusClient } = require("../apps/api/src/directus-client.cjs");
 
 // Exercise real request handlers with isolated storage and fake CMS/process effects.
 // No server listener, publishing credential, database or production media is used.
 function apiFixture(names, extra = {}) {
   const context = vm.createContext({ fs, fsp, path, crypto, Buffer, URL, URLSearchParams,
     // Stream aborts and resource diagnostics are part of the combined API runtime.
-    Readable, Response, AbortController, pipeline, ...media, ...require("../apps/api/src/http-utils.cjs"), ...extra });
+    Readable, Response, AbortController, AbortSignal, pipeline, MAX_LEGACY_UPLOAD_BYTES: 8 * 1024 ** 3,
+    // Isolate admission from the separately tested ownership/stream policies.
+    assetSlots: { acquire: async () => () => {} }, assetBudget: { consume() {} },
+    requestAddress: () => "fixture", TRUST_PROXY: false,
+    assetAccess: () => ({}), canReadMedia: async () => true, PUBLIC_MEDIA_FILES: new Set(), ...media, ...require("../apps/api/src/http-utils.cjs"), ...extra });
+  context.authorizeAsset = async (id, access) => (extra.canReadAsset || canReadAsset)(id, access,
+    route => context.directusRequest(route, "service-token"), context.PUBLIC_ASSET_IDS);
   vm.runInContext(names.map(name => {
     const match = apiSource.match(new RegExp("^(?:async )?function " + name + "\\([\\s\\S]*?^}", "m"));
     assert.ok(match, name);
@@ -57,6 +64,25 @@ function loadTs(filename, dependencies = {}, globals = {}) {
   });
   return module.exports;
 }
+
+test("sign-in reports origin rejection instead of telling users to refresh a nonexistent session", async () => {
+  const methods = [];
+  const author = loadTs(path.join(root, "apps/web/src/lib/author-session.ts"), {}, {
+    fetch: async (url, options) => {
+      assert.equal(url, "/api/author/session");
+      methods.push(options.method);
+      return new Response(JSON.stringify({ error: "请求来源不受信任，请从本站重新操作。" }), { status: 403 });
+    }
+  });
+  await assert.rejects(author.signIn("fixture-token"), error => {
+    assert.equal(error.status, 403);
+    assert.match(error.message, /来源校验失败.*端口.*TRUST_PROXY/);
+    assert.doesNotMatch(error.message, /刷新后重试/);
+    return true;
+  });
+  await assert.rejects(author.refreshStatus(), error => error.status === 403 && error.message === "登录状态已更新，请刷新后重试。");
+  assert.deepEqual(methods, ["POST", "GET"]);
+});
 
 test("all legacy scan files migrate without changing persisted Windows/POSIX paths", async t => {
   const dir = await temp(t), publicRoot = path.join(dir, "media"), privateRoot = path.join(dir, "private/scans");
@@ -260,7 +286,7 @@ test("replacing or removing a cover preserves its authorized reuse in article Ma
 
 // Run the component's actual effects with controlled visibility/network completion.
 // This keeps regression tests independent of a browser, CMS, or new DOM dependencies.
-function assetImageFixture({ observerAvailable = true } = {}) {
+function assetImageFixture({ observerAvailable = true, author = { author: false } } = {}) {
   const hooks = [], pendingEffects = [], observers = [], requests = [], revoked = [];
   const node = {};
   let cursor = 0, dirty = false, props, view, nextBlob = 0;
@@ -298,6 +324,7 @@ function assetImageFixture({ observerAvailable = true } = {}) {
   }
   const { AuthenticatedAssetImage } = loadTs(path.join(root, "apps/web/src/components/AuthenticatedAssetImage.tsx"), {
     react, "react/jsx-runtime": { jsx: (type, props) => ({ type, props }) },
+    "@/lib/author-session": { useAuthorSession: () => author },
     "@/lib/asset-preview": {
       isAssetPreviewUrl: src => typeof src === "string" && src.startsWith("/api/assets/"),
       fetchAssetPreview: (src, token, signal) => new Promise((resolve, reject) => requests.push({ src, token, signal, resolve, reject })),
@@ -381,11 +408,15 @@ test("lazy image changes cancel observers and stale requests without revealing o
 test("asset handler checks authorization before bytes/304 and isolates old active content", async () => {
   const data = { posts: [{ published: false, cover_image: "draft" }, { published: true, cover_image: "public" }] };
   let fetches = 0, type = "image/jpeg";
-  const api = apiFixture(["handleAsset", "assetAccess", "tokenMatches", "fetchDirectusAsset", "httpError", "sendJson"], {
+  const client = createDirectusClient({
+    url: "http://cms.invalid",
+    fetch: async () => { fetches++; return new Response("bytes", { headers: { "content-type": type, etag: '"same"' } }); }
+  });
+  const api = apiFixture(["handleAsset", "assetAccess", "tokenMatches", "httpError", "sendJson"], {
     UPLOAD_API_TOKEN: "upload-token", ARTICLE_API_TOKEN: "article-token", DIRECTUS_URL: "http://cms.invalid",
     ASSET_PRESETS: new Set(["album-thumb"]), PUBLIC_ASSET_IDS: new Set(), canReadAsset, directusLogin: async () => "service-token",
     directusRequest: cms(data), JSON_COMPRESSION_MIN_BYTES: Infinity,
-    fetch: async () => { fetches++; return new Response("bytes", { headers: { "content-type": type, etag: '"same"' } }); }
+    fetchDirectusAsset: client.fetchDirectusAsset
   });
   async function get(id, headers = {}, method = "GET") {
     const res = new Reply();
@@ -535,23 +566,23 @@ test("health requests share a short probe, cache failures and refresh once after
   const api = apiFixture(["commandAvailable", "handleHealth"], extra);
   vm.runInContext(apiSource.match(/^const getMediaHealth = createCachedProbe\([\s\S]*?^  \]\)\);/m)[0], api);
   const responses = Array.from({ length: 20 }, () => ({}));
-  const pending = responses.map(res => api.handleHealth(res));
+  const pending = responses.map(res => api.handleHealth(res, true));
   await Promise.resolve(); assert.equal(calls, 2); release(); await Promise.all(pending);
   assert.equal(responses[0].payload.ffmpeg.available, true);
-  await api.handleHealth({}); assert.equal(calls, 2);
+  await api.handleHealth({}, true); assert.equal(calls, 2);
   clock = 60001; succeed = false;
-  const res = {}; await Promise.all([api.handleHealth(res), api.handleHealth({})]);
+  const res = {}; await Promise.all([api.handleHealth(res, true), api.handleHealth({}, true)]);
   assert.equal(calls, 4); assert.equal(res.payload.ffmpeg.available, false);
-  await api.handleHealth({}); assert.equal(calls, 4);
+  await api.handleHealth({}, true); assert.equal(calls, 4);
 });
 
 test("draft image transport never sends a token to external or rewritten URLs", async () => {
-  const ts = require("typescript"), module = { exports: {} }, requests = [];
-  const source = fs.readFileSync(path.join(root, "apps/web/src/lib/asset-preview.ts"), "utf8");
-  const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
-  vm.runInNewContext(code, { module, exports: module.exports,
-    fetch: async (url, options) => { requests.push({ url, options }); return new Response("image"); } });
-  const { fetchAssetPreview } = module.exports, signal = new AbortController().signal;
+  const requests = [];
+  const author = loadTs(path.join(root, "apps/web/src/lib/author-session.ts"));
+  const { fetchAssetPreview } = loadTs(path.join(root, "apps/web/src/lib/asset-preview.ts"), { "./author-session": author }, {
+    fetch: async (url, options) => { requests.push({ url, options }); return new Response("image"); },
+  });
+  const signal = new AbortController().signal;
   for (const url of ["https://attacker.invalid/api/assets/a", "//attacker.invalid/a", "/api/assets/../users", "/api/assets/a?redirect=https://attacker.invalid"]) {
     await assert.rejects(fetchAssetPreview(url, "secret", signal));
   }
@@ -562,10 +593,23 @@ test("draft image transport never sends a token to external or rewritten URLs", 
   assert.equal(requests[0].options.cache, "no-store");
 });
 
+test("session-backed managed images keep the protected blob path with an empty manual token", async () => {
+  const image = assetImageFixture({ author: { author: true, csrf: "session-nonce", expiresAt: Date.now() + 1000, article: false } });
+  const view = image.render({ token: "", src: "/api/assets/draft", srcSet: "/api/assets/draft 640w", loading: "eager" });
+  assert.equal(view.props.srcSet, undefined);
+  assert.equal(image.requests.length, 1);
+  assert.equal(image.requests[0].token, "");
+  image.requests[0].resolve({});
+  assert.equal((await image.flush()).props.src, "blob:fixture-1");
+  image.unmount();
+});
+
 test("explicit site preview preserves draft images without making unrelated CMS files public", async () => {
   const env = { DIRECTUS_SHOW_DRAFTS: "false" };
   const assetHelpers = loadTs(path.join(root, "apps/web/src/lib/asset-url.ts"));
-  const directus = loadTs(path.join(root, "apps/web/src/lib/directus.ts"), { "./asset-url": assetHelpers }, { process: { env } });
+  const authorSession = loadTs(path.join(root, "apps/web/src/lib/author-session.ts"));
+  const projectHelpers = loadTs(path.join(root, "apps/web/src/lib/external-projects.ts"), { "./author-session": authorSession });
+  const directus = loadTs(path.join(root, "apps/web/src/lib/directus.ts"), { "./asset-url": assetHelpers, "./external-projects": projectHelpers }, { process: { env } });
   assert.equal(directus.assetUrl("cover"), "/api/assets/cover");
   env.DIRECTUS_SHOW_DRAFTS = "true";
   assert.equal(directus.assetUrl("cover", "content-card"), "/internal/preview/assets/cover?key=content-card");

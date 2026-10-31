@@ -68,7 +68,10 @@ for service in "${running[@]}"; do
   esac
   healthy=false
   for (( attempt=0; attempt<60; attempt++ )); do
-    if curl --fail --silent --max-time 5 "$url" >/dev/null; then healthy=true; break; fi
+    # CMS health now authenticates; retain its database/storage checks.
+    if [[ $service == video-blog-cms ]]; then
+      if CMS_ENV_FILE=/etc/video-blog/cms.env /usr/bin/node "$release/scripts/directus-health.cjs" >/dev/null; then healthy=true; break; fi
+    elif curl --fail --silent --max-time 5 "$url" >/dev/null; then healthy=true; break; fi
     sleep 3
   done
   [[ $healthy == true ]] || { echo "$service failed readiness." >&2; exit 1; }

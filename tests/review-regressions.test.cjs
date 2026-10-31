@@ -135,7 +135,8 @@ test("maintenance blocks while an article is uploading or cleaning up, even afte
     fsp: { rm: async () => { cleanupStarted = true; await cleanup; } }
   });
   vm.runInContext(functions(source, ["dispatchRequest", "handleRequest", "handleArticleCreate"]), api);
-  const request = (url, method = "POST") => ({ url, method, headers: { host: "fixture.invalid" } });
+  // Match the IncomingMessage methods used by dispatch before inspecting write counters.
+  const request = (url, method = "POST") => ({ url, method, headers: { host: "fixture.invalid" }, setTimeout() {}, once() {} });
   const response = new EventEmitter();
   const work = api.dispatchRequest(request("/articles"), response);
   assert.equal(api.activeWriteRequests, 1);
@@ -167,7 +168,7 @@ test("maintenance blocks while an article is uploading or cleaning up, even afte
 
 test("maintenance fails closed against APIs without write-drain counters", async () => {
   const source = await fs.readFile(path.join(root, "scripts/maintenance.cjs"), "utf8");
-  const api = vm.createContext({ action: "check", endpoint: "http://fixture.invalid", AbortSignal,
+  const api = vm.createContext({ env: {}, action: "check", endpoint: "http://fixture.invalid", AbortSignal,
     fetch: async () => ({ ok: true, json: async () => ({ resources: {} }) }) });
   vm.runInContext(functions(source, ["main"]), api);
   await assert.rejects(api.main(), /write-drain tracking/);
@@ -176,7 +177,7 @@ test("maintenance fails closed against APIs without write-drain counters", async
 test("native update build forwards shared and web overrides to the actual launcher", async t => {
   const dir = await temporary(t);
   for (const sub of ["scripts", "config", "apps/web", "node_modules/next/dist/bin"]) await fs.mkdir(path.join(dir, sub), { recursive: true });
-  for (const filename of ["scripts/run-service.cjs", "config/resource-profile.cjs"]) await fs.copyFile(path.join(root, filename), path.join(dir, filename));
+  for (const filename of ["scripts/run-service.cjs", "scripts/directus-health.cjs", "config/resource-profile.cjs"]) await fs.copyFile(path.join(root, filename), path.join(dir, filename));
   const shared = path.join(dir, "resources.env"), web = path.join(dir, "web.env");
   await fs.writeFile(shared, "RESOURCE_PROFILE=low-2gb\nBUILD_HEAP_MIB=512\nBUILD_WORKERS=1\n");
   await fs.writeFile(web, "BUILD_HEAP_MIB=640\nBUILD_WORKERS=2\nAPI_INTERNAL_URL=http://api.fixture:9000\n");

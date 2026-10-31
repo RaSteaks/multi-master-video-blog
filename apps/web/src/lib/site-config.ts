@@ -35,11 +35,6 @@ export const siteConfig = {
     avatarUrl: envText("SITE_HOME_AVATAR_URL", ""),
     githubUrl: envText("SITE_GITHUB_URL", "https://github.com/"),
     bilibiliUrl: envText("SITE_BILIBILI_URL", "https://space.bilibili.com/"),
-    postUploadHref: envText("SITE_POST_UPLOAD_HREF", "/write"),
-    albumUploadHref: envText(
-      "SITE_ALBUM_UPLOAD_HREF",
-      "/albums?dialog=upload",
-    ),
     collectionEyebrow: envText("SITE_HOME_COLLECTION_EYEBROW", "Collection"),
     collectionTitle: envText("SITE_HOME_COLLECTION_TITLE", "Personal Index"),
     collectionSummary: envText(

@@ -20,7 +20,7 @@ const pageText = {
   },
 };
 
-export function UploadPageClient({ initialProjectId }: { initialProjectId?: string }) {
+export function UploadPageClient({ initialProjectId, initialSessionId }: { initialProjectId?: string; initialSessionId?: string }) {
   // Preserve the target across locale changes; the form loads its current CMS details.
   const [lang, setLang] = useState<Lang>("zh");
   const text = pageText[lang];
@@ -54,7 +54,7 @@ export function UploadPageClient({ initialProjectId }: { initialProjectId?: stri
         </div>
       </div>
 
-      <UploadVideoForm lang={lang} initialProjectId={initialProjectId} />
+      <UploadVideoForm key={initialSessionId} lang={lang} initialProjectId={initialProjectId} initialSessionId={initialSessionId} />
     </main>
     </>
   );

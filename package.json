@@ -19,12 +19,19 @@
     "api:health": "node scripts/service-control.cjs api health",
     "test:api": "npm --workspace @multi-master-video-blog/api run test",
     "test:video-upload": "node --test tests/video-upload.test.cjs",
-    "test:security": "node --test tests/security.test.cjs",
+    "test:security": "node --test tests/security.test.cjs tests/security-remediation.test.cjs",
     "test:album-api": "node scripts/test-album-api.cjs",
     "test:film-scan-cleanup": "node scripts/test-film-scan-cleanup.cjs",
     "dev:web": "npm --workspace @multi-master-video-blog/web run dev",
     "build:web": "npm --workspace @multi-master-video-blog/web run build",
     "test:web": "npm --workspace @multi-master-video-blog/web run test",
+    "test:article-editor-browser": "node tests/article-editor-browser.cjs",
+    "test:author-tray-browser": "node tests/author-tray-browser.cjs",
+    "test:create-menu-browser": "node tests/create-menu-browser.cjs",
+    "test:phase6-browser": "node tests/phase6-browser.cjs",
+    "test:phase6-cache": "node tests/phase6-cache.cjs",
+    "test:project-browser": "node tests/project-browser.cjs",
+    "test:external-projects": "node --test apps/api/test/external-projects.test.cjs",
     "start:web": "npm --workspace @multi-master-video-blog/web run start",
     "web:start": "node scripts/service-control.cjs web start",
     "web:stop": "node scripts/service-control.cjs web stop",
@@ -35,6 +42,8 @@
     "bootstrap:cms": "npm --workspace @multi-master-video-blog/cms run bootstrap",
     "setup:cms-schema": "node scripts/setup-directus-schema.cjs",
     "setup:video-source-format": "node scripts/setup-directus-schema.cjs --video-source-format-only",
+    "repair:cms-insights": "node scripts/repair-directus-insights.cjs",
+    "test:cms-insights": "node --test tests/directus-insights.test.cjs",
     "backfill:video-source-formats": "node scripts/backfill-video-source-formats.cjs",
     "migrate:cms:postgres": "node scripts/migrate-directus-sqlite-to-postgres.cjs",
     "dev:cms": "npm --workspace @multi-master-video-blog/cms run dev",
@@ -69,12 +78,28 @@
     "start:linux:api": "node scripts/run-service.cjs api",
     "start:linux:web": "node scripts/run-service.cjs web",
     "start:linux:cms": "node scripts/run-service.cjs cms",
-    "build:low-memory": "node scripts/run-service.cjs build"
+    "build:low-memory": "node scripts/run-service.cjs build",
+    "test:cms-security": "node --no-node-snapshot tests/security-cms-integration.cjs",
+    "test:security-browser": "node tests/security-browser.cjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0 <23"
   },
   "dependencies": {
     "proper-lockfile": "4.1.2"
+  },
+  "overrides": {
+    "@ai-sdk/provider-utils": "4.0.33",
+    "@opentelemetry/core": "2.8.0",
+    "baseline-browser-mapping": "2.11.0",
+    "basic-ftp": "6.2.1",
+    "js-yaml": "4.3.2",
+    "sanitize-html": "2.18.1",
+    "source-map-js": "1.2.2",
+    "tar": "7.5.22",
+    "uuid@9.0.1": "11.1.1"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
   }
 }

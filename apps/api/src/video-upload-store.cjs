@@ -21,6 +21,7 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
   chunkBytes = 1024 ** 2, ttlMs = 7 * 24 * 3600_000, processUpload,
   canProcess = () => true, now = Date.now }) {
   const sessions = new Map();
+  const legacyReservations = new Map();
   const busy = new Set();
   let draining = false, closed = false, timer, unlock;
   const folder = id => path.join(root, id);
@@ -124,8 +125,9 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
         if (existing.signature !== signature) throw fail(409, "Upload ID already belongs to different files or metadata.");
         return view(existing);
       }
-      const reserved = [...sessions.values()].reduce((sum, item) => sum + item.total, 0);
-      if (sessions.size >= maxSessions || reserved + validated.total > quotaBytes) {
+      const reserved = [...sessions.values()].reduce((sum, item) => sum + item.total, 0)
+        + [...legacyReservations.values()].reduce((sum, bytes) => sum + bytes, 0);
+      if (sessions.size + legacyReservations.size >= maxSessions || reserved + validated.total > quotaBytes) {
         throw fail(503, "Upload storage is full. Retry after existing sessions expire.");
       }
       const disk = await fsp.statfs(root);
@@ -139,6 +141,27 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
       try { await save(session); }
       catch (error) { await fsp.rm(folder(id), { recursive: true, force: true }); throw error; }
       return view(session);
+    });
+  }
+
+  // Legacy multipart uses the same quota and reservation lock as resumable sessions.
+  // Reserve before reading a body; keep ownership until its temporary files are gone.
+  async function reserveLegacy(bytes, storagePath = root) {
+    if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > maxTotalBytes) throw fail(413, "Upload exceeds the session size limit.");
+    return exclusive("create", async () => {
+      await cleanup();
+      const reserved = [...sessions.values()].reduce((sum, item) => sum + item.total, 0)
+        + [...legacyReservations.values()].reduce((sum, value) => sum + value, 0);
+      if (sessions.size + legacyReservations.size >= maxSessions || reserved + bytes > quotaBytes) throw fail(503, "Upload storage is full.");
+      const disk = await fsp.statfs(root);
+      if (disk.bavail * disk.bsize < (reserved + bytes) * 2 + 64 * 1024 ** 2) throw fail(507, "Insufficient free disk space.");
+      // Native/Docker installs can put the legacy spool on another filesystem.
+      await fsp.mkdir(storagePath, { recursive: true });
+      const spool = await fsp.statfs(storagePath);
+      const legacyBytes = [...legacyReservations.values()].reduce((sum, value) => sum + value, 0) + bytes;
+      if (spool.bavail * spool.bsize < legacyBytes + 64 * 1024 ** 2) throw fail(507, "Insufficient free upload-spool space.");
+      const id = crypto.randomUUID(); legacyReservations.set(id, bytes);
+      return () => legacyReservations.delete(id);
     });
   }
 
@@ -271,8 +294,23 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
     await fsp.mkdir(mediaRoot, { recursive: true });
     const [realRoot, realMedia] = await Promise.all([fsp.realpath(root), fsp.realpath(mediaRoot)]);
     if (inside(realMedia, realRoot) || inside(realRoot, realMedia)) throw new Error("Video upload storage must not resolve into public media.");
-    // Fail closed if two API workers are configured against the same local spool.
-    unlock = await lockfile.lock(root, { realpath: true, stale: 30000, update: 10000 });
+    // Windows Stop-Process cannot run exit cleanup. Allow its abandoned lock to
+    // age past the 30s lease (plus timestamp precision), without stealing a live
+    // worker's heartbeat. Other storage errors still fail immediately.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        unlock = await lockfile.lock(root, { realpath: true, stale: 30000, update: 10000 });
+        break;
+      } catch (error) {
+        if (error.code !== "ELOCKED") throw error;
+        if (attempt >= 35) {
+          error.message = `Video upload storage is still locked after waiting 35 seconds: ${root}. Stop the other API process using this VIDEO_UPLOAD_ROOT before retrying; do not delete an active lock.`;
+          throw error;
+        }
+        if (attempt === 0) console.warn("[video-upload] Waiting up to 35 seconds for the previous API storage lock to expire.");
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
     try {
       for (const entry of await fsp.readdir(root, { withFileTypes: true })) {
         if (!UUID.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
@@ -298,7 +336,7 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
     } catch (error) { await unlock(); throw error; }
   }
 
-  return { init, create, append, complete, drain,
+  return { init, create, append, complete, drain, reserveLegacy,
     status: id => view(get(id)),
     receipts(id, index) {
       const file = get(id).files[index];
@@ -317,6 +355,15 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
     },
     snapshot: () => ({ sessions: sessions.size, active: draining,
       queued: [...sessions.values()].filter(s => s.state === "queued").length }),
+    taskSummaries: () => [...sessions.values()].filter(session => session.expiresAt > now()
+      || ["queued", "processing"].includes(session.state)).reverse().map(session => ({
+      id: `video:${session.id}`, kind: "video", label: session.fields.title || "视频上传",
+      state: session.state,
+      // Encoder phases have no measured percentage; never turn upload completion
+      // into a fabricated encoding percentage.
+      progress: session.state === "receiving" ? Math.round(session.files.reduce((sum, file) => sum + file.offset, 0) / session.total * 100)
+        : session.state === "completed" ? 100 : null,
+    })),
     async close() {
       closed = true; clearInterval(timer);
       while (draining) await new Promise(resolve => setTimeout(resolve, 20));

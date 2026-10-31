@@ -1,0 +1,6 @@
+[
+  "posts", "video_projects", "video_masters", "external_projects", "albums", "album_photos",
+  "album_photo_renditions", "site_settings", "site_settings_files",
+  "film_scan_jobs", "film_scan_sources", "film_scan_frames", "film_stock_presets",
+  "analytics_events", "analytics_items", "directus_files"
+]

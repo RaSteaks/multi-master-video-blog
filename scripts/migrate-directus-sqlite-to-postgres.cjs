@@ -1,3 +1,5 @@
+// Stream both import and deferred-relation recovery in bounded primary-key batches.
+const { sqliteBatches } = require("./sqlite-batches.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const sqlite3 = require("sqlite3").verbose();
@@ -127,6 +129,8 @@ async function main() {
   await pg.connect();
 
   try {
+    // All keyset batches observe one read snapshot, including deferred relation recovery.
+    await sqliteAll(sqlite, "BEGIN");
     const sourceTables = await listSqliteTables(sqlite);
     const targetTables = await listPostgresTables(pg, schema);
 
@@ -192,24 +196,16 @@ async function main() {
       await truncateTargetSchema(pg, schema, targetTables);
 
       for (const table of insertOrder) {
-        const rows = await sqliteAll(
-          sqlite,
-          `select * from ${quoteIdent(table)}`
-        );
+        let imported = 0;
         const columns = sourceColumnMaps.get(table).map((column) => column.name);
         const targetColumns = targetColumnMaps.get(table);
         const deferredColumns = deferredColumnMap.get(table) || new Set();
 
-        await insertRows(
-          pg,
-          schema,
-          table,
-          columns,
-          targetColumns,
-          rows,
-          deferredColumns
-        );
-        console.log(`${table}=imported rows=${rows.length}`);
+        for await (const rows of sqliteBatches((sql, params) => sqliteAll(sqlite, sql, params), table, primaryKeys.get(table) || [])) {
+          await insertRows(pg, schema, table, columns, targetColumns, rows, deferredColumns);
+          imported += rows.length;
+        }
+        console.log(`${table}=imported rows=${imported}`);
       }
 
       await restoreDeferredForeignKeys(
@@ -231,6 +227,7 @@ async function main() {
 
     console.log("directus_sqlite_to_postgres_migration=ok");
   } finally {
+    await sqliteAll(sqlite, "ROLLBACK").catch(() => {});
     await Promise.allSettled([closeSqlite(sqlite), pg.end()]);
   }
 }
@@ -665,10 +662,10 @@ async function restoreDeferredForeignKeys(
       );
     }
 
-    const rows = await sqliteAll(sqlite, `select * from ${quoteIdent(table)}`);
     const tableRef = qualifiedTable(schema, table);
     const targetColumns = targetColumnMaps.get(table);
 
+    for await (const rows of sqliteBatches((sql, params) => sqliteAll(sqlite, sql, params), table, keys)) {
     for (const row of rows) {
       const setColumns = [...deferredColumns].filter(
         (column) => row[column] != null
@@ -702,6 +699,7 @@ async function restoreDeferredForeignKeys(
       }
 
       updates += 1;
+    }
     }
   }
 

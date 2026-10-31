@@ -1,4 +1,5 @@
 import { connection } from "next/server";
+import { readWebsiteProject } from "./external-projects";
 import {
   assetUrl as publicAssetUrl,
   type AssetPreset,
@@ -25,6 +26,24 @@ export function previewAssetUrl(src: string) {
 export function assetUrl(fileId: DirectusFileId, preset?: AssetPreset) {
   const src = publicAssetUrl(fileId, preset);
   return src ? previewAssetUrl(src) : null;
+}
+
+export async function getExternalProjects() {
+  // Publication edits should be visible immediately after the create dialog closes.
+  await connection();
+  try {
+    const params = new URLSearchParams({
+      fields: "id,title,description,url,preview_url,preview_enabled,open_mode,cover_image,published,sort_order",
+      "filter[published][_eq]": "true", sort: "sort_order,-id", limit: "25",
+    });
+    const response = await fetchDirectusPreview(`/items/external_projects?${params}`);
+    if (!response.ok) throw new Error(`CMS project request failed: ${response.status}`);
+    const result: unknown = await response.json();
+    if (!result || typeof result !== "object" || !("data" in result) || !Array.isArray(result.data)) throw new Error("Invalid CMS project list");
+    return { projects: result.data.slice(0, 24).map(readWebsiteProject), hasMore: result.data.length > 24, unavailable: false };
+  } catch {
+    return { projects: [], hasMore: false, unavailable: true };
+  }
 }
 
 export type Post = {
@@ -131,6 +150,8 @@ export type AlbumPhoto = {
 };
 
 export type Album = {
+  photo_count?: number;
+  hdr_photo_count?: number;
   id: number;
   title: string;
   slug: string;
@@ -231,6 +252,9 @@ async function login() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
     cache: "no-store",
+    // Bound the shared login promise so a stalled CMS cannot block all page requests.
+    signal: AbortSignal.timeout(10_000),
+    redirect: "error",
   });
 
   if (!response.ok) {
@@ -285,9 +309,14 @@ async function directusFetch<T>(
   const response = await fetch(`${directusUrl}${pathname}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     ...cacheOptions,
+    // Apply a page-sized deadline independently of CMS/cache revalidation timing.
+    signal: AbortSignal.timeout(10_000),
+    redirect: "error",
   });
 
   if (response.status === 401 && token && !retried) {
+    // Release the failed response before reauthenticating so pooled connections remain reusable.
+    await response.body?.cancel().catch(() => {});
     if (cachedToken === token) {
       cachedToken = null;
     }
@@ -468,17 +497,28 @@ export async function getAlbums(limit = 100) {
     limit: String(limit),
   });
   addPublicAlbumFilters(params);
+  // The list needs one fallback cover; counts come from a grouped query, not full galleries.
+  params.set("deep[photos][_limit]", "1");
   const response = await directusFetch<DirectusListResponse<Album>>(
-    `/items/albums?${params.toString()}`,
-    false,
-    ["albums:list"],
+    `/items/albums?${params}`, false, ["albums:list"],
   );
-  return filterPublishedAlbums(response.data);
+  const albums = filterPublishedAlbums(response.data);
+  if (!albums.length) return albums;
+  const counts = new URLSearchParams({ "filter[album_id][_in]": albums.map(a => a.id).join(","),
+    "filter[published][_eq]": "true", "filter[album_id][published][_eq]": "true",
+    "aggregate[count]": "id,hdr_image", "groupBy[]": "album_id", limit: String(albums.length) });
+  const groups = await directusFetch<{ data: Array<{ album_id: number; count: { id: string; hdr_image: string } }> }>(
+    `/items/album_photos?${counts}`, false, ["albums:list"],
+  );
+  return albums.map(album => {
+    const count = groups.data.find(g => Number(g.album_id) === Number(album.id))?.count;
+    return { ...album, photo_count: Number(count?.id || 0), hdr_photo_count: Number(count?.hdr_image || 0) };
+  });
 }
 
 export async function getAlbum(slug: string) {
   const params = new URLSearchParams({
-    fields: ALBUM_DETAIL_FIELDS,
+    fields: ALBUM_DETAIL_FIELDS.split(",").filter(f => !f.startsWith("photos.")).join(","),
     "filter[slug][_eq]": slug,
     limit: "1",
   });
@@ -488,9 +528,22 @@ export async function getAlbum(slug: string) {
     false,
     ["albums:list", `albums:slug:${slug}`],
   );
-  const [album] = await attachSdrDimensions(
-    filterPublishedAlbums(response.data),
-  );
+  const records = filterPublishedAlbums(response.data);
+  if (!records[0]) return null;
+  // Explicit pagination avoids the CMS default nested relation limit on large galleries.
+  const photos: AlbumPhoto[] = [];
+  const photoParams = new URLSearchParams({ "filter[album_id][_eq]": String(records[0].id),
+    "filter[published][_eq]": "true", "filter[album_id][published][_eq]": "true",
+    fields: ALBUM_DETAIL_FIELDS.split(",").filter(f => f.startsWith("photos.")).map(f => f.slice(7)).join(","),
+    sort: "sort_order,id", limit: "100" });
+  for (let offset = 0; ; offset += 100) {
+    photoParams.set("offset", String(offset));
+    const batch = await directusFetch<DirectusListResponse<AlbumPhoto>>(`/items/album_photos?${photoParams}`, false,
+      ["albums:list", `albums:slug:${slug}`]);
+    photos.push(...batch.data);
+    if (batch.data.length < 100) break;
+  }
+  const [album] = await attachSdrDimensions([{ ...records[0], photos }]);
   return album ?? null;
 }
 
