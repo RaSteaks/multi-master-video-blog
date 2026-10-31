@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -8,7 +9,7 @@ import { AuthorTray } from "@/components/AuthorTray";
 import { AuthorSignIn } from "@/components/AuthorSignIn";
 import { signOut, useAuthorDevice, useAuthorSession } from "@/lib/author-session";
 import { classifyDroppedFiles, stageDroppedFiles } from "@/lib/dropped-files";
-import { authorTaskLabel, useAuthorTasks } from "@/lib/author-tasks";
+import { authorTaskHref, authorTaskLabel, useAuthorTasks } from "@/lib/author-tasks";
 
 // The film-scan import is development-only, like its dialog in AlbumsToolbar.
 const FILM_SCAN_ENABLED = process.env.NODE_ENV !== "production";
@@ -149,7 +150,11 @@ export function AuthorMenu() {
         {activity.tasks.map(task => <div key={task.id}><span>{task.label}</span><small>{authorTaskLabel(task)}{task.progress !== null ? ` · ${task.progress}%` : ""}</small></div>)}
       </> : null}
       {activity.failedTasks.length ? <><p>需要处理的任务</p>
-        {activity.failedTasks.map(task => <div key={task.id}><span>{task.label}</span><small>{authorTaskLabel(task)}</small></div>)}
+        {activity.failedTasks.map(task => {
+          const href = authorTaskHref(task);
+          return href ? <Link key={task.id} href={href} onClick={() => setOpen(false)}><span>{task.label}</span><small>{authorTaskLabel(task)} · 查看详情 →</small></Link>
+            : <div key={task.id}><span>{task.label}</span><small>{authorTaskLabel(task)}</small></div>;
+        })}
       </> : null}
     </div> : null}
     footer={<>

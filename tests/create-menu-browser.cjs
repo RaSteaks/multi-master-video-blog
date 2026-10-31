@@ -75,6 +75,26 @@ async function main() {
     assert.equal(await menu.locator('.author-task-dot[data-state="failed"]').count(), 0);
     pass("session-protected task summaries show measured progress and bounded completion feedback");
 
+    const failedVideo = "11111111-1111-4111-8111-111111111111";
+    const taskRoute = "**/api/author/tasks", sessionRoute = `**/api/uploads/video-sessions/${failedVideo}`;
+    await page.route(taskRoute, route => route.fulfill({ json: { tasks: [
+      { id: `video:${failedVideo}`, kind: "video", label: "验收视频", state: "failed", progress: null }] } }));
+    await page.route(sessionRoute, route => route.fulfill({ json: { id: failedVideo, state: "failed", phase: "processing",
+      expiresAt: Date.now() + 3_600_000, chunkBytes: 1048576, fields: { title: "验收视频" }, files: [], result: null, error: "转码失败：验收原因" } }));
+    const failedLink = menu.getByRole("link", { name: /验收视频/ });
+    await failedLink.click();
+    await page.waitForURL(`${fixture.url}/upload?session=${failedVideo}`);
+    await page.getByText("转码失败：验收原因", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "重新上传", exact: true }).click();
+    await page.getByText("转码失败：验收原因", { exact: true }).waitFor({ state: "detached" });
+    assert.equal(new URL(page.url()).search, "");
+    await tools.click();
+    await failedLink.waitFor({ state: "detached", timeout: 7000 });
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await menu.locator('.author-task-dot[data-state="failed"]').count(), 0);
+    await page.unroute(taskRoute); await page.unroute(sessionRoute);
+    pass("a failed video links to its reason, and uploading again clears the task across reloads");
+
     for (const [label, query] of [["上传照片", "upload"], ["新建相簿", "create"], ["导入胶片扫描", "film"]]) {
       if (await tools.getAttribute("aria-expanded") !== "true") await tools.click();
       await menu.getByRole("link", { name: label, exact: true }).click();

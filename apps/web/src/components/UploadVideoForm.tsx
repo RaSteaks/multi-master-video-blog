@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useDroppedFiles } from "@/lib/dropped-files";
 import { canAuthorize, useAuthorSession } from "@/lib/author-session";
+import { dismissAuthorTask } from "@/lib/author-tasks";
 import { AuthorCredential } from "@/components/AuthorCredential";
 import type { Lang } from "@/components/UploadPageClient";
 import { SLUG_MAX_LENGTH, SLUG_PATTERN, sanitizeSlugInput, slugify, slugifyFileName, timestampSlug } from "@/lib/slug";
@@ -356,7 +357,7 @@ function defaultMasterLabel(sourceKind: SourceKind, masterType: string) {
 
 // ── UploadVideoForm ───────────────────────────────────────────────────────────
 
-export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang; initialProjectId?: string }) {
+export function UploadVideoForm({ lang = "zh", initialProjectId, initialSessionId }: { lang?: Lang; initialProjectId?: string; initialSessionId?: string }) {
   const t = translations[lang];
   const author = useAuthorSession();
 
@@ -369,6 +370,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
   const requestRef = useRef<AbortController | null>(null);
   const sourcesRef = useRef<File[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const linkedRead = useRef(false);
   const [session, setSession] = useState<VideoUploadSession<UploadResponse> | null>(null);
   const [resumeFiles, setResumeFiles] = useState<File[]>([]);
   const [transfer, setTransfer] = useState<UploadProgress | null>(null);
@@ -422,11 +424,18 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
   }, [video, sdrVideo, masterPackageFiles.length, state]);
 
   useEffect(() => {
-    setSessionId(rememberedVideoUpload());
+    setSessionId(initialSessionId || rememberedVideoUpload());
     // Keep SSR inputs inert until React owns changes and the recovery bookmark has loaded.
     setHydrated(true);
     return () => { requestRef.current?.abort(); };
   }, []);
+
+  useEffect(() => {
+    // A task link is a request to see that task, so read it without another click.
+    if (!hydrated || !initialSessionId || linkedRead.current || !canAuthorize(token)) return;
+    linkedRead.current = true;
+    void runUpload();
+  }, [hydrated, author.author]);
 
   const copy = lang === "zh" ? {
     recover: "恢复上传 / 刷新状态", saved: "有可恢复的视频上传。输入上传令牌后读取进度。",
@@ -438,7 +447,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
     interrupted: "主母版已保存，但后续处理被中断。请先检查已有母版，需要时为此项目补充 SDR。",
     uncertain: "发布过程被中断，结果待确认。请检查项目中已有的母版，避免重复上传。",
     verifying: "正在核对已上传数据…", retrying: "连接暂时中断，正在重试…", uploading: "正在上传…",
-    forget: "移除此设备的恢复记录", forgetNote: "仅移除本机记录，服务器上的任务仍会继续；未完成文件将在保留期后清理。",
+    restart: "重新上传", resolved: "已确认，移除此任务", forget: "移除此设备的恢复记录", forgetNote: "仅移除本机记录，服务器上的任务仍会继续；未完成文件将在保留期后清理。",
     cancel: "取消此上传", canceled: "上传已取消。", storage: "浏览器无法保存恢复记录，请保留此任务 ID：",
     expires: "恢复记录至少保留至", confirmed: "已确认", speed: "速度", remaining: "预计剩余", minutes: "分钟",
     error: "连接失败。已确认的数据保留，请检查网络或令牌后恢复。", title: "上传任务",
@@ -452,7 +461,7 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
     interrupted: "The primary master was saved, but later processing was interrupted. Check existing masters before adding SDR.",
     uncertain: "Publication was interrupted and its result needs checking. Check existing masters before another upload.",
     verifying: "Verifying confirmed data…", retrying: "Connection interrupted. Retrying…", uploading: "Uploading…",
-    forget: "Remove recovery record from this device", forgetNote: "This only removes the local record. Server jobs continue; unfinished files expire after the retention period.",
+    restart: "Upload again", resolved: "Checked, remove this task", forget: "Remove recovery record from this device", forgetNote: "This only removes the local record. Server jobs continue; unfinished files expire after the retention period.",
     cancel: "Cancel this upload", canceled: "Upload canceled.", storage: "The browser could not save recovery information. Keep this task ID:",
     expires: "Recovery available at least until", confirmed: "Confirmed", speed: "Speed", remaining: "Estimated remaining", minutes: "min",
     error: "Connection failed. Confirmed data is retained; check your network or token, then recover.", title: "Upload task",
@@ -556,9 +565,14 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
     finally { requestRef.current = null; }
   }
 
+  const ended = session?.state === "failed" || session?.state === "interrupted";
+
   function forgetUpload() {
     // This removes a device bookmark only; it must not delete sources or cancel a remote job.
-    rememberVideoUpload(null); setSessionId(null); setSession(null); sourcesRef.current = [];
+    if (rememberedVideoUpload() === sessionId) rememberVideoUpload(null);
+    if (ended && sessionId) dismissAuthorTask(`video:${sessionId}`);
+    if (initialSessionId) window.history.replaceState(null, "", "/upload");
+    setSessionId(null); setSession(null); sourcesRef.current = [];
     setResumeFiles([]); setTransfer(null); setState("idle"); setMessage(""); setResult(null); setProgress(0);
   }
 
@@ -749,9 +763,10 @@ export function UploadVideoForm({ lang = "zh", initialProjectId }: { lang?: Lang
           {!busy && state !== "success" ? <button type="button" disabled={!canAuthorize(token)}
             onClick={() => void runUpload(undefined, session?.state === "receiving")}>{session?.state === "receiving" ? copy.resume : copy.recover}</button> : null}
           {!busy && session?.state === "receiving" ? <button className="upload-secondary" type="button" disabled={!canAuthorize(token)} onClick={() => void cancelUpload()}>{copy.cancel}</button> : null}
-          {!busy ? <button className="upload-secondary" type="button" onClick={forgetUpload}>{copy.forget}</button> : null}
+          {!busy ? <button className={session?.state === "failed" ? undefined : "upload-secondary"} type="button" onClick={forgetUpload}>
+            {session?.state === "failed" ? copy.restart : session?.state === "interrupted" ? copy.resolved : copy.forget}</button> : null}
         </div>
-        {!busy ? <p className="field-note">{copy.forgetNote}</p> : null}
+        {!busy && !ended ? <p className="field-note">{copy.forgetNote}</p> : null}
       </section> : null}
       <fieldset className="upload-form upload-fields" disabled={!hydrated || busy || Boolean(sessionId)} hidden={Boolean(sessionId)}>
       <section className="upload-panel">
