@@ -6,8 +6,8 @@ import { assetUrl } from "@/lib/asset-url";
 import { AuthenticatedAssetImage } from "./AuthenticatedAssetImage";
 import styles from "./Projects.module.css";
 
-export function ProjectPreview({ project, active, coverOverride }: {
-  project: WebsiteProject; active: boolean; coverOverride?: string;
+export function ProjectPreview({ project, active, auto, coverOverride }: {
+  project: WebsiteProject; active: boolean; auto?: boolean; coverOverride?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(0);
@@ -31,7 +31,7 @@ export function ProjectPreview({ project, active, coverOverride }: {
   }, [allowed, src]);
   return <div ref={ref} className={styles.preview}>
     {cover ? <AuthenticatedAssetImage src={cover} token={project.published ? undefined : ""} alt="" loading="lazy" />
-      : <div className={styles.placeholder} aria-hidden="true"><span>◇</span></div>}
+      : <div className={styles.placeholder} data-waiting={auto && project.preview_enabled && !expired ? "" : undefined} aria-hidden="true"><span>◇</span></div>}
     {allowed && scale > 0 && (!expired || loaded) ? <div inert aria-hidden="true" className={styles.previewFrame}
       style={{ opacity: loaded ? 1 : 0 }}>
       <iframe src={src} title={`${project.title}动态预览`} tabIndex={-1}

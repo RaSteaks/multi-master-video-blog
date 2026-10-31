@@ -12,6 +12,9 @@ import styles from "./Projects.module.css";
 
 type ProjectList = { projects: WebsiteProject[]; hasMore: boolean; unavailable: boolean };
 
+/** Cards only passing through the viewport during a scroll should not load their frames. */
+const PREVIEW_SETTLE_MS = 250;
+
 export function ProjectGallery({ initial, createRequested }: { initial: ProjectList; createRequested: boolean }) {
   const router = useRouter();
   const session = useAuthorSession();
@@ -31,9 +34,8 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     if (createRequested) setEditor("create");
   }
   const [viewing, setViewing] = useState<WebsiteProject | null>(null);
-  const [active, setActive] = useState<number | null>(null);
+  const [live, setLive] = useState<number[]>([]);
   const galleryRef = useRef<HTMLOListElement>(null);
-  const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const listRequest = useRef<AbortController | null>(null);
   const loadingMore = useRef(false);
   const locked = useRef(false);
@@ -45,7 +47,7 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
   useEffect(() => {
     const version = ++requestVersion.current;
     listRequest.current?.abort();
-    setPage(1); setError(""); setActive(null);
+    setPage(1); setError("");
     if (!management) { setList(initial); setBusy(false); return; }
     const controller = new AbortController();
     listRequest.current = controller; setBusy(true);
@@ -55,44 +57,32 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
       .finally(() => { if (version === requestVersion.current) setBusy(false); });
     return () => controller.abort();
   }, [management, initial]);
-  useEffect(() => () => { listRequest.current?.abort(); clearTimeout(previewTimer.current); }, []);
+  useEffect(() => () => listRequest.current?.abort(), []);
 
   useEffect(() => {
     const reduced = matchMedia("(prefers-reduced-motion: reduce)");
-    const coarse = matchMedia("(hover: none)");
+    const visible = new Set<number>();
     let settle: ReturnType<typeof setTimeout>;
     function update() {
       clearTimeout(settle);
-      if (blocked || reduced.matches || document.hidden) { clearTimeout(previewTimer.current); setActive(null); return; }
-      const cards = Array.from(galleryRef.current?.querySelectorAll<HTMLElement>("[data-preview-id]") || []);
-      setActive(current => {
-        const box = cards.find(card => Number(card.dataset.previewId) === current)?.getBoundingClientRect();
-        return box && box.bottom > 0 && box.top < innerHeight ? current : null;
-      });
-      if (!coarse.matches) return;
-      setActive(null);
-      settle = setTimeout(() => {
-        const candidate = cards.map(card => ({ card, box: card.getBoundingClientRect() }))
-          .filter(({ box }) => box.top >= 0 && box.top + Math.min(box.height, innerHeight / 2) < innerHeight)
-          .sort((a, b) => Math.abs(a.box.top + a.box.height / 2 - innerHeight / 2) - Math.abs(b.box.top + b.box.height / 2 - innerHeight / 2))[0];
-        setActive(candidate ? Number(candidate.card.dataset.previewId) : null);
-      }, 300);
+      if (blocked || reduced.matches || document.hidden) { setLive([]); return; }
+      settle = setTimeout(() => setLive([...visible]), PREVIEW_SETTLE_MS);
     }
-    window.addEventListener("scroll", update, { passive: true }); window.addEventListener("resize", update);
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const id = Number((entry.target as HTMLElement).dataset.previewId);
+        if (entry.isIntersecting) visible.add(id); else visible.delete(id);
+      }
+      update();
+    });
+    galleryRef.current?.querySelectorAll("[data-preview-id]").forEach(card => observer.observe(card));
     document.addEventListener("visibilitychange", update); reduced.addEventListener("change", update);
     update();
     return () => {
-      clearTimeout(settle); window.removeEventListener("scroll", update); window.removeEventListener("resize", update);
+      clearTimeout(settle); observer.disconnect();
       document.removeEventListener("visibilitychange", update); reduced.removeEventListener("change", update);
     };
   }, [blocked, list.projects]);
-
-  function preview(project: WebsiteProject) {
-    clearTimeout(previewTimer.current);
-    if (blocked || !project.preview_enabled || document.hidden || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    previewTimer.current = setTimeout(() => setActive(project.id), 250);
-  }
-  function stopPreview() { clearTimeout(previewTimer.current); setActive(null); }
 
   async function more() {
     if (loadingMore.current) return;
@@ -147,21 +137,20 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     </div> : null}
     <ol ref={galleryRef} className={styles.grid} aria-label="网站作品">
       {projects.map(project => <li key={project.id} id={`project-${project.id}`} className={styles.card}
-        data-preview-id={project.preview_enabled ? project.id : undefined}
-        onPointerEnter={event => { if (event.pointerType === "mouse") preview(project); }} onPointerLeave={stopPreview}>
+        data-preview-id={project.preview_enabled ? project.id : undefined}>
         {project.open_mode === "external" ? <a className={styles.cardEntry} href={project.url} target="_blank" rel="noopener noreferrer"
-          aria-label={`独立打开${project.title}（新标签页）`} onFocus={() => preview(project)} onBlur={stopPreview}>
-          <ProjectPreview project={project} active={active === project.id && !blocked} />
+          aria-label={`独立打开${project.title}（新标签页）`}>
+          <ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />
           <div className={styles.cardCopy}><h2>{project.title}</h2>{project.description ? <p>{project.description}</p> : null}</div>
-        </a> : <button type="button" className={styles.cardEntry} aria-label={`查看${project.title}`} onFocus={() => preview(project)} onBlur={stopPreview}
-          onClick={event => { event.currentTarget.focus(); stopPreview(); setViewing(project); }}>
-          <ProjectPreview project={project} active={active === project.id && !blocked} />
+        </a> : <button type="button" className={styles.cardEntry} aria-label={`查看${project.title}`}
+          onClick={event => { event.currentTarget.focus(); setViewing(project); }}>
+          <ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />
           <div className={styles.cardCopy}><h2>{project.title}</h2>{project.description ? <p>{project.description}</p> : null}</div>
         </button>}
         {management ? <div className={styles.cardManagement}>
           <span>{project.published ? "已发布" : "草稿"}</span>
           {mutation === project.id ? <span role="status">正在保存…</span> : <ActionMenu label={`管理${project.title}`} trigger="管理" groups={[{ items: [
-            { label: "编辑网站", icon: <span aria-hidden="true">✎</span>, onSelect: () => { stopPreview(); setEditor(project); } },
+            { label: "编辑网站", icon: <span aria-hidden="true">✎</span>, onSelect: () => setEditor(project) },
             { label: project.published ? "取消发布" : "发布到实验室", icon: <span aria-hidden="true">◇</span>, onSelect: () => void publication(project) },
           ] }]} />}
         </div> : null}

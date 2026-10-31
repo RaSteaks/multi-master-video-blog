@@ -87,7 +87,6 @@ async function main() {
     await page.getByRole("button", { name: "返回公开展示", exact: true }).click();
     const card = page.getByRole("button", { name: "查看黑洞演示", exact: true });
     await card.waitFor();
-    await card.hover();
     const preview = page.locator('ol[aria-label="网站作品"] iframe');
     await preview.waitFor();
     assert.equal(await preview.count(), 1);
@@ -114,10 +113,9 @@ async function main() {
     await viewer.waitFor({ state: "hidden" });
     assert.equal(await page.evaluate(() => scrollY), scroll);
     assert.equal(await card.evaluate(element => document.activeElement === element), true);
-    pass("read-only live preview, one frame at a time, full-window viewing, nested navigation and focus/scroll restoration");
+    pass("read-only live preview without hover, frames removed behind the viewer, full-window viewing, nested navigation and focus/scroll restoration");
 
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await card.hover();
     await page.waitForFunction(() => !document.querySelector('ol[aria-label="网站作品"] iframe'));
     await card.click(); await viewer.waitFor();
     await viewer.getByRole("button", { name: "← 返回实验室", exact: true }).click();
@@ -169,6 +167,16 @@ async function main() {
     await lowerCard.scrollIntoViewIfNeeded();
     const lowerScroll = await page.evaluate(() => scrollY);
     assert.ok(lowerScroll > 0, "Exercise a genuinely scrolled list, not only its first row.");
+    const lowerItem = page.locator("li", { has: lowerCard });
+    const glyph = lowerItem.locator("[data-waiting] span");
+    assert.equal(await glyph.evaluate(element => getComputedStyle(element).visibility), "hidden");
+    await lowerItem.locator("iframe").waitFor();
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await lowerItem.locator("iframe").waitFor({ state: "detached" });
+    assert.equal(await glyph.evaluate(element => getComputedStyle(element).visibility), "visible");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await lowerItem.locator("iframe").waitFor();
+    pass("a coverless card previews directly without flashing its placeholder; reduced motion keeps the placeholder");
     await lowerCard.click();
     await page.getByRole("dialog", { name: "下方展品", exact: true }).getByRole("button", { name: "← 返回实验室", exact: true }).click();
     assert.equal(await page.evaluate(() => scrollY), lowerScroll);
@@ -198,8 +206,12 @@ async function main() {
     const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const phone = await mobile.newPage();
     await phone.goto(`${fixture.url}/project`, { waitUntil: "networkidle" });
-    await phone.locator('ol[aria-label="网站作品"] iframe').waitFor();
-    assert.equal(await phone.locator('ol[aria-label="网站作品"] iframe').count(), 1);
+    const phoneFrames = phone.locator('ol[aria-label="网站作品"] iframe');
+    await phoneFrames.first().waitFor();
+    assert.equal(await phoneFrames.count(), await phone.locator("[data-preview-id]").evaluateAll(cards =>
+      cards.filter(card => { const box = card.getBoundingClientRect(); return box.bottom > 0 && box.top < innerHeight; }).length),
+      "Only on-screen cards run a frame.");
+    assert.ok(await phoneFrames.count() < await phone.locator("[data-preview-id]").count(), "Exercise a card below the fold.");
     assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await phone.screenshot({ path: path.join(fixture.output, "gallery-mobile.png") });
     await phone.getByRole("button", { name: "查看黑洞演示", exact: true }).tap();

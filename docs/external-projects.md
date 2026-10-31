@@ -65,11 +65,15 @@ list and clears `dialog` without racing a second route refresh.
 
 ## Preview and viewer contract
 
-Desktop hover/keyboard focus starts the preview after a short dwell; touch selects
-one visible card after scrolling settles. Reduced motion keeps posters. Preview
-frames are inert and pointer-transparent, rendered at a 1280×800 desktop viewport
-and scaled into a 16:10 picture. Only one exhibit runs; leaving/unloading a preview
-unmounts its frame rather than pretending a hidden frame is paused.
+A preview takes priority over the cover: every preview-enabled card on screen
+starts its frame once scrolling settles, without hover or focus. The cover shows
+until the frame has loaded, and remains the fallback when it fails to load within
+12 seconds. Reduced motion keeps posters, and a card without one shows the ◇
+placeholder. Preview frames are inert and pointer-transparent, rendered at a
+1280×800 desktop viewport and scaled into a 16:10 picture. All on-screen previews
+run at once, so a heavy site should set a lighter `preview_url`. Leaving the
+viewport, hiding the page or opening a dialog unmounts the frames rather than
+pretending a hidden frame is paused.
 
 Clicking an iframe-mode card opens a native modal filling the browser content
 viewport. The blog owns the fixed **返回实验室**, title and **独立打开** toolbar. The

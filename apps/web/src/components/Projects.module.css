@@ -13,6 +13,8 @@
 .preview > img { width: 100%; height: 100%; object-fit: cover; }
 .placeholder { height: 100%; display: grid; place-items: center; color: var(--muted); background: var(--surface-strong); }
 .placeholder span { font-size: 3rem; font-weight: 200; }
+/* The frame is on its way, so the glyph would only flash. Reduced motion never starts one. */
+.placeholder[data-waiting] span { visibility: hidden; }
 .previewFrame { position: absolute; inset: 0; pointer-events: none; transition: opacity var(--motion-media-duration) var(--motion-ease); }
 .previewFrame iframe { display: block; border: 0; max-width: none; transform-origin: top left; pointer-events: none; background: var(--background); }
 .notice { min-height: 1.4em; margin: 0; color: var(--text-secondary); font-size: .9rem; }
@@ -84,4 +86,4 @@
   .viewer :global(.album-dialog-header) h2 { max-width: 24vw; }
   .viewer :global(.album-action-button) { padding: 8px 10px; min-height: 44px; font-size: .8rem; }
 }
-@media (prefers-reduced-motion: reduce) { .previewFrame { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .previewFrame { transition: none; } .placeholder[data-waiting] span { visibility: visible; } }
