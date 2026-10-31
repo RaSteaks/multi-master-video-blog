@@ -75,6 +75,15 @@ test("empty, restored, completed, failed and interrupted tasks stay distinct fro
   }
 });
 
+test("application update explains installation progress and keeps dependency logs discoverable", () => {
+  const ui = taskHarness();
+  ui.render(operation("refresh-app", "running", [{ serviceId: "app-dependencies", phase: "install", state: "running" }]));
+  assert.match(ui.content(), /API 与 Web 依赖 · 安装依赖/);
+  assert.match(ui.nodes.get("operationSummary").textContent, /API \+ Web dependencies \/ Install dependencies/);
+  assert.match(html(), /data-log="app-dependencies"/);
+  assert.doesNotMatch(html(), /Install changed dependencies first|install changed dependencies first/);
+});
+
 test("task phase content is escaped before rendering", () => {
   const ui = taskHarness();
   ui.render(operation("restart-all", "running", [{ serviceId: "<img src=x>", phase: "<script>", state: "running" }]));

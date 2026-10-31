@@ -17,7 +17,9 @@ async function main() {
     if (!response.ok) throw new Error(`Maintenance request failed (${response.status}).`);
   }
   if (action === "off") return;
-  const response = await fetch(`${endpoint}/health`, { signal: AbortSignal.timeout(10000) });
+  const response = await fetch(`${endpoint}/health`, { signal: AbortSignal.timeout(10000),
+    // Detailed drain counters are available only to the maintenance credential.
+    headers: { Authorization: `Bearer ${env.UPLOAD_API_TOKEN || ""}` } });
   if (!response.ok) throw new Error("API health check failed.");
   const { resources } = await response.json();
   // Fail closed against older APIs: an absent counter does not mean zero writes.

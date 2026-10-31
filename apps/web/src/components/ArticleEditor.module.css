@@ -686,6 +686,8 @@
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
+  /* Let the inner scrollers shrink instead of sizing the workspace row to the Markdown. */
+  min-height: 0;
 }
 
 .writePane {
@@ -788,6 +790,11 @@
   background-size: 32px 100%;
   scrollbar-color: rgba(32,32,30,.25) transparent;
   transition: opacity 140ms ease;
+}
+
+.previewScroller:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .previewPane[data-stale="true"] .paneLabel small {
@@ -1298,8 +1305,11 @@
     grid-template-rows: repeat(2, minmax(520px, 70svh));
   }
   .workspace[data-view="split"] .writePane { border-right: 0; border-bottom: 1px solid var(--desk-border); }
-  .workspace[data-view="write"] .writePane,
-  .workspace[data-view="preview"] .previewPane {
+  /* A natural-height preview grows with the article and never overflows internally. */
+  .workspace[data-view="preview"] {
+    height: clamp(520px, 74svh, 680px);
+  }
+  .workspace[data-view="write"] .writePane {
     min-height: min(680px, 74svh);
   }
   .writePane textarea { min-height: 470px; }

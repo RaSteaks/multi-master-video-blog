@@ -25,7 +25,9 @@ export default async function AlbumsPage({
           <h1>相簿</h1>
         </div>
         <AlbumsToolbar
-          initialDialog={dialog === "upload" ? "upload" : null}
+          initialDialog={
+            dialog === "upload" || dialog === "create" || dialog === "film" ? dialog : null
+          }
           albums={albums.map((album) => ({
             id: album.id,
             title: album.title,
@@ -43,14 +45,16 @@ export default async function AlbumsPage({
             const coverId =
               album.cover_image || photos[0]?.sdr_image || null;
             const cover = assetUrl(coverId, "album-cover");
-            const hdrCount = photos.filter((photo) => photo.hdr_image).length;
+            // Counts are aggregated server-side; photos contains only the fallback cover.
+            const photoCount = album.photo_count ?? photos.length;
+            const hdrCount = album.hdr_photo_count ?? photos.filter((photo) => photo.hdr_image).length;
 
             return (
               <li key={album.id}>
                 <Link
                   className="album-card"
                   href={`/albums/${album.slug}`}
-                  aria-label={`打开相簿“${album.title}”，共 ${photos.length} 张照片`}
+                  aria-label={`打开相簿“${album.title}”，共 ${photoCount} 张照片`}
                 >
                   <div className="album-card-frame">
                     <span className="album-frame-index" aria-hidden="true">
@@ -73,14 +77,14 @@ export default async function AlbumsPage({
                     )}
                     {hdrCount ? (
                       <span className="album-hdr-badge">
-                        HDR <b>{hdrCount}</b>
+                        <span className="album-hdr-glow">HDR</span> <b>{hdrCount}</b>
                       </span>
                     ) : null}
                   </div>
                   <div className="album-card-copy">
                     <div>
                       <p className="album-card-kicker">
-                        {photos.length} 张照片
+                        {photoCount} 张照片
                         {hdrCount ? ` · ${hdrCount} 组 HDR` : " · SDR"}
                       </p>
                       <h2>{album.title}</h2>
@@ -106,7 +110,7 @@ export default async function AlbumsPage({
           </span>
           <div>
             <h2>接触印样还是空的</h2>
-            <p>使用上方“新建相簿”，再从同一页面上传第一批 SDR／HDR 照片。</p>
+            <p>相簿整理中，照片将在这里陆续展出。</p>
           </div>
         </section>
       )}

@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BackgroundControl } from "@/components/BackgroundControl";
+import { PageTools } from "@/components/PageTools";
+import { AuthorControl } from "@/components/AuthorControl";
 import { NavBar } from "@/components/NavBar";
 import { PageTransition } from "@/components/PageTransition";
 import { getSiteSettings, siteBackgroundImages } from "@/lib/directus";
@@ -75,11 +77,12 @@ export default async function RootLayout({
         </a>
 
         <header className="site-header" role="banner">
-          <Link className="brand" href="/" aria-label={`${siteConfig.title} - 首页`}>
+          <Link className="brand" href="/" prefetch aria-label={`${siteConfig.title} - 首页`}>
             {siteConfig.title}
           </Link>
           <div className="site-header-actions">
             <NavBar />
+            <AuthorControl />
             <BackgroundControl
               images={bgImages}
               defaultBlur={blur}
@@ -91,6 +94,8 @@ export default async function RootLayout({
         <div id="main-content" tabIndex={-1}>
           <PageTransition>{children}</PageTransition>
         </div>
+
+        <PageTools />
       </body>
     </html>
   );

@@ -495,6 +495,11 @@ function selectField(field, choices, required = false) {
 
 const collections = [
   {
+    collection: "external_projects",
+    meta: { collection: "external_projects", icon: "science", note: "Independent websites in the blog laboratory.", display_template: "{{title}}" },
+    schema: {}
+  },
+  {
     collection: "site_settings",
     meta: {
       collection: "site_settings",
@@ -735,6 +740,18 @@ const analyticsEventTypes = [
 ];
 
 const fields = {
+  external_projects: [
+    stringField("title", true, { maxLength: 120 }),
+    stringField("description", false, { maxLength: 300 }),
+    stringField("url", true, { maxLength: 2048 }),
+    stringField("preview_url", false, { maxLength: 2048 }),
+    booleanField("preview_enabled", true),
+    selectField("open_mode", [{ text: "Full-window viewer", value: "iframe" }, { text: "Open independently", value: "external" }], true),
+    fileField("cover_image"),
+    booleanField("published", false),
+    integerField("sort_order", { defaultValue: 0 }),
+    dateTimeField("created_at"), dateTimeField("updated_at")
+  ],
   site_settings: [
     fileField("background_image"),
     integerField("background_blur", { defaultValue: 8 }),
@@ -963,6 +980,9 @@ const fields = {
     dateTimeField("created_at")
   ],
   analytics_events: [
+    // Persistent replay protection and first-visitor flags feed incremental counters.
+    stringField("dedupe_key", false, { unique: true, maxLength: 64 }),
+    booleanField("first_visitor", false),
     selectField("event_type", analyticsEventTypes, true),
     selectField("item_type", analyticsItemTypes, true),
     stringField("item_key", true, { width: "half", maxLength: 80 }),
@@ -976,6 +996,8 @@ const fields = {
     dateTimeField("created_at")
   ],
   analytics_items: [
+    // NULL marks pre-upgrade counters; the API baselines their existing history once.
+    integerField("last_event_id"),
     selectField("item_type", analyticsItemTypes, true),
     stringField("item_key", true, { width: "half", maxLength: 80, unique: true }),
     stringField("title", true, { width: "full" }),
@@ -1038,6 +1060,7 @@ function itemRelation(collection, field, relatedCollection) {
 }
 
 const relations = [
+  fileRelation("external_projects", "cover_image"),
   fileRelation("site_settings", "background_image"),
   {
     collection: "site_settings_files",
@@ -1295,6 +1318,17 @@ const analyticsPanels = [
   }
 ];
 
+async function ensureAnalyticsIndexes() {
+  const db = await openDirectusDatabase(loadDirectusEnv());
+  try {
+    // Support cursor catch-up and first-visitor existence checks without scanning history.
+    for (const [name, columns] of [
+      ["blog_analytics_item_cursor", ["item_key", "id"]],
+      ["blog_analytics_visitor", ["item_key", "event_type", "visitor_hash", "id"]]
+    ]) await execDb(db, `create index if not exists ${quoteIdent(name)} on ${db.tableRef("analytics_events")} (${columns.map(quoteIdent).join(", ")})`);
+  } finally { await db.close(); }
+}
+
 async function ensureAnalyticsDashboardInDatabase() {
   const db = await openDirectusDatabase(loadDirectusEnv());
 
@@ -1462,146 +1496,18 @@ async function ensureAlbumFieldDefaults(token) {
   console.log("album field defaults ready");
 }
 
-function permissionFields(value) {
-  if (Array.isArray(value)) {
-    return value.map(String);
-  }
-
-  if (typeof value === "string") {
-    return value
-      .split(",")
-      .map((field) => field.trim())
-      .filter(Boolean);
-  }
-
-  return [];
-}
-
-async function ensurePublicReadPermission(
-  token,
-  publicPolicyId,
-  collection,
-  requiredFields,
-  recordPermissions = null
-) {
-  const permissionQuery = new URLSearchParams({
-    "filter[collection][_eq]": collection,
-    "filter[action][_eq]": "read",
-    "filter[policy][_eq]": publicPolicyId,
-    fields: "id,fields,permissions",
-    limit: "1"
-  });
-  const permissions = await request(`/permissions?${permissionQuery}`, {
-    token
-  });
-  const permission = permissions?.data?.[0];
-
-  if (!permission) {
-    await request("/permissions", {
-      method: "POST",
-      token,
-      body: {
-        collection,
-        action: "read",
-        permissions: recordPermissions || {},
-        validation: {},
-        presets: null,
-        fields: requiredFields,
-        policy: publicPolicyId
-      }
-    });
-    console.log(`public permission created: ${collection}.read`);
-    return;
-  }
-
-  const currentFields = permissionFields(permission.fields);
-  const mergedFields = currentFields.includes("*")
-    ? ["*"]
-    : [...new Set([...currentFields, ...requiredFields])];
-  const patch = { fields: mergedFields };
-  if (recordPermissions) patch.permissions = recordPermissions;
-  await request(`/permissions/${permission.id}`, {
-    method: "PATCH",
-    token,
-    body: patch
-  });
-  console.log(
-    `public permission ready: ${collection}.read fields=${mergedFields.join(",")}`
-  );
-}
-
 async function ensurePublicSiteSettingsPermission(token) {
-  const policyQuery = new URLSearchParams({
-    "filter[name][_eq]": "$t:public_label",
-    fields: "id",
-    limit: "1"
-  });
-  const policies = await request(`/policies?${policyQuery}`, { token });
-  const publicPolicyId = policies?.data?.[0]?.id;
-
-  if (!publicPolicyId) {
-    throw new Error("Directus public policy was not found.");
+  // Clear all anonymous policies, not just the initially named Public policy.
+  const access = (await request("/access?filter[role][_null]=true&filter[user][_null]=true&fields=policy&limit=-1", { token })).data || [];
+  const policies = [...new Set(access.map(row => typeof row.policy === "object" ? row.policy.id : row.policy))];
+  const collections = require("../config/private-cms-collections.json");
+  for (const policy of policies) for (const collection of collections) {
+    const params = new URLSearchParams({ "filter[policy][_eq]": policy,
+      "filter[collection][_eq]": collection, limit: "-1", fields: "id" });
+    const permissions = (await request(`/permissions?${params}`, { token })).data || [];
+    // HTTP deletion also invalidates CMS permission caches while schema setup is online.
+    for (const permission of permissions) await request(`/permissions/${permission.id}`, { method: "DELETE", token });
   }
-
-  await ensurePublicReadPermission(
-    token,
-    publicPolicyId,
-    "site_settings",
-    [
-      "background_image",
-      "background_blur",
-      "background_images",
-      "accent_color"
-    ]
-  );
-  await ensurePublicReadPermission(
-    token,
-    publicPolicyId,
-    "site_settings_files",
-    ["site_settings_id", "directus_files_id"]
-  );
-  await ensurePublicReadPermission(
-    token,
-    publicPolicyId,
-    "albums",
-    [
-      "id", "title", "slug", "description", "cover_image", "published",
-      "created_at", "updated_at", "photos"
-    ],
-    { published: { _eq: true } }
-  );
-  await ensurePublicReadPermission(
-    token,
-    publicPolicyId,
-    "album_photos",
-    [
-      "id", "album_id", "sdr_image", "hdr_image", "caption", "alt_text",
-      "hdr_transfer", "hdr_primaries", "hdr_bit_depth", "film_scan_frame_id",
-      "film_stock", "film_process", "film_scanner", "film_frame_format",
-      "published", "sort_order", "created_at", "updated_at", "renditions"
-    ],
-    {
-      _and: [
-        { published: { _eq: true } },
-        { album_id: { published: { _eq: true } } }
-      ]
-    }
-  );
-  await ensurePublicReadPermission(
-    token,
-    publicPolicyId,
-    "album_photo_renditions",
-    [
-      "id", "photo_id", "film_scan_frame_id", "kind", "file", "transfer",
-      "primaries", "bit_depth", "is_default", "created_at"
-    ],
-    {
-      photo_id: {
-        published: { _eq: true },
-        album_id: { published: { _eq: true } }
-      }
-    }
-  );
 }
 
 const builtInFilmStockPresets = [
@@ -1731,10 +1637,19 @@ async function verifyVideoSourceFormat(token) {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.some((arg) => arg !== "--video-source-format-only")) {
-    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only]");
+  if (args.length > 1 || args.some((arg) => !["--video-source-format-only", "--external-projects-only"].includes(arg))) {
+    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only | --external-projects-only]");
   }
   const token = await login();
+
+  // An additive rollout for this feature must not rewrite unrelated CMS settings.
+  if (args.includes("--external-projects-only")) {
+    await ensureCollection(token, collections.find(item => item.collection === "external_projects"));
+    for (const field of fields.external_projects) await ensureField(token, "external_projects", field);
+    await ensureRelation(token, fileRelation("external_projects", "cover_image"));
+    console.log("External project schema is ready.");
+    return;
+  }
 
   if (args.includes("--video-source-format-only")) {
     await ensureField(token, "video_masters", fields.video_masters.find((field) => field.field === "source_format"));
@@ -1765,6 +1680,7 @@ async function main() {
   await ensureBuiltInFilmStockPresets(token);
   await ensureSiteSettingsAccentDefault(token);
   await ensurePublicSiteSettingsPermission(token);
+  await ensureAnalyticsIndexes();
   await ensureAnalyticsDashboardInDatabase();
 
   console.log("Directus content schema is ready.");

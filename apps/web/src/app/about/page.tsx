@@ -10,6 +10,12 @@ import { siteConfig } from "@/lib/site-config";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+// No loading.tsx on purpose: this page renders quickly and its layout (cover
+// or not) is unknown until it does, so any skeleton would be swapped out with
+// a jump. Without a loading boundary the previous page stays on screen (with
+// the progress bar if slow) until the content is ready, then changes once.
+// The home skeleton lives in (home)/loading.tsx so it does not wrap this route.
+
 // ── CMS-first rendering ───────────────────────────────────────────────────────
 // Looks for a post with slug "about" in Directus.
 // Falls back to content/about.md if not found or CMS is unreachable.

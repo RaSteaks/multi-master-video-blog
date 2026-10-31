@@ -2,6 +2,9 @@
 
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
+import { useDroppedFiles } from "@/lib/dropped-files";
+import { canAuthorize, useAuthorSession } from "@/lib/author-session";
+import { AuthorCredential } from "@/components/AuthorCredential";
 import {
   useEffect,
   useId,
@@ -16,6 +19,7 @@ import {
 import {
   albumApiRequest,
   fetchManagedAlbums,
+  fetchManagedAlbum,
   pairAlbumFileSelections,
   uploadAlbumFormData,
   type ManagedAlbum,
@@ -26,7 +30,6 @@ import {
   MAX_BATCH_BYTES,
   MAX_FILE_BYTES,
   MAX_PHOTOS,
-  UploadIcon,
   UploadPairEditor,
   type UploadMetadata,
 } from "@/components/AlbumPhotoUploader";
@@ -61,17 +64,29 @@ export function AlbumsToolbar({
   initialDialog?: AlbumDialogName;
 }) {
   const router = useRouter();
+  useAuthorSession();
   const [dialog, setDialog] = useState<AlbumDialogName>(initialDialog);
+  // The author menu opens these dialogs through ?dialog=, also while this
+  // page is already showing, so follow later requests too (closing a dialog
+  // clears the query, which resets the request to null).
+  const [requestedDialog, setRequestedDialog] = useState(initialDialog);
+  if (initialDialog !== requestedDialog) {
+    setRequestedDialog(initialDialog);
+    if (initialDialog) setDialog(initialDialog);
+  }
   const [token, setToken] = useState("");
   const [managedAlbums, setManagedAlbums] = useState<ManagedAlbum[] | null>(
     null,
   );
   const [loadingAlbums, setLoadingAlbums] = useState(false);
   const [notice, setNotice] = useState("");
+  const [managerError, setManagerError] = useState("");
   const [managedAlbumId, setManagedAlbumId] = useState<number | null>(null);
+  const managerLoad = useRef<AbortController | null>(null);
+  useEffect(() => () => managerLoad.current?.abort(), []);
 
   async function loadManaged() {
-    if (!token.trim()) {
+    if (!canAuthorize(token)) {
       throw new Error("请输入管理员令牌。");
     }
     setLoadingAlbums(true);
@@ -86,22 +101,26 @@ export function AlbumsToolbar({
 
   function completed(message: string) {
     setNotice(message);
-    router.refresh();
+    // Refresh when the modal closes. Refreshing its current ?dialog= route
+    // while the reader closes/navigates can replay and reopen that modal.
   }
 
   function clearDialogQuery() {
     const url = new URL(window.location.href);
-    if (!url.searchParams.has("dialog")) return;
+    if (!url.searchParams.has("dialog")) return false;
 
     url.searchParams.delete("dialog");
     router.replace(`${url.pathname}${url.search}${url.hash}`, {
       scroll: false,
     });
+    return true;
   }
 
   function closeDialog() {
+    managerLoad.current?.abort();
+    setLoadingAlbums(false);
     setDialog(null);
-    clearDialogQuery();
+    if (!clearDialogQuery()) router.refresh();
   }
 
   function updateManagedAlbum(updated: ManagedAlbum) {
@@ -117,35 +136,6 @@ export function AlbumsToolbar({
 
   return (
     <div className="album-toolbar">
-      <div className="album-toolbar-actions" aria-label="相簿管理操作">
-        <button
-          className="album-action-button album-action-button--primary"
-          type="button"
-          onClick={() => setDialog("create")}
-        >
-          <PlusIcon />
-          新建相簿
-        </button>
-        <button
-          className="album-action-button"
-          type="button"
-          onClick={() => setDialog("upload")}
-        >
-          <UploadIcon />
-          上传照片
-        </button>
-        {FILM_SCAN_ENABLED ? (
-          <button
-            className="album-action-button album-action-button--film"
-            type="button"
-            onClick={() => setDialog("film")}
-          >
-            <FilmIcon />
-            导入胶片扫描
-          </button>
-        ) : null}
-      </div>
-
       <p className="album-toolbar-status" aria-live="polite">
         {notice}
       </p>
@@ -159,7 +149,9 @@ export function AlbumsToolbar({
               setManagedAlbums((current) =>
                 current ? [album, ...current] : current,
               );
-              completed(`相簿“${album.title}”已创建。`);
+              // Clearing ?dialog= already navigates to the refreshed list. A
+              // simultaneous refresh can replay the old query and reopen it.
+              setNotice(`相簿“${album.title}”已创建。`);
               closeDialog();
             }}
           />
@@ -172,6 +164,7 @@ export function AlbumsToolbar({
           onClose={closeDialog}
           wide
         >
+          <FormFeedback error={managerError} />
           <UploadAlbumPhotosForm
             publicAlbums={albums}
             managedAlbums={managedAlbums}
@@ -181,10 +174,21 @@ export function AlbumsToolbar({
             loadManaged={loadManaged}
             onManagedAlbums={setManagedAlbums}
             onCompleted={completed}
-            onOpenManager={(albumId) => {
-              clearDialogQuery();
-              setManagedAlbumId(albumId);
-              setDialog("manage");
+            onOpenManager={async (albumId) => {
+              // Keep the current dialog and its values until selected details arrive.
+              managerLoad.current?.abort();
+              const controller = new AbortController();
+              managerLoad.current = controller;
+              setManagerError("");
+              setLoadingAlbums(true);
+              try {
+                const album = await fetchManagedAlbum(token, albumId, controller.signal);
+                if (controller.signal.aborted) return;
+                updateManagedAlbum(album);
+                clearDialogQuery(); setManagedAlbumId(albumId); setDialog("manage");
+              } catch (cause) {
+                if (!controller.signal.aborted) setManagerError(cause instanceof Error ? cause.message : "相簿载入失败，请重试。");
+              } finally { if (managerLoad.current === controller) setLoadingAlbums(false); }
             }}
           />
         </AlbumModal>
@@ -290,8 +294,9 @@ function TokenField({
   token: string;
   setToken: (value: string) => void;
 }) {
+  const author = useAuthorSession();
   return (
-    <label className="album-field">
+    <AuthorCredential token={token}><label className="album-field">
       <span>管理员令牌</span>
       <input
         type="password"
@@ -299,10 +304,10 @@ function TokenField({
         onChange={(event) => setToken(event.target.value)}
         autoComplete="new-password"
         spellCheck={false}
-        required
+        required={!author.author}
       />
       <small>仅保存在当前页面组件内，不会写入浏览器存储。</small>
-    </label>
+    </label></AuthorCredential>
   );
 }
 
@@ -325,7 +330,7 @@ function CreateAlbumForm({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
-    if (!token.trim()) {
+    if (!canAuthorize(token)) {
       setError("请输入管理员令牌。");
       return;
     }
@@ -426,11 +431,13 @@ function UploadAlbumPhotosForm({
   onOpenManager: (albumId: number) => void;
 }) {
   const options = managedAlbums ?? publicAlbums;
+  useAuthorSession();
   const [albumId, setAlbumId] = useState(
     options[0] ? String(options[0].id) : "",
   );
   const [sdrFiles, setSdrFiles] = useState<File[]>([]);
   const [hdrFiles, setHdrFiles] = useState<File[]>([]);
+  useDroppedFiles("photo", setSdrFiles);
   const [metadata, setMetadata] = useState<Record<string, UploadMetadata>>({});
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -502,7 +509,7 @@ function UploadAlbumPhotosForm({
     setError("");
     setSuccess("");
 
-    if (!token.trim()) {
+    if (!canAuthorize(token)) {
       setError("请输入管理员令牌。");
       return;
     }
@@ -587,7 +594,7 @@ function UploadAlbumPhotosForm({
           <button
             className="album-text-button"
             type="button"
-            disabled={loadingAlbums || !token.trim()}
+            disabled={loadingAlbums || !canAuthorize(token)}
             onClick={revealManagedAlbums}
           >
             {loadingAlbums ? "正在验证…" : "验证令牌并加载草稿"}
@@ -613,6 +620,8 @@ function UploadAlbumPhotosForm({
             className="album-action-button"
             type="button"
             onClick={() => onOpenManager(selectedManagedAlbum.id)}
+            disabled={loadingAlbums}
+            aria-busy={loadingAlbums}
           >
             管理照片、封面与顺序
           </button>
@@ -810,23 +819,7 @@ function FormFeedback({
   );
 }
 
-function PlusIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
 
-function FilmIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="5" width="18" height="14" rx="2" />
-      <path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4" />
-      <circle cx="12" cy="12" r="2.8" />
-    </svg>
-  );
-}
 
 function CloseIcon() {
   return (

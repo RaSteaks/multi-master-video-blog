@@ -1,0 +1,45 @@
+.frame {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+.image {
+  display: block;
+  max-width: 100%;
+}
+
+/* WebKit ignores an image's preferred ratio after load failure. Its wrapper
+   reserves the known size while the native alt fallback remains visible. */
+.frame[data-error-sized="true"] {
+  position: relative;
+}
+
+.frame[data-error-sized="true"] .image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* The wrapper keeps the existing neutral surface visible without another image request. */
+.frame[data-image-state="loading"] .image {
+  opacity: 0;
+}
+
+.frame[data-image-state="loaded"] .image {
+  animation: reveal var(--motion-media-duration, 180ms) ease-out;
+}
+
+@keyframes reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .frame[data-image-state="loaded"] .image {
+    animation: none;
+  }
+}

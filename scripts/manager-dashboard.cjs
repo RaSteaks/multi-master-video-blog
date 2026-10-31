@@ -1,3 +1,5 @@
+// CMS 12 health checks authenticate without exposing the service account to the UI.
+const { directusHealth } = require("./directus-health.cjs");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const http = require("node:http");
@@ -555,6 +557,10 @@ async function getPortProcessTree(port) {
 async function checkHttp(url, timeoutMs = 3000) {
   const started = Date.now();
   try {
+    if (url.endsWith("/server/health")) {
+      const health = await directusHealth(loadDirectusEnv(), url.replace(/\/server\/health$/, ""), timeoutMs);
+      return { ...health, elapsed: Date.now() - started };
+    }
     const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
     await response.body?.cancel();
     return {
@@ -694,6 +700,27 @@ async function buildWeb() {
     await fsp.rm(buildId, { force: true });
     throw error;
   }
+}
+
+async function installAppDependencies() {
+  const logDir = path.join(ROOT, "logs");
+  await fsp.mkdir(logDir, { recursive: true });
+  // Limit installation to API/Web; npm ci would remove the shared node_modules
+  // tree while CMS and Manager are still running (and may hold files on Windows).
+  // Include build tools even when the controller inherits NODE_ENV=production.
+  const args = ["install", "--workspace=@multi-master-video-blog/api", "--workspace=@multi-master-video-blog/web",
+    "--include-workspace-root=false", "--include=dev", "--no-audit", "--no-fund"];
+  const exitCode = await runPowerShell([
+    "$process = Start-Process", "-FilePath 'npm.cmd'",
+    `-ArgumentList ${psArray(args)}`, `-WorkingDirectory ${psQuote(ROOT)}`,
+    `-RedirectStandardOutput ${psQuote(path.join(logDir, "app.dependencies.out.log"))}`,
+    `-RedirectStandardError ${psQuote(path.join(logDir, "app.dependencies.err.log"))}`,
+    "-WindowStyle Hidden", "-Wait", "-PassThru;", "Write-Output $process.ExitCode"
+  ].join(" "));
+  if (exitCode !== "0") {
+    throw new Error(`API + Web dependency installation failed with exit code ${exitCode}. API and Web remain stopped. Check logs/app.dependencies.err.log, fix the installation, then retry Update API + Web.`);
+  }
+  return { message: "API + Web dependencies installed. See logs/app.dependencies.out.log." };
 }
 
 async function getWindowsServiceState(serviceName) {
@@ -1061,13 +1088,21 @@ async function handleUploadTokenChange(payload) {
 
 async function handleStackAction(action) {
   if (action === "refresh-app") {
-    // Source updates need only API restart and a fresh production Web bundle.
-    // Dependency installation is a separate explicit deployment step.
+    // Release loaded files before npm changes either workspace. Build before
+    // starting API so an install/build failure cannot start a partial rollout.
     const results = [];
-    for (const [id, operation] of [["api", "restart"], ["web", currentWebMode === "production" ? "rebuild-restart" : "restart"]]) {
+    const steps = [
+      ["web", "stop", () => handleAction("web", "stop")],
+      ["api", "stop", () => handleAction("api", "stop")],
+      ["app-dependencies", "install", () => serviceStep({ id: "app-dependencies" }, "install", installAppDependencies)],
+      ...(currentWebMode === "production" ? [["web", "build", () => serviceStep(serviceMap.get("web"), "build", buildWeb)]] : []),
+      ["api", "start", () => handleAction("api", "start")],
+      ["web", "start", () => handleAction("web", "start")]
+    ];
+    for (const [id, operation, task] of steps) {
       try {
-        const result = await handleAction(id, operation);
-        results.push({ serviceId: id, action: operation, ok: true, message: result.message });
+        const result = await task();
+        results.push({ serviceId: id, action: operation, ok: true, message: result?.message || "Completed." });
       } catch (error) {
         results.push({ serviceId: id, action: operation, ok: false, message: cleanPowerShellError(error) });
         error.results = results;
@@ -1150,6 +1185,7 @@ async function readServiceLogs(serviceId) {
   const service = serviceId === "manager"
     ? { id: "manager", name: "Service Manager", logName: "manager" }
     : serviceId === "web-build" ? { id: "web-build", name: "Web build", logName: "web.build" }
+    : serviceId === "app-dependencies" ? { id: "app-dependencies", name: "API + Web dependencies", logName: "app.dependencies" }
     : serviceMap.get(serviceId);
   if (!service?.logName) {
     const error = new Error(`No logs configured for service: ${serviceId}`);
@@ -1914,7 +1950,7 @@ function html(csrfToken = "") {
         <button class="button danger" type="button" data-stack="stop-all">Stop all</button>
         <button class="button" type="button" data-stack="refresh-app">Update API + Web</button>
       </div>
-      <p class="service-help">Start: PostgreSQL → CMS → API → Web. Stop: reverse order. Restart reuses the current Web build. Update API + Web builds Web in Production; install changed dependencies first.</p>
+      <p class="service-help">Start: PostgreSQL → CMS → API → Web. Stop: reverse order. Restart reuses the current Web build. Update API + Web stops both services, installs their dependencies, then builds Web in Production and starts both services.</p>
     </section>
 
     <p class="action-readout" id="actionReadout" role="status" aria-live="polite"></p>
@@ -1927,6 +1963,7 @@ function html(csrfToken = "") {
       <h2 id="operationTitle">Service operation</h2>
       <p id="operationSummary" role="status" aria-live="polite"></p>
       <ol class="operation-steps" id="operationSteps"></ol>
+      <button class="button" type="button" data-log="app-dependencies">View dependency install log</button>
       <button class="button" type="button" data-log="web-build">View Web build log</button>
     </section>
 
@@ -1944,6 +1981,7 @@ function html(csrfToken = "") {
         <span class="live-state" id="liveLogState"><span class="live-state-dot" aria-hidden="true"></span><span id="liveLogStateText">Idle</span></span>
         <div class="chan-tabs" role="group" aria-label="Live output source">
           <button class="chan-tab" type="button" data-log="web" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Web</button>
+          <button class="chan-tab" type="button" data-log="app-dependencies" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Dependencies</button>
           <button class="chan-tab" type="button" data-log="web-build" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Build</button>
           <button class="chan-tab" type="button" data-log="api" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>API</button>
           <button class="chan-tab" type="button" data-log="cms" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>CMS</button>
@@ -2053,6 +2091,7 @@ function html(csrfToken = "") {
     const LOG_SOURCE_LABELS = Object.freeze({
       web: "Web",
       "web-build": "Web build",
+      "app-dependencies": "API + Web dependencies",
       api: "Upload API",
       cms: "Directus CMS",
       manager: "Service Manager"
@@ -2174,10 +2213,10 @@ function html(csrfToken = "") {
     function renderCurrentTasks(operation) {
       // Use accepted journal records for all four services, including CLI commands
       // and reloads. Completed/interrupted records stay in the detail panel only.
-      const names = { postgres: "PostgreSQL", cms: "CMS", api: "API", web: "web" };
+      const names = { postgres: "PostgreSQL", cms: "CMS", api: "API", web: "web", "app-dependencies": "API 与 Web 依赖" };
       const actions = { start: "启动", stop: "停止", restart: "重启", "rebuild-restart": "构建并重启" };
       const labels = { "start-all": "启动全部服务", "stop-all": "停止全部服务", "restart-all": "重启全部服务", "refresh-app": "更新 API 和 web", "upload-tokens": "保存令牌并重启 API" };
-      const phases = { start: "启动并检查健康状态", stop: "停止并等待退出", build: "构建生产版本", "recovery-stop": "停止服务以恢复", "recovery-build": "重新构建原模式", "recovery-start": "恢复原模式" };
+      const phases = { install: "安装依赖", start: "启动并检查健康状态", stop: "停止并等待退出", build: "构建生产版本", "recovery-stop": "停止服务以恢复", "recovery-build": "重新构建原模式", "recovery-start": "恢复原模式" };
       let markup = '<p>当前没有正在执行的任务</p>';
       if (operation?.state === "running") {
         const [service, action] = operation.label.split(":");
@@ -2209,8 +2248,8 @@ function html(csrfToken = "") {
         finishedOperations.add(operation.id);
         if (finishedOperations.size > 24) finishedOperations.delete(finishedOperations.values().next().value);
       }
-      const names = { postgres: "PostgreSQL", cms: "Directus CMS", api: "Upload API", web: "Frontend Web" };
-      const phases = { start: "Start and verify", stop: "Stop and wait", build: "Build production Web", "recovery-stop": "Stop for recovery", "recovery-build": "Rebuild previous mode", "recovery-start": "Restore previous mode" };
+      const names = { postgres: "PostgreSQL", cms: "Directus CMS", api: "Upload API", web: "Frontend Web", "app-dependencies": "API + Web dependencies" };
+      const phases = { install: "Install dependencies", start: "Start and verify", stop: "Stop and wait", build: "Build production Web", "recovery-stop": "Stop for recovery", "recovery-build": "Rebuild previous mode", "recovery-start": "Restore previous mode" };
       const labels = { "start-all": "Start all services", "stop-all": "Stop all services", "restart-all": "Restart all services", "refresh-app": "Update API + Web", "upload-tokens": "Save tokens and restart API" };
       const parts = operation.label.split(":");
       const label = labels[operation.label] || (parts[0] === "web-mode" ? "Switch Web to " + parts[1] : (names[parts[0]] || parts[0]) + (parts[1] ? " · " + parts[1] : ""));
@@ -2645,7 +2684,7 @@ function html(csrfToken = "") {
       if (!label) return;
       if (action !== "start-all") {
         const message = action === "refresh-app"
-          ? "Restart the Upload API and update Web? Production Web will be rebuilt; PostgreSQL and CMS stay running. Install changed dependencies first. Active uploads and website requests will be interrupted."
+          ? "Stop API and Web, install their dependencies, then start both services? Production Web will be rebuilt before startup. PostgreSQL and CMS stay running. Active uploads and website requests will be interrupted. Installation or build failure leaves API and Web stopped; fix the error and retry."
           : label + " four services? This interrupts website, CMS and upload requests, including active conversions. The stop order is Web → API → CMS → PostgreSQL.";
         if (!await confirmAction(message, label)) return;
       }

@@ -39,7 +39,7 @@ export default async function VideoPage({ params }: VideoPageProps) {
   const masterCount = video.masters?.length || 0;
 
   return (
-    <main className="shell page-stack">
+    <main className="shell page-stack video-detail">
       <BackLink href="/videos" label="返回视频" />
       <AnalyticsTracker itemType="video" itemId={video.id} />
       <header className="page-header video-title">

@@ -19,6 +19,40 @@ npm run dev:cms
 
 Create a local `.env` from `.env.example` before bootstrapping Directus, then set the PostgreSQL password for `DB_PASSWORD`. Keep the real `.env`, database files, uploads, secrets, and production credentials out of Git.
 
+## Repair a deployed Insights aggregation
+
+`Cannot query field "undefined" on type "video_projects_aggregated"` can occur
+when a line-chart panel has no aggregation function. Panel options live in the
+Directus database, so rebuilding Web or restarting services does not fill in this
+setting. In the dashboard editor, select the panel's **Aggregation** explicitly;
+for a video project count, use **Count** and Y axis **id**, then save the panel and
+dashboard.
+
+For a Windows deployment, update the repository files and run these commands in
+PowerShell from the deployed project root while CMS is running. The repair uses
+`apps/cms/directus/.env` and process environment overrides, matching the server's
+`DIRECTUS_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD`. Set `DIRECTUS_ENV_PATH` if
+the deployment uses a different CMS environment file.
+
+```powershell
+# Inspect affected line-chart panels; this does not change CMS configuration.
+npm run repair:cms-insights
+
+# Replace PANEL_ID with the id printed above and choose the intended function.
+npm run repair:cms-insights -- --panel-id PANEL_ID --aggregation count
+
+# Apply only that panel's repair after reviewing the preview.
+npm run repair:cms-insights -- --panel-id PANEL_ID --aggregation count --apply
+```
+
+The default is inspection only. Applying requires an explicit panel and function,
+verifies the aggregate against the deployed GraphQL schema, saves the original
+panel to `backups/directus-insights/`, and reads back the saved configuration.
+Existing valid aggregations are left unchanged. The repair preserves the panel's
+filters, axes, display settings, and dashboard layout. Refresh Insights afterward;
+no service restart or full schema setup is needed. The check validates the chosen
+aggregate, not every chart grouping or filter.
+
 ## Video source format upgrade
 
 The video detail page requests `video_masters.source_format`, a nullable JSON

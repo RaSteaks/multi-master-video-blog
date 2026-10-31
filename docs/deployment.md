@@ -126,10 +126,25 @@ PostgreSQL control may require an Administrator terminal/Manager process.
   Restart in Development or switch to Production. A build failure leaves Web
   stopped and does not start an incomplete bundle. Inspect the **Build** log,
   fix the build and run Build + Restart again.
-- **Update API + Web** / `npm run services:update` restarts API, then builds and
-  restarts production Web (restarts only in Development). PostgreSQL and CMS are
-  untouched. A failed API step prevents the Web step. Install changed dependencies
-  separately first, for example `npm install`; Manager does not fetch packages.
+- **Update API + Web** / `npm run services:update` stops Web and API, installs
+  their workspace dependencies, builds production Web, then starts API followed
+  by Web with health checks. Development skips the build. Installation uses
+  `npm install --workspace=@multi-master-video-blog/api --workspace=@multi-master-video-blog/web --include-workspace-root=false --include=dev --no-audit --no-fund`
+  from the project root, honoring the checked-in package manifests and lockfile.
+  It deliberately avoids `npm ci`, which removes the shared dependency tree.
+  PostgreSQL and CMS are not restarted; CMS-only and root dependency updates
+  still require a separate maintenance procedure. Registry access and write
+  permissions for the project are required. Manager does not pull Git changes.
+  Every failure stops subsequent steps; install/build failure leaves both API
+  and Web stopped. Fix the error, then retry Update API + Web. The persistent
+  operation panel reports installation progress; **Dependencies** displays
+  `logs/app.dependencies.out.log` and `logs/app.dependencies.err.log`.
+  After deploying this controller change, restart Manager once to load it;
+  merely clicking Update in an already-running older Manager uses the old flow.
+  Regression checks: `npm run test:manager` covers sequencing, failures and
+  offline fixture package installation; `node tests/manager-update-browser.cjs`
+  checks the authenticated UI with isolated, simulated Windows service effects.
+  Browser evidence is saved in `test-results/manager-auto-install`.
 - `npm run services:start` starts PostgreSQL → CMS → API → Web, stopping on the
   first failed startup. `services:stop` attempts Web → API → CMS → PostgreSQL,
   retaining every failure. `services:restart` performs both phases and tries to
@@ -137,6 +152,23 @@ PostgreSQL control may require an Administrator terminal/Manager process.
   reports that failure. `services:status` / `services:health` inspect the stack.
 - Single-service actions do not silently restart dependent services. Stop/restart
   confirmation explains the interruption; finish uploads/conversions first.
+
+### API upload-storage lock after a Windows restart
+
+Windows force-stop can leave the upload spool's lock directory behind. Its lease
+expires after 30 seconds without the owning API's heartbeat. API startup now
+waits and retries for up to 35 seconds before failing; the Manager's default
+90-second health deadline allows this recovery. Do not lower that deadline below
+the lock recovery window. A live owner's heartbeat continues to block a second
+API process: the retry does not delete or override an active lock.
+
+`ELOCKED` / `Lock file is already being held` is a storage-ownership conflict,
+not evidence of missing Directus schema. If it persists, stop duplicate API
+instances sharing `VIDEO_UPLOAD_ROOT` and retry; do not manually delete their
+active lock or run schema changes to address this error. For an older deployed
+API, after confirming that its previous process has exited, wait at least
+35 seconds before starting it again. Never delete the upload directory: it holds
+resumable upload data.
 
 Service, stack and Web-mode POST endpoints return **202** once the operation lock
 is acquired, with `{ok:true, operation:{id,...}}`. This is acceptance, not success.
@@ -167,6 +199,81 @@ The same token protects album creation, album editing, photo uploads, cover
 selection, reordering, publication changes, and deletion. It is entered in
 the page component and must never be placed in a `NEXT_PUBLIC_*` variable,
 URL, cookie, or browser storage.
+
+The author menu exchanges this token for a fixed six-hour in-memory session.
+Only a random session ID is sent in the HttpOnly `author_session` cookie
+(`Path=/api`); the API stores its SHA-256 digest. The readable `author_hint`
+cookie is only a client-side hint and never grants access. Opening or returning
+to a browser window checks the server session even if readable hints are missing;
+a valid session also restores the author controls. The persistent session cookie
+survives browser restarts within its original six-hour expiry, provided the browser
+retains site cookies and the API process remains running. Session responses
+are `no-store`; public page rendering does not read session or device cookies. Up to 16
+devices may be signed in; another login evicts the oldest session.
+
+Successful login also writes `author_device=1` server-side with `Path=/`,
+`SameSite=Strict`, `Max-Age=31536000` and `Secure` on HTTPS, without HttpOnly.
+This non-secret hint only reveals the client-rendered author icon; it grants no
+API permission. Expiry and ordinary logout retain it. “退出并忘记此设备” clears
+it, including after session expiry. New devices sign in through `/studio` or
+Cmd/Ctrl+Alt+Shift+L; `/studio?next=/albums` resumes a local path after login.
+The keyboard handler uses physical `KeyL` because Option changes the character
+reported by some Mac layouts. Native Safari shortcut verification requires
+Safari's “Allow remote automation”; WebKit page tests do not verify its app menu.
+External and protocol-relative return URLs are ignored. The studio route is
+noindex and omitted from navigation/sitemap. Keep it reachable through Nginx.
+
+Public PageTools no longer contain login/upload actions. The author icon lives
+beside Appearance (home: to its left), and the global file-drop layer is enabled
+only with a valid session. Page management affordances use the same device hint.
+
+The homepage has one fixed laboratory link to `/project`, so project edits never
+need to invalidate it. Failed CMS reads propagate to ISR, which retains the last
+successful homepage. A cold build requires a reachable CMS. `CMS_RUNTIME_ONLY=true` continues to opt deployments into runtime
+rendering intentionally; normal builds with positive cache revalidation retain a
+static homepage. `npm run test:phase6-cache` verifies a production build, failed
+CMS revalidation retaining good data, and recovery after project invalidation.
+The former home upload-link environment overrides are removed.
+
+Whole-player fullscreen retains master controls. Standard native-video fullscreen
+is promoted to the whole player when the browser permits; Firefox's stacked
+fullscreen elements are unwound together on exit. Firefox's native controls use a
+privileged double-click handler ([Mozilla implementation](https://github.com/mozilla/gecko-dev/blob/master/toolkit/content/widgets/videocontrols.js)),
+so interception alone is insufficient. If promotion is refused, or iOS uses its
+native video-only API, that fallback remains synchronized but cannot show master
+controls; the site's fullscreen button retains the complete player. iPhone falls back to
+page immersion, Android attempts landscape locking, and touch landscape playback
+uses immersion. Physical device rotation, safe areas and HDR output require device
+validation. These modes pause the liquid background without changing saved speed.
+Run `npm run test:create-menu-browser` for author/upload regressions and
+`npm run test:phase6-browser` for public tools, homepage and playback checks.
+Both use disposable localhost fixtures and headless WebKit;
+`PHASE6_BROWSER=firefox npm run test:phase6-browser` selects headless Firefox.
+Evidence is saved under `test-results/create-menu` and `test-results/phase6-<browser>`.
+Run `node tests/author-session-browser.cjs` for browser restart, missing display
+hints and cross-window logout regressions. It uses a disposable persistent WebKit
+profile; `AUTHOR_BROWSER=firefox` selects Firefox. Evidence is saved under
+`test-results/author-session-<browser>`.
+
+API process termination revokes every author session. Manager saves token
+settings before restarting the API: if it reports `restartOk: false`, confirm
+the old process has stopped before treating all sessions as revoked. Signing
+out revokes only the current browser session (shared by its tabs).
+
+For proxied browser login, enable `TRUST_PROXY=true` only while the API is
+private. Nginx must overwrite `X-Forwarded-Host` (including the public port)
+and `X-Forwarded-Proto`; the supplied templates do this, and Next rewrites
+preserve the original host. HTTPS adds `Secure` to all author cookies. Login requires
+a same-origin JSON request; logout also requires the session's `X-Author-CSRF`.
+Tokens are never logged, persisted by the site, or returned to the browser.
+Video, album, photo and film-scan requests accept either the original token or
+an author session with `X-Author-CSRF`. An explicitly entered token takes
+precedence; an invalid token never silently falls back to the session. Article
+requests accept the session only when `ARTICLE_API_TOKEN` is unset and actually
+inherits the upload token. An explicitly configured identical value still keeps
+the article boundary separate; its placeholder disables publication. Maintenance
+control remains token-only. Upload forms preserve manual credential entry and
+retain selected files/text when a session expires.
 
 For album uploads, configure:
 

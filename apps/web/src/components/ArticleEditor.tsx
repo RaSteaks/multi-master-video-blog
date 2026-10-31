@@ -18,6 +18,9 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markd
 import remarkGfm from "remark-gfm";
 import styles from "./ArticleEditor.module.css";
 import { AuthenticatedAssetImage } from "./AuthenticatedAssetImage";
+import { useDroppedFiles } from "@/lib/dropped-files";
+import { authorHeaders, canAuthorize, observeAuthorResponse, useAuthorSession } from "@/lib/author-session";
+import { AuthorCredential } from "@/components/AuthorCredential";
 
 type SubmitPhase = "idle" | "uploading" | "success" | "error";
 type ViewMode = "write" | "split" | "preview";
@@ -341,6 +344,7 @@ function ToolbarButton({
 }
 
 export function ArticleEditor() {
+  const author = useAuthorSession();
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [title, setTitle] = useState("");
@@ -372,6 +376,15 @@ export function ArticleEditor() {
 
   const [phase, setPhase] = useState<SubmitPhase>("idle");
   const [message, setMessage] = useState("尚未保存");
+  useDroppedFiles("article", files => {
+    const file = files[0];
+    if (file.size > MAX_MARKDOWN_BYTES) { setMessage("Markdown 文件不能超过 2 MiB。"); return; }
+    void file.text().then(text => {
+      setContent(text);
+      setTitle(text.match(/^#\s+(.+)$/m)?.[1] || file.name.replace(/\.md$/i, ""));
+      setMessage("已导入 Markdown，请检查后保存。");
+    }).catch(() => setMessage("Markdown 读取失败，请重新选择文件。"));
+  });
   const [progress, setProgress] = useState(0);
   const [attemptedAction, setAttemptedAction] = useState<"draft" | "publish" | null>(null);
   const [lastArticle, setLastArticle] = useState<ArticleResult | null>(null);
@@ -453,7 +466,7 @@ export function ArticleEditor() {
 
   const commonValidationErrors = useMemo(() => {
     const errors: string[] = [];
-    if (!token.trim()) errors.push("请输入文章访问令牌");
+    if (!canAuthorize(token, "article")) errors.push("请输入文章访问令牌");
     if (!title.trim()) errors.push("请输入文章标题");
     if (!slug.trim()) errors.push("请输入 URL 标识");
     else if (!SLUG_PATTERN.test(slug.trim()))
@@ -464,7 +477,7 @@ export function ArticleEditor() {
     if (missingImageKeys.length > 0)
       errors.push(`正文中有 ${missingImageKeys.length} 张图片缺少本地附件`);
     return errors;
-  }, [contentBytes, missingImageKeys.length, slug, title, token, uploadBytes]);
+  }, [contentBytes, missingImageKeys.length, slug, title, token, author, uploadBytes]);
 
   const publishValidationErrors = useMemo(
     () =>
@@ -816,7 +829,7 @@ export function ArticleEditor() {
   }
 
   function focusFirstError(published: boolean) {
-    if (!token.trim()) tokenRef.current?.focus();
+    if (!canAuthorize(token, "article")) tokenRef.current?.focus();
     else if (!title.trim()) titleRef.current?.focus();
     else if (!slug.trim() || !SLUG_PATTERN.test(slug.trim())) slugRef.current?.focus();
     else if (published || missingImageKeys.length > 0) textareaRef.current?.focus();
@@ -871,7 +884,7 @@ export function ArticleEditor() {
     const request = new XMLHttpRequest();
     xhrRef.current = request;
     request.open("POST", "/api/articles");
-    request.setRequestHeader("X-Article-Token", token.trim());
+    for (const [name, value] of Object.entries(authorHeaders(token, "article"))) request.setRequestHeader(name, value);
     request.setRequestHeader("Accept", "application/json");
     setCoverDragging(false);
     setPhase("uploading");
@@ -891,6 +904,7 @@ export function ArticleEditor() {
         setProgress(Math.round((event.loaded / event.total) * 100));
     };
     request.onload = () => {
+      observeAuthorResponse(request.status, token);
       let payload: ArticleResponse = {};
       try {
         payload = request.responseText ? JSON.parse(request.responseText) : {};
@@ -1159,7 +1173,7 @@ export function ArticleEditor() {
               </div>
             </div>
 
-            <label className={styles.field} htmlFor="article-token">
+            <AuthorCredential scope="article" token={token}><label className={styles.field} htmlFor="article-token">
               <span>文章访问令牌 *</span>
               <div className={styles.inputAction}>
                 <input
@@ -1170,14 +1184,14 @@ export function ArticleEditor() {
                   onChange={(event) => setToken(event.target.value)}
                   placeholder="ARTICLE_API_TOKEN"
                   autoComplete="off"
-                  aria-invalid={attempted && !token.trim()}
+                  aria-invalid={attempted && !canAuthorize(token, "article")}
                 />
                 <button type="button" onClick={() => setShowToken((value) => !value)}>
                   {showToken ? "隐藏" : "显示"}
                 </button>
               </div>
               <small className={styles.fieldHint}>仅随本次请求发送，不写入文章内容</small>
-            </label>
+            </label></AuthorCredential>
 
             <div className={styles.field}>
               <span>封面图片</span>
@@ -1372,7 +1386,12 @@ export function ArticleEditor() {
                 <span>实时预览</span>
                 <small>{deferredContent !== content ? "正在排版…" : "GFM"}</small>
               </div>
-              <div className={styles.previewScroller}>
+              <div
+                className={styles.previewScroller}
+                role="region"
+                aria-label="文章预览"
+                tabIndex={0}
+              >
                 {/* CSS hiding alone still parses Markdown and creates image elements while typing. */}
                 {viewMode !== "write" ? (
                   <ArticlePreview content={deferredContent} images={images} token={token} />

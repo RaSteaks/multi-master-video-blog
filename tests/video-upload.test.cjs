@@ -59,6 +59,20 @@ test("checksums, exact chunk boundaries and duplicate offsets cannot corrupt con
   await assert.rejects(store.complete(id), { statusCode: 409 });
 });
 
+test("task summaries expose confirmed upload progress without inventing encoder percentages", async t => {
+  const { store } = await fixture(t);
+  const id = crypto.randomUUID(); await store.create(id, manifest());
+  assert.equal(store.taskSummaries()[0].progress, 0);
+  await store.append(id, 0, request(bytes.subarray(0, 4), 0));
+  assert.equal(store.taskSummaries()[0].progress, 40);
+  await store.append(id, 0, request(bytes.subarray(4, 8), 4));
+  await store.append(id, 0, request(bytes.subarray(8), 8));
+  await store.complete(id);
+  assert.equal(store.taskSummaries()[0].state, "queued");
+  assert.equal(store.taskSummaries()[0].progress, null);
+  assert.equal("files" in store.taskSummaries()[0], false);
+});
+
 test("aborted and concurrent chunks retain the last acknowledged offset", async t => {
   const { store } = await fixture(t);
   const id = crypto.randomUUID(); await store.create(id, manifest());
@@ -154,8 +168,28 @@ test("quota reservations, expiry and cancel are bounded without deleting queued 
 test("private storage rejects public paths and simultaneous API processes", async t => {
   const f = await fixture(t);
   const second = createVideoUploadStore(f.config);
-  await assert.rejects(second.init(), /already being held/);
+  await assert.rejects(second.init(), error => error.code === "ELOCKED" && /still locked after waiting 35 seconds/.test(error.message));
+  // The live owner's heartbeat must survive the contender's entire retry window.
+  assert.equal((await f.store.create(crypto.randomUUID(), manifest())).state, "receiving");
   await assert.rejects(createVideoUploadStore({ ...f.config, root: path.join(f.config.mediaRoot, "uploads") }).init(), /separate/);
+});
+
+test("startup waits for an abandoned storage lease to expire and recovers the spool", async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "abandoned-upload-lock-"));
+  const root = path.join(temp, "private");
+  await fs.mkdir(root);
+  // Disk state after a forced termination: lock directory remains, heartbeat stops.
+  // Age it near the lease boundary to exercise real retries without a 30s sleep.
+  await fs.mkdir(root + ".lock");
+  const lastHeartbeat = new Date(Date.now() - 29000);
+  await fs.utimes(root + ".lock", lastHeartbeat, lastHeartbeat);
+  const store = createVideoUploadStore({ root, mediaRoot: path.join(temp, "media"),
+    maxFileBytes: 100, maxCoverBytes: 50, processUpload: async () => ({ status: "ok" }) });
+  t.after(async () => { await store.close(); await fs.rm(temp, { recursive: true, force: true }); });
+  await store.init();
+  const id = crypto.randomUUID();
+  assert.equal((await store.create(id, manifest())).state, "receiving");
+  assert.equal(store.status(id).id, id);
 });
 
 test("paired same-name sources retain separate bytes and multipart roles", async t => {

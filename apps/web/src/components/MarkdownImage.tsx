@@ -1,5 +1,6 @@
 import type { ComponentPropsWithoutRef } from "react";
 import { previewAssetUrl, type AssetDimensions } from "@/lib/directus";
+import { MarkdownAssetImage } from "./MarkdownAssetImage";
 
 /** Shared intrinsic sizing for article and About markdown. */
 export function markdownImageComponent(dimensions: Map<string, AssetDimensions>) {
@@ -10,7 +11,8 @@ export function markdownImageComponent(dimensions: Map<string, AssetDimensions>)
       ? src.match(/^\/api\/assets\/([a-zA-Z0-9-]+)$/) : null;
     const size = match ? dimensions.get(match[1]) : undefined;
     // Explicit draft-site previews keep CMS credentials on the server, outside image URLs.
-    return <img {...props} src={typeof src === "string" ? previewAssetUrl(src) : src} alt={alt ?? ""}
+    // Only the loading presentation crosses the client boundary; CMS URL resolution stays here.
+    return <MarkdownAssetImage {...props} src={typeof src === "string" ? previewAssetUrl(src) : src} alt={alt ?? ""}
       width={size?.width ?? props.width} height={size?.height ?? props.height}
       loading="lazy" decoding="async" />;
   };

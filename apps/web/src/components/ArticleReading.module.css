@@ -1,0 +1,100 @@
+.toc {
+  /* Positioning context for the sliding indicator. */
+  position: relative;
+}
+
+.toc a {
+  position: relative;
+  z-index: 1;
+  /* Emphasis follows the sliding indicator: ArticleToc sets --toc-on (0..1) on the entries
+     it covers, so the text brightens and dims with the block instead of switching. */
+  color: color-mix(in srgb, var(--text) calc(var(--toc-on, 0) * 100%), var(--text-secondary));
+  transition: background var(--motion-control-duration) var(--motion-ease);
+}
+
+/* One marker for the current entry. ArticleToc moves it on every scroll frame by transform
+   on its own compositor layer: it rests on the current entry and slides to the next one in
+   step with scrolling (no timed transition); size is written only when wrapped titles change
+   it. Absolutely positioned and childless, so it never re-lays out the list. Uses the TOC's
+   own blue because the default site accent is a neutral grey that reads weakly here. */
+.indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent-2-soft);
+  box-shadow: inset 2px 0 0 var(--accent-2);
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform;
+  transition: opacity var(--motion-control-duration) var(--motion-ease);
+}
+
+.indicator[data-visible="true"] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .indicator {
+    transition-duration: var(--motion-reduced-duration);
+  }
+}
+
+.progress {
+  display: none;
+}
+
+@supports (animation-timeline: view()) and (timeline-scope: --article-reading) and (animation-range: contain 0% entry-crossing 100%) {
+  .scope {
+    timeline-scope: --article-reading;
+  }
+
+  .body {
+    view-timeline: --article-reading block;
+    /* Match the existing heading scroll margin and the desktop sticky header. */
+    view-timeline-inset: 92px 0;
+  }
+
+  .progress {
+    position: fixed;
+    inset: 0 0 auto;
+    z-index: 51;
+    display: block;
+    height: 2px;
+    background: var(--accent-readable);
+    pointer-events: none;
+    transform: scaleX(0);
+    transform-origin: left center;
+    animation: reading-progress auto linear both;
+    animation-timeline: --article-reading;
+    /* Long articles: top reaches the reading line -> bottom becomes visible.
+       Short articles: both endpoints coincide as the whole article becomes visible.
+       The footer, cover, title and TOC are never counted as reading distance. */
+    animation-range: contain 0% entry-crossing 100%;
+  }
+}
+
+@keyframes reading-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+@media (max-width: 640px) {
+  .body {
+    view-timeline-inset: 16px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress {
+    /* Section colour still gives orientation without a continuously moving line. */
+    display: none;
+  }
+}
+
+@media print {
+  .progress {
+    display: none;
+  }
+}

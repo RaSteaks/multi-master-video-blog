@@ -42,6 +42,20 @@ Protected write endpoints use separate tokens:
 
 Keep both tokens in `apps/api/.env`; never expose them through `NEXT_PUBLIC_*`. The trailing slash in `proxy_pass http://127.0.0.1:8060/;` is required so external `/api/articles` reaches the internal `/articles` route.
 
+For author login behind HTTPS, set `TRUST_PROXY=true` in the private API's
+environment and copy both forwarding headers into the actual `/api/` location:
+
+```nginx
+proxy_set_header X-Forwarded-Host $http_host;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+`Host $host` alone loses a non-default public port such as `:8443`, making
+same-origin author login fail with HTTP 403. Keep the port; do not disable origin
+validation. After changing the server's actual config, run `nginx.exe -t` and,
+only if it succeeds, `nginx.exe -s reload` from the Nginx installation directory.
+Updating this repository's example does not update the active server config.
+
 Do not add a static `/media/` alias or a separate `.m3u8` location: those would
 bypass the application's private-path and symlink checks. See
 [`docs/deployment.md`](../../docs/deployment.md#security-update-rollout) for private
