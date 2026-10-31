@@ -155,6 +155,11 @@ corners and inset preview chips use 4px corners.
   route wipes 1200 ms, and reduced-motion fades 100 ms. These are role budgets rather than mandatory
   effects on every element. Keep the reference-room identity; media comparison
   surfaces must not receive decorative colour, luminance or blur changes.
+  `PageTransition` keeps the native snapshot wait bounded (180ms, 450ms toward
+  home). Slow or rejected snapshots hand off to a live veil/divider wipe when real
+  content arrives, using the same direction, line and timing tokens. It never
+  clips/transforms the page subtree; a new navigation or history traversal cancels
+  prior effects. Reduced motion remains unanimated.
   `panel-motion.ts` reads the runtime tokens for live content transitions and
   interruption cleanup. Appearance category controls remain usable immediately;
   local transitions do not take document snapshots or compete with route motion.

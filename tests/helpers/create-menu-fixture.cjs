@@ -11,7 +11,7 @@ const root = path.resolve(__dirname, "../..");
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Real Next rewrites/API with a disposable CMS, ports and media tree. */
-async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 18062, webPort = 13002 } = {}) {
+async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 18062, webPort = 13002, production = false } = {}) {
   const output = path.join(root, "test-results", name);
   const cmsUrl = `http://127.0.0.1:${cmsPort}`;
   const apiUrl = `http://127.0.0.1:${apiPort}`;
@@ -158,12 +158,18 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
   try {
     await listen(cms, cmsPort);
     await restartApi();
-    start("web", ["node_modules/next/dist/bin/next", "dev", "--webpack", "-H", "127.0.0.1", "-p", String(webPort), "apps/web"], {
+    const webEnv = {
       NEXT_DIST_DIR: `../../test-results/${name}/next`, API_INTERNAL_URL: apiUrl,
       NEXT_TSCONFIG_PATH: `../../test-results/${name}/tsconfig.json`,
       DIRECTUS_URL: cmsUrl, NEXT_PUBLIC_DIRECTUS_URL: cmsUrl,
       DIRECTUS_EMAIL: "", DIRECTUS_PASSWORD: "", CMS_RUNTIME_ONLY: "true", RESOURCE_PROFILE: "low-2gb",
-    });
+    };
+    if (production) {
+      const build = start("build", [require.resolve("next/dist/bin/next"), "build", "apps/web"], webEnv);
+      const code = await new Promise(resolve => build.once("exit", resolve));
+      if (code !== 0) throw new Error(`Production fixture build failed (${code}); see ${path.join(output, "build.log")}`);
+    }
+    start("web", ["node_modules/next/dist/bin/next", ...(production ? ["start"] : ["dev", "--webpack"]), "-H", "127.0.0.1", "-p", String(webPort), "apps/web"], webEnv);
     await ready(`${webUrl}/albums`);
     // Compile navigation targets before opening a browser so dev HMR does not
     // interrupt the workflow while an unrelated optional viewer bundle builds.

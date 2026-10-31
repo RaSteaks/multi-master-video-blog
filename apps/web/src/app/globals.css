@@ -638,6 +638,37 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
   content: "";
 }
 
+/* Slow routes release the native snapshot budget instead of freezing the old
+   page. Once real content arrives, reveal it through the existing veil with
+   the same divider geometry, direction and duration. No page subtree is clipped. */
+.route-veil[data-wipe-direction] {
+  opacity: 1;
+  animation: route-veil-wipe var(--motion-wipe-duration) var(--motion-wipe-ease) both;
+}
+.route-veil[data-wipe-direction="back"] { animation-name: route-veil-wipe-back; }
+.route-wipe-line-fallback {
+  opacity: 0;
+  view-transition-name: none;
+  transform: skewX(calc(-1 * var(--wipe-slant)));
+  transform-origin: 50% calc(50vh - var(--wipe-top, 0px));
+}
+.route-wipe-line-fallback[data-wipe-direction] {
+  opacity: 1;
+  animation: vt-wipe-line var(--motion-wipe-duration) var(--motion-wipe-ease) both;
+}
+.route-wipe-line-fallback[data-wipe-direction="back"] {
+  transform: skewX(var(--wipe-slant));
+  animation-name: vt-wipe-line-back;
+}
+@keyframes route-veil-wipe {
+  from { clip-path: polygon(0 0, 100% 0, 100% 100%, calc(-2 * var(--wipe-run)) 100%); }
+  to { clip-path: polygon(calc(100% + 2 * var(--wipe-run)) 0, 100% 0, 100% 100%, 100% 100%); }
+}
+@keyframes route-veil-wipe-back {
+  from { clip-path: polygon(0 0, 100% 0, calc(100% + 2 * var(--wipe-run)) 100%, 0 100%); }
+  to { clip-path: polygon(0 0, calc(-2 * var(--wipe-run)) 0, 0 100%, 0 100%); }
+}
+
 /* Shared cover/title morph ("Morph"-style): the group interpolates position
    and size between the card and the detail page. It lasts as long as the
    wipe, so the cover does not settle over the old page before the divider
@@ -656,6 +687,10 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .route-veil[data-wipe-direction], .route-wipe-line-fallback[data-wipe-direction] {
+    animation: none;
+    opacity: 0;
+  }
   ::view-transition-group(*),
   ::view-transition-old(*),
   ::view-transition-new(*) {

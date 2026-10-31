@@ -1,8 +1,8 @@
 /**
  * What a view-transition navigation does once its wait ends:
  *   shared   content and every shared element it morphs are ready — full transition
- *   content  content is ready but the cover is not — plain cross-fade, cover loads on its own
- *   skip     still a skeleton or not yet committed — skip, the veil plays when content arrives
+ *   content  content is ready but the cover is not — wipe only, cover loads on its own
+ *   skip     still loading — release native snapshots; a live veil/divider wipe follows content
  */
 export type RouteReadiness = "shared" | "content" | "skip";
 
