@@ -19,6 +19,8 @@ export function ProjectPreview({ project, active, auto, coverOverride }: {
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
+    // Read once now: ResizeObserver stays silent while a route wipe pauses rendering.
+    setScale(element.clientWidth / 1280);
     const observer = new ResizeObserver(([entry]) => setScale(entry.contentRect.width / 1280));
     observer.observe(element);
     return () => observer.disconnect();
@@ -29,7 +31,9 @@ export function ProjectPreview({ project, active, auto, coverOverride }: {
     const timer = setTimeout(() => setExpired(true), 12_000);
     return () => clearTimeout(timer);
   }, [allowed, src]);
-  return <div ref={ref} className={styles.preview}>
+  // With nothing else to show, the route wipe gives this frame a short head start.
+  const pending = auto && !cover && project.preview_enabled && !loaded && !expired;
+  return <div ref={ref} className={styles.preview} data-media-pending={pending ? "" : undefined}>
     {cover ? <AuthenticatedAssetImage src={cover} token={project.published ? undefined : ""} alt="" loading="lazy" />
       : <div className={styles.placeholder} data-waiting={auto && project.preview_enabled && !expired ? "" : undefined} aria-hidden="true"><span>◇</span></div>}
     {allowed && scale > 0 && (!expired || loaded) ? <div inert aria-hidden="true" className={styles.previewFrame}

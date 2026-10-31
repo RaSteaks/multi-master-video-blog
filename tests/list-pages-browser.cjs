@@ -29,8 +29,11 @@ async function main() {
   const fixture = await startFixture({ name: "list-pages", cmsPort: 18071, apiPort: 18076, webPort: 13011 });
   const pass = name => console.log(`PASS ${name}`);
   const exhibit = http.createServer((req, res) => {
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end("<!doctype html><title>exhibit</title><body style='background:#123'>exhibit</body>");
+    const delay = Number(new URL(req.url, "http://exhibit").searchParams.get("delay")) || 0;
+    setTimeout(() => {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end("<!doctype html><title>exhibit</title><body style='background:#123'>exhibit</body>");
+    }, delay);
   });
   let browser;
   const errors = [];
@@ -73,17 +76,22 @@ async function main() {
     await page.getByRole("button", { name: "查看光线实验", exact: true }).waitFor();
     pass("the liquid background is one instance that survives section changes");
 
-    await nav.getByRole("link", { name: "相簿", exact: true }).click();
-    await page.waitForURL(`${fixture.url}/albums`);
-    await page.waitForFunction(() => !document.documentElement.dataset.vtDirection);
-    await nav.getByRole("link", { name: "实验室", exact: true }).click();
-    await page.waitForFunction(() => document.documentElement.dataset.vtDirection && document.querySelector("[data-preview-id]"));
-    await page.waitForTimeout(500);
-    const during = await page.evaluate(() => ({ wiping: Boolean(document.documentElement.dataset.vtDirection), frames: document.querySelectorAll("main iframe").length }));
-    assert.deepEqual(during, { wiping: true, frames: 0 });
-    await page.waitForFunction(() => !document.documentElement.dataset.vtDirection);
-    await page.locator("main iframe").waitFor();
-    pass("a preview waits for the route wipe to finish before it loads");
+    // Polled by timer: requestAnimationFrame stops while the wipe holds for the page.
+    const wipeStarted = () => page.waitForFunction(() => document.getAnimations().some(animation => /^vt-wipe-reveal/.test(animation.animationName)), null, { polling: 20 });
+    const frameState = () => page.evaluate(() => ({ frames: document.querySelectorAll("main iframe").length, pending: document.querySelectorAll("main [data-media-pending]").length }));
+    const arrive = async delay => {
+      fixture.collections.external_projects[0].url = `http://127.0.0.1:18078/site?delay=${delay}`;
+      await page.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
+      await nav.getByRole("link", { name: "实验室", exact: true }).click();
+      await wipeStarted();
+      return frameState();
+    };
+    assert.deepEqual(await arrive(100), { frames: 1, pending: 0 });
+    pass("a coverless preview that loads quickly is already on the card when the wipe starts");
+    assert.deepEqual(await arrive(1500), { frames: 1, pending: 1 });
+    await page.waitForFunction(() => document.querySelector("main iframe") && !document.querySelector("main [data-media-pending]"));
+    assert.equal(await page.evaluate(() => Boolean(document.documentElement.dataset.vtDirection)), true, "The frame should fade in under the wipe.");
+    pass("a slow preview starts on arrival, does not block the wipe and fades in during it");
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

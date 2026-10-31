@@ -88,8 +88,9 @@ const VT_DECISION_MS = 180;
 // it may hold the old page a little longer for the wipe to play. Production
 // normally has it prefetched and cached, and does not use this margin.
 const HOME_DECISION_MS = 450;
-// A cold image may hold the wipe this long past content arriving, and no longer:
-// the old page is frozen meanwhile, and the image can still finish behind the line.
+// A cold image or coverless preview may hold the wipe this long past content
+// arriving, and no longer: the old page is frozen meanwhile, and either can still
+// finish behind the line.
 const MEDIA_READY_MS = 300;
 
 export function PageTransition({ children }: { children: ReactNode }) {
@@ -524,6 +525,11 @@ function waitForRouteReady(
       });
     }
 
+    function framesPending() {
+      return Array.from(main?.querySelectorAll("[data-media-pending]") ?? [])
+        .some((frame) => frame.getBoundingClientRect().top < window.innerHeight);
+    }
+
     function check() {
       if (settled) return;
       if (!isCurrent()) return finish("skip");
@@ -537,7 +543,7 @@ function waitForRouteReady(
         committed,
         loading,
         coverReady,
-        mediaReady: mediaPending === 0 || outOfTime
+        mediaReady: (mediaPending === 0 && !framesPending()) || outOfTime
           || (mediaWatchedAt !== null && now - mediaWatchedAt >= MEDIA_READY_MS),
         // Set only once content is ready, so it can only yield "content".
         expired: coverUnavailable || outOfTime,

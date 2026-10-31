@@ -68,12 +68,7 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     function update() {
       clearTimeout(settle);
       if (blocked || reduced.matches || document.hidden) { setLive([]); return; }
-      settle = setTimeout(commit, PREVIEW_SETTLE_MS);
-    }
-    // A frame arriving under the route wipe would pop in behind the divider.
-    function commit() {
-      if (document.documentElement.dataset.vtDirection) { settle = setTimeout(commit, PREVIEW_SETTLE_MS); return; }
-      setLive([...visible]);
+      settle = setTimeout(() => setLive([...visible]), PREVIEW_SETTLE_MS);
     }
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
@@ -82,9 +77,15 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
       }
       update();
     });
-    galleryRef.current?.querySelectorAll("[data-preview-id]").forEach(card => observer.observe(card));
+    galleryRef.current?.querySelectorAll<HTMLElement>("[data-preview-id]").forEach(card => {
+      observer.observe(card);
+      const box = card.getBoundingClientRect();
+      if (box.bottom > 0 && box.top < innerHeight) visible.add(Number(card.dataset.previewId));
+    });
     document.addEventListener("visibilitychange", update); reduced.addEventListener("change", update);
-    update();
+    // Rendering is paused while a route wipe waits for this page, which silences
+    // observers. Start on-screen frames now; they are the page's first impression.
+    setLive(blocked || reduced.matches || document.hidden ? [] : [...visible]);
     return () => {
       clearTimeout(settle); observer.disconnect();
       document.removeEventListener("visibilitychange", update); reduced.removeEventListener("change", update);
