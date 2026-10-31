@@ -1,29 +1,32 @@
 /**
  * What a view-transition navigation does once its wait ends:
- *   shared   content and every shared element it morphs are ready — full transition
+ *   shared   content, first-screen media and every shared element it morphs are ready — full transition
  *   content  content is ready but the cover is not — wipe only, cover loads on its own
  *   skip     still loading — release native snapshots and switch without a delayed decorative wipe
  */
 export type RouteReadiness = "shared" | "content" | "skip";
 
 /**
- * `coverReady` is null when the navigation morphs no cover. Returns null while
- * it is still worth waiting: before the budget expires, only a fully ready
- * destination ends the wait early.
+ * `coverReady` is null when the navigation morphs no cover. `mediaReady` also
+ * turns true when its own short budget runs out, so a slow image delays the wipe
+ * but never cancels it. Returns null while it is still worth waiting: before the
+ * budget expires, only a fully ready destination ends the wait early.
  */
 export function routeReadiness({
   committed,
   loading,
   coverReady,
+  mediaReady,
   expired,
 }: {
   committed: boolean;
   loading: boolean;
   coverReady: boolean | null;
+  mediaReady: boolean;
   expired: boolean;
 }): RouteReadiness | null {
   const contentReady = committed && !loading;
-  if (contentReady && coverReady !== false) return "shared";
+  if (contentReady && coverReady !== false && mediaReady) return "shared";
   if (!expired) return null;
   return contentReady ? "content" : "skip";
 }

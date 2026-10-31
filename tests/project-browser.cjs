@@ -96,7 +96,7 @@ async function main() {
     const tick = await frame.locator("#ticks").innerText();
     await frame.waitForFunction(value => document.getElementById("ticks").textContent !== value, tick);
     await page.screenshot({ path: path.join(fixture.output, "preview-desktop.png") });
-    assert.equal((await page.locator('ol[aria-label="网站作品"]').innerText()).replace(/\s+/g, " "), "黑洞演示 光线与空间的视觉实验");
+    assert.equal((await page.locator('ol[aria-label="网站作品"]').innerText()).replace(/\s+/g, " "), "站内查看 黑洞演示 光线与空间的视觉实验");
     const scroll = await page.evaluate(() => scrollY);
     await card.click();
     const viewer = page.getByRole("dialog", { name: "黑洞演示", exact: true });

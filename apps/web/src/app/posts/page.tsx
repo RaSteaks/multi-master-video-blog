@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { ListHeader } from "@/components/ListHeader";
+import { MediaCard } from "@/components/MediaCard";
 import { assetUrl, getPosts } from "@/lib/directus";
 
 export default async function PostsPage() {
@@ -6,12 +8,7 @@ export default async function PostsPage() {
 
   return (
     <main className="shell page-stack glass-cards">
-      <header className="page-header list-page-header">
-        <div>
-          <p className="eyebrow">记录探索技术的路程</p>
-          <h1>文章</h1>
-        </div>
-      </header>
+      <ListHeader eyebrow="记录探索技术的路程" title="文章" />
 
       {posts.length > 0 ? (
         <div className="content-grid">
@@ -25,26 +22,27 @@ export default async function PostsPage() {
                 key={post.id}
                 aria-label={`${post.title} — ${post.category || "Article"}`}
               >
-                {cover ? (
-                  <img
-                    data-vt="cover"
-                    alt={`Cover image for ${post.title}`}
-                    src={cover}
-                    width={960}
-                    height={540}
-                    loading={index < 3 ? "eager" : "lazy"}
-                    fetchPriority={index === 0 ? "high" : "auto"}
-                    decoding="async"
-                  />
-                ) : (
-                  <div className="media-placeholder" aria-hidden="true">
-                    文章
-                  </div>
-                )}
-                <div>
-                  <p className="meta-line">{post.category || "Article"}</p>
-                  <h2 data-vt="title">{post.title}</h2>
-                </div>
+                <MediaCard
+                  morphTitle
+                  meta={post.category || "Article"}
+                  title={post.title}
+                  media={cover ? (
+                    <img
+                      data-vt="cover"
+                      alt={`Cover image for ${post.title}`}
+                      src={cover}
+                      width={960}
+                      height={540}
+                      loading={index < 3 ? "eager" : "lazy"}
+                      fetchPriority={index === 0 ? "high" : "auto"}
+                      decoding="async"
+                    />
+                  ) : (
+                    <div className="media-placeholder" aria-hidden="true">
+                      文章
+                    </div>
+                  )}
+                />
               </Link>
             );
           })}

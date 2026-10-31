@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AlbumsToolbar } from "@/components/AlbumsToolbar";
+import { ListHeader } from "@/components/ListHeader";
+import { MediaCard } from "@/components/MediaCard";
 import { assetUrl, getAlbums } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
 
@@ -19,11 +21,7 @@ export default async function AlbumsPage({
 
   return (
     <main className="shell page-stack album-index">
-      <header className="album-page-header">
-        <div className="page-header">
-          <p className="eyebrow">Darkroom contact sheets</p>
-          <h1>相簿</h1>
-        </div>
+      <ListHeader eyebrow="Darkroom contact sheets" title="相簿">
         <AlbumsToolbar
           initialDialog={
             dialog === "upload" || dialog === "create" || dialog === "film" ? dialog : null
@@ -36,10 +34,10 @@ export default async function AlbumsPage({
             published: true,
           }))}
         />
-      </header>
+      </ListHeader>
 
       {albums.length ? (
-        <ol className="album-contact-sheet">
+        <ol className="content-grid content-grid--wide">
           {albums.map((album, index) => {
             const photos = album.photos ?? [];
             const coverId =
@@ -52,52 +50,42 @@ export default async function AlbumsPage({
             return (
               <li key={album.id}>
                 <Link
-                  className="album-card"
+                  className="content-card content-card--film"
                   href={`/albums/${album.slug}`}
                   aria-label={`打开相簿“${album.title}”，共 ${photoCount} 张照片`}
                 >
-                  <div className="album-card-frame">
-                    <span className="album-frame-index" aria-hidden="true">
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
-                    {cover ? (
-                      <img
-                        src={cover}
-                        alt=""
-                        width={960}
-                        height={640}
-                        loading={index < 2 ? "eager" : "lazy"}
-                        fetchPriority={index === 0 ? "high" : "auto"}
-                        decoding="async"
-                      />
-                    ) : (
-                      <div className="album-card-placeholder" aria-hidden="true">
-                        <span>等待第一张底片</span>
+                  <MediaCard
+                    meta={`${photoCount} 张照片${hdrCount ? ` · ${hdrCount} 组 HDR` : " · SDR"}`}
+                    title={album.title}
+                    description={album.description || "尚未填写相簿说明。"}
+                    media={
+                      <div className="album-card-frame">
+                        <span className="album-frame-index" aria-hidden="true">
+                          {String(index + 1).padStart(2, "0")}
+                        </span>
+                        {cover ? (
+                          <img
+                            src={cover}
+                            alt=""
+                            width={960}
+                            height={640}
+                            loading={index < 2 ? "eager" : "lazy"}
+                            fetchPriority={index === 0 ? "high" : "auto"}
+                            decoding="async"
+                          />
+                        ) : (
+                          <div className="album-card-placeholder" aria-hidden="true">
+                            <span>等待第一张底片</span>
+                          </div>
+                        )}
+                        {hdrCount ? (
+                          <span className="album-hdr-badge">
+                            <span className="album-hdr-glow">HDR</span> <b>{hdrCount}</b>
+                          </span>
+                        ) : null}
                       </div>
-                    )}
-                    {hdrCount ? (
-                      <span className="album-hdr-badge">
-                        <span className="album-hdr-glow">HDR</span> <b>{hdrCount}</b>
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="album-card-copy">
-                    <div>
-                      <p className="album-card-kicker">
-                        {photoCount} 张照片
-                        {hdrCount ? ` · ${hdrCount} 组 HDR` : " · SDR"}
-                      </p>
-                      <h2>{album.title}</h2>
-                    </div>
-                    <span className="album-card-arrow" aria-hidden="true">
-                      ↗
-                    </span>
-                    {album.description ? (
-                      <p>{album.description}</p>
-                    ) : (
-                      <p className="album-card-empty-copy">尚未填写相簿说明。</p>
-                    )}
-                  </div>
+                    }
+                  />
                 </Link>
               </li>
             );

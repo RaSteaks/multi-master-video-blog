@@ -47,7 +47,8 @@ const VEIL_EASING = "cubic-bezier(.22, 1, .36, 1)";
  * the capture phase and routed through it instead (see onClickCapture). Each
  * navigation gets one enter animation, chosen when its wait ends (see
  * routeReadiness):
- *   - content and the decoded cover are on screen: a divider wipes the new
+ *   - content and the decoded cover are on screen (first-screen images get a
+ *     short head start, see MEDIA_READY_MS): a divider wipes the new
  *     page over the old one, like a comparison slider between two masters
  *     (direction follows the nav order, see wipeDirection), and elements
  *     marked `data-vt` (cover, title) morph between the clicked card and the
@@ -87,6 +88,9 @@ const VT_DECISION_MS = 180;
 // it may hold the old page a little longer for the wipe to play. Production
 // normally has it prefetched and cached, and does not use this margin.
 const HOME_DECISION_MS = 450;
+// A cold image may hold the wipe this long past content arriving, and no longer:
+// the old page is frozen meanwhile, and the image can still finish behind the line.
+const MEDIA_READY_MS = 300;
 
 export function PageTransition({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "/";
@@ -444,9 +448,9 @@ function clearSnapshotStyles() {
 }
 
 // Waits up to budgetMs for the new route's real content (and, when the
-// navigation morphs a cover, its decoded image) and reports what the
-// transition should do (see routeReadiness). A superseded navigation stops
-// waiting at once.
+// navigation morphs a cover, its decoded image) and briefly for its first-screen
+// images, then reports what the transition should do (see routeReadiness). A
+// superseded navigation stops waiting at once.
 function waitForRouteReady(
   fromPathname: string,
   pathnameRef: { current: string },
@@ -461,6 +465,8 @@ function waitForRouteReady(
     let watchedCover: HTMLImageElement | null = null;
     // The cover can never become ready: stop waiting for it.
     let coverUnavailable = false;
+    let mediaWatchedAt: number | null = null;
+    let mediaPending = 0;
     let timer: number | undefined;
     let observer: MutationObserver | undefined;
     let settled = false;
@@ -501,18 +507,40 @@ function waitForRouteReady(
       );
     }
 
+    // Images on the first screen decode before the divider reveals them, so
+    // none pops in behind the line. Rendering is paused during this wait, which
+    // would keep native lazy loading from ever starting them.
+    function watchMedia() {
+      mediaWatchedAt = performance.now();
+      const settle = () => {
+        mediaPending--;
+        check();
+      };
+      main?.querySelectorAll("img").forEach((image) => {
+        if (image.getBoundingClientRect().top >= window.innerHeight) return;
+        image.loading = "eager";
+        mediaPending++;
+        image.decode().then(settle, settle);
+      });
+    }
+
     function check() {
       if (settled) return;
       if (!isCurrent()) return finish("skip");
       const committed = pathnameRef.current !== fromPathname;
       const loading = committed && Boolean(main?.querySelector(LOADING_SELECTOR));
       if (committed && !loading && coverReady === false) watchCover();
+      if (committed && !loading && mediaWatchedAt === null) watchMedia();
+      const now = performance.now();
+      const outOfTime = now - startedAt >= budgetMs;
       const readiness = routeReadiness({
         committed,
         loading,
         coverReady,
+        mediaReady: mediaPending === 0 || outOfTime
+          || (mediaWatchedAt !== null && now - mediaWatchedAt >= MEDIA_READY_MS),
         // Set only once content is ready, so it can only yield "content".
-        expired: coverUnavailable || performance.now() - startedAt >= budgetMs,
+        expired: coverUnavailable || outOfTime,
       });
       if (readiness) finish(readiness);
     }

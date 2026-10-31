@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { ListHeader } from "@/components/ListHeader";
+import { MediaCard } from "@/components/MediaCard";
 import { assetUrl, getVideoProjects } from "@/lib/directus";
 
 export default async function VideosPage() {
@@ -6,12 +8,7 @@ export default async function VideosPage() {
 
   return (
     <main className="shell page-stack">
-      <header className="page-header list-page-header">
-        <div>
-          <p className="eyebrow">视频库</p>
-          <h1>视频与作品集</h1>
-        </div>
-      </header>
+      <ListHeader eyebrow="视频库" title="视频与作品集" />
 
       {videos.length > 0 ? (
         <div className="content-grid">
@@ -26,30 +23,28 @@ export default async function VideosPage() {
                 key={video.id}
                 aria-label={`${video.title} — ${masterCount} master${masterCount !== 1 ? "s" : ""}`}
               >
-                {cover ? (
-                  <img
-                    data-vt="cover"
-                    alt={`Cover image for ${video.title}`}
-                    src={cover}
-                    width={960}
-                    height={540}
-                    loading={index < 3 ? "eager" : "lazy"}
-                    fetchPriority={index === 0 ? "high" : "auto"}
-                    decoding="async"
-                  />
-                ) : (
-                  <div className="media-placeholder" aria-hidden="true">
-                    视频
-                  </div>
-                )}
-                <div>
-                  <p className="meta-line">
-                    {video.category || "Video"} · {masterCount} master
-                    {masterCount !== 1 ? "s" : ""}
-                  </p>
-                  <h2 data-vt="title">{video.title}</h2>
-                  <p>{video.description || "No description yet."}</p>
-                </div>
+                <MediaCard
+                  morphTitle
+                  meta={`${video.category || "Video"} · ${masterCount} master${masterCount !== 1 ? "s" : ""}`}
+                  title={video.title}
+                  description={video.description || "No description yet."}
+                  media={cover ? (
+                    <img
+                      data-vt="cover"
+                      alt={`Cover image for ${video.title}`}
+                      src={cover}
+                      width={960}
+                      height={540}
+                      loading={index < 3 ? "eager" : "lazy"}
+                      fetchPriority={index === 0 ? "high" : "auto"}
+                      decoding="async"
+                    />
+                  ) : (
+                    <div className="media-placeholder" aria-hidden="true">
+                      视频
+                    </div>
+                  )}
+                />
               </Link>
             );
           })}

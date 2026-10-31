@@ -73,7 +73,8 @@ placeholder. Preview frames are inert and pointer-transparent, rendered at a
 1280×800 desktop viewport and scaled into a 16:10 picture. All on-screen previews
 run at once, so a heavy site should set a lighter `preview_url`. Leaving the
 viewport, hiding the page or opening a dialog unmounts the frames rather than
-pretending a hidden frame is paused.
+pretending a hidden frame is paused. Frames also wait for a route wipe to finish,
+so a card without a cover is an empty frame during the wipe.
 
 Clicking an iframe-mode card opens a native modal filling the browser content
 viewport. The blog owns the fixed **返回实验室**, title and **独立打开** toolbar. The

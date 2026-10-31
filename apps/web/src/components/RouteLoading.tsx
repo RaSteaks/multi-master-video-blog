@@ -1,4 +1,4 @@
-type RouteLoadingVariant = "grid" | "article" | "player" | "form";
+type RouteLoadingVariant = "grid" | "grid-wide" | "article" | "player" | "form";
 
 export function RouteLoading({ variant }: { variant: RouteLoadingVariant }) {
   return (
@@ -11,12 +11,13 @@ export function RouteLoading({ variant }: { variant: RouteLoadingVariant }) {
       <header className="page-header route-loading-header">
         <span className="skeleton skeleton-line skeleton-line-short" />
         <span className="skeleton skeleton-title" />
-        {variant !== "grid" ? (
+        {variant !== "grid" && variant !== "grid-wide" ? (
           <span className="skeleton skeleton-line skeleton-line-wide" />
         ) : null}
       </header>
 
       {variant === "grid" ? <GridSkeleton /> : null}
+      {variant === "grid-wide" ? <GridSkeleton wide /> : null}
       {variant === "article" ? <ArticleSkeleton /> : null}
       {variant === "player" ? <PlayerSkeleton /> : null}
       {variant === "form" ? <FormSkeleton /> : null}
@@ -24,13 +25,13 @@ export function RouteLoading({ variant }: { variant: RouteLoadingVariant }) {
   );
 }
 
-function GridSkeleton() {
+function GridSkeleton({ wide }: { wide?: boolean }) {
   return (
-    <div className="content-grid" aria-hidden="true">
+    <div className={wide ? "content-grid content-grid--wide" : "content-grid"} aria-hidden="true">
       {Array.from({ length: 6 }, (_, index) => (
         <div className="content-card route-loading-card" key={index}>
           <span className="skeleton skeleton-media" />
-          <div>
+          <div className="content-card-copy">
             <span className="skeleton skeleton-line skeleton-line-short" />
             <span className="skeleton skeleton-line skeleton-line-medium" />
           </div>

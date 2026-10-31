@@ -165,6 +165,14 @@ corners and inset preview chips use 4px corners.
   The root snapshot reveal keeps the header region visible from the first frame;
   its navigation pill settles on the target before capture to avoid a frozen
   intermediate position. Ordinary navigation retains the pill slide.
+  List sections hold still under the wipe: `ListHeader` gives videos, posts,
+  albums and the laboratory one title position and content start, and
+  `.content-grid` gives them six columns and one gutter (standard cards span two,
+  wide cards three). `MediaCard` fills every card, so a contact sheet differs from
+  a laboratory card only by the sprocket rails beside its picture. The liquid
+  background is one root-level instance, so navigation never restarts it.
+  First-screen images get up to 300ms to decode before the wipe starts, and
+  laboratory previews wait for it to finish.
   The divider is painted directly on its native image-pair layer (not a new-only
   element image), and both wipe animations share one start time. Pixel checks
   verify old/new visibility, the header, and the divider's alignment to the reveal.

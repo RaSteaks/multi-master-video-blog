@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { ArticleEditor } from "@/components/ArticleEditor";
-import { LiquidBackground } from "@/components/LiquidBackground";
 
 export const metadata: Metadata = {
   title: "写文章",
@@ -8,10 +7,5 @@ export const metadata: Metadata = {
 };
 
 export default function WritePage() {
-  return (
-    <>
-      <LiquidBackground />
-      <ArticleEditor />
-    </>
-  );
+  return <ArticleEditor />;
 }

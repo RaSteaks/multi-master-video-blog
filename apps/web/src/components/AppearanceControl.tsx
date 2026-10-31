@@ -35,7 +35,6 @@ import {
 } from "@/lib/theme-color";
 import { HsvPicker } from "./HsvPicker";
 import { LiquidSettings, useLiquidPreferences } from "./LiquidSettings";
-import { LiquidBackground } from "./LiquidBackground";
 
 type BgMode = "image" | "liquid";
 type ColorEditor = "presets" | "custom";
@@ -48,7 +47,7 @@ const MIN_BLUR = 0;
 const MAX_BLUR = 40;
 const COLLAPSED_COLOR_CHECKER_COUNT = 12;
 
-/** Sections that ship their own liquid background layer. */
+/** Sections that default to the liquid background. */
 const liquidSections = new Set(["home", "videos", "posts", "upload"]);
 
 function readLocal(key: string) {
@@ -246,6 +245,10 @@ export function AppearanceControl({
   useEffect(() => {
     document.documentElement.dataset.bgMode = mode ?? "auto";
   }, [mode]);
+
+  useEffect(() => {
+    document.documentElement.toggleAttribute("data-liquid-everywhere", effectiveMode === "liquid");
+  }, [effectiveMode]);
 
   useEffect(() => {
     if (!hasUserBlur) return;
@@ -902,12 +905,6 @@ export function AppearanceControl({
         </div>
         </div>
       ) : null}
-
-      {mounted &&
-      effectiveMode === "liquid" &&
-      !liquidSections.has(section)
-        ? createPortal(<LiquidBackground />, document.body)
-        : null}
 
       {mounted && customImage
         ? createPortal(

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { LiquidBackground } from "@/components/LiquidBackground";
 import { UploadVideoForm } from "@/components/UploadVideoForm";
 
 export type Lang = "en" | "zh";
@@ -27,7 +26,6 @@ export function UploadPageClient({ initialProjectId, initialSessionId }: { initi
 
   return (
     <>
-      <LiquidBackground />
       <main className="shell page-stack upload-page">
       <div className="upload-page-intro">
         <header className="page-header upload-page-header">

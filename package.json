@@ -31,6 +31,7 @@
     "test:phase6-browser": "node tests/phase6-browser.cjs",
     "test:phase6-cache": "node tests/phase6-cache.cjs",
     "test:project-browser": "node tests/project-browser.cjs",
+    "test:list-pages-browser": "node tests/list-pages-browser.cjs",
     "test:external-projects": "node --test apps/api/test/external-projects.test.cjs",
     "start:web": "npm --workspace @multi-master-video-blog/web run start",
     "web:start": "node scripts/service-control.cjs web start",

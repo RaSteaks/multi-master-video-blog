@@ -1,11 +1,5 @@
-.heading { display: flex; justify-content: space-between; align-items: end; gap: 24px; padding-block: 18px 10px; }
-.heading h1 { font-size: clamp(2.2rem, 5vw, 3.8rem); line-height: 1.1; letter-spacing: -.04em; font-weight: 600; }
-.heading p { color: var(--text-secondary); margin-top: 16px; }
-.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 36px 28px; padding: 0; list-style: none; }
 .card { min-width: 0; position: relative; border: 1px solid var(--line-light); background: var(--surface); border-radius: var(--radius-lg); }
-.cardEntry { display: block; width: 100%; padding: 0; color: inherit; border: 0; border-radius: inherit; background: none; text-align: left; font: inherit; text-decoration: none; cursor: pointer; overflow: hidden; }
-.cardEntry:hover .cardCopy h2 { color: var(--accent-readable); }
-.cardEntry:focus-visible { outline: 2px solid var(--accent-readable); outline-offset: 5px; }
+.cardEntry { width: 100%; padding: 0; color: inherit; text-align: left; font: inherit; text-decoration: none; }
 .cardCopy { padding: 22px 24px 24px; }
 .cardCopy h2, .cardCopy h3 { margin: 0; font-size: 1.25rem; line-height: 1.35; font-weight: 600; overflow-wrap: anywhere; }
 .cardCopy p { margin-top: 8px; color: var(--text-secondary); line-height: 1.6; overflow-wrap: anywhere; white-space: pre-line; }
@@ -18,6 +12,8 @@
 .previewFrame { position: absolute; inset: 0; pointer-events: none; transition: opacity var(--motion-media-duration) var(--motion-ease); }
 .previewFrame iframe { display: block; border: 0; max-width: none; transform-origin: top left; pointer-events: none; background: var(--background); }
 .notice { min-height: 1.4em; margin: 0; color: var(--text-secondary); font-size: .9rem; }
+/* The live region stays mounted but must not open a row in the page grid until it speaks. */
+.notice:empty { position: absolute; }
 .note { color: var(--text-secondary); font-size: .875rem; line-height: 1.65; }
 .failure { padding: 24px; border: 1px solid var(--line-light); border-radius: var(--radius); background: var(--surface); }
 .failure p + p { margin-top: 8px; }
@@ -26,7 +22,7 @@
 .empty > span { font-size: 3.5rem; color: var(--muted); }
 .empty h2 { font-size: 1.4rem; }
 .empty p { color: var(--text-secondary); }
-.cardManagement { display: flex; align-items: center; justify-content: space-between; padding: 0 24px 18px; color: var(--text-secondary); font-size: .85rem; }
+.cardManagement { display: flex; align-items: center; justify-content: space-between; padding: 10px 4px 0; color: var(--text-secondary); font-size: .85rem; }
 .manageButton, .more, .failure button, .testActions button, .formFooter button, .viewerLoading button, .authNotice button, .textButton {
   display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 9px 16px;
   border: 1px solid var(--line-light); border-radius: var(--radius); background: var(--surface); color: var(--text);
@@ -72,10 +68,7 @@
 .viewerLoading button { pointer-events: auto; }
 .viewerHint { flex: 0 0 auto; margin: 0; padding: 5px 16px max(5px, env(safe-area-inset-bottom)); text-align: center; color: var(--text-secondary); font-size: .75rem; background: var(--surface); }
 @media (max-width: 700px) {
-  .heading { align-items: start; gap: 12px; }
-  .heading h1 { font-size: 2.4rem; }
   .manageButton { padding-inline: 10px; white-space: nowrap; }
-  .grid { grid-template-columns: 1fr; gap: 24px; }
   .cardCopy { padding: 18px 20px 20px; }
   .editor { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
   .editorColumns { grid-template-columns: 1fr; gap: 24px; }

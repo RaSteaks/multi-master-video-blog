@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { requestAuthorSignIn, useAuthorDevice, useAuthorSession } from "@/lib/author-session";
 import { projectRequest, readProjectList, readSavedProject, type WebsiteProject } from "@/lib/external-projects";
 import { ActionMenu } from "./ActionMenu";
+import { ListHeader } from "./ListHeader";
+import { MediaCard } from "./MediaCard";
 import { ProjectEditor } from "./ProjectEditor";
 import { ProjectPreview } from "./ProjectPreview";
 import { ProjectViewer } from "./ProjectViewer";
@@ -66,7 +68,12 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     function update() {
       clearTimeout(settle);
       if (blocked || reduced.matches || document.hidden) { setLive([]); return; }
-      settle = setTimeout(() => setLive([...visible]), PREVIEW_SETTLE_MS);
+      settle = setTimeout(commit, PREVIEW_SETTLE_MS);
+    }
+    // A frame arriving under the route wipe would pop in behind the divider.
+    function commit() {
+      if (document.documentElement.dataset.vtDirection) { settle = setTimeout(commit, PREVIEW_SETTLE_MS); return; }
+      setLive([...visible]);
     }
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
@@ -120,10 +127,9 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
   }
 
   return <>
-    <header className={styles.heading}>
-      <div><h1>实验室</h1><p>我制作的一些网页与视觉实验。</p></div>
+    <ListHeader eyebrow="我制作的一些网页与视觉实验" title="实验室">
       {device ? <button type="button" className={styles.manageButton} aria-pressed={management} onClick={() => session.author ? setManaged(value => !value) : requestAuthorSignIn(() => setManaged(true))}>{management ? "返回公开展示" : "管理网站"}</button> : null}
-    </header>
+    </ListHeader>
     {management ? <p className={styles.note}>草稿仅作者可见。通过页头工具中的“添加网站”创建，编辑网站可调整排序。</p> : null}
     <p className={styles.notice} role="status">{notice}</p>
     {error || list.unavailable ? <div className={styles.failure} role="alert">
@@ -135,17 +141,17 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
       <span aria-hidden="true">◇</span><h2>{management ? "还没有网站项目" : "作品整理中"}</h2>
       <p>{session.author ? "从页头工具添加第一个网站。" : "新的网页实验将在这里展出。"}</p>
     </div> : null}
-    <ol ref={galleryRef} className={styles.grid} aria-label="网站作品">
-      {projects.map(project => <li key={project.id} id={`project-${project.id}`} className={styles.card}
+    <ol ref={galleryRef} className="content-grid content-grid--wide" aria-label="网站作品">
+      {projects.map(project => <li key={project.id} id={`project-${project.id}`}
         data-preview-id={project.preview_enabled ? project.id : undefined}>
-        {project.open_mode === "external" ? <a className={styles.cardEntry} href={project.url} target="_blank" rel="noopener noreferrer"
+        {project.open_mode === "external" ? <a className={`content-card ${styles.cardEntry}`} href={project.url} target="_blank" rel="noopener noreferrer"
           aria-label={`独立打开${project.title}（新标签页）`}>
-          <ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />
-          <div className={styles.cardCopy}><h2>{project.title}</h2>{project.description ? <p>{project.description}</p> : null}</div>
-        </a> : <button type="button" className={styles.cardEntry} aria-label={`查看${project.title}`}
+          <MediaCard meta="独立打开 ↗" title={project.title} description={project.description}
+            media={<ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />} />
+        </a> : <button type="button" className={`content-card ${styles.cardEntry}`} aria-label={`查看${project.title}`}
           onClick={event => { event.currentTarget.focus(); setViewing(project); }}>
-          <ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />
-          <div className={styles.cardCopy}><h2>{project.title}</h2>{project.description ? <p>{project.description}</p> : null}</div>
+          <MediaCard meta="站内查看" title={project.title} description={project.description}
+            media={<ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />} />
         </button>}
         {management ? <div className={styles.cardManagement}>
           <span>{project.published ? "已发布" : "草稿"}</span>

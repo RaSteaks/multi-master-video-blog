@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { liquidReadingScale, playbackLinkTime } from "./viewing";
+import { liquidReadingScale, liquidRouteActive, playbackLinkTime } from "./viewing";
 import { authorReturnPath } from "./author-navigation";
 
 describe("viewing and author navigation boundaries", () => {
@@ -15,5 +15,15 @@ describe("viewing and author navigation boundaries", () => {
     expect(authorReturnPath("/posts/../albums?dialog=upload#photos")).toBe("/albums?dialog=upload#photos");
     expect(authorReturnPath("/albums?dialog=upload#photos")).toBe("/albums?dialog=upload#photos");
     for (const next of [undefined, ["/albums"], "https://example.com", "//example.com", "/\\example.com", "/\n/example.com", "/.//evil.com", "/%2e//evil.com", "/a/..//evil.com"]) expect(authorReturnPath(next)).toBe("/");
+  });
+});
+
+describe("liquid background routes", () => {
+  it("runs on the sections painted over it, including their detail pages", () => {
+    for (const path of ["/", "/videos", "/posts/a", "/albums/b", "/project", "/write", "/upload"]) expect(liquidRouteActive(path)).toBe(true);
+  });
+
+  it("stays off elsewhere", () => {
+    for (const path of ["/about", "/studio", "/videosx"]) expect(liquidRouteActive(path)).toBe(false);
   });
 });

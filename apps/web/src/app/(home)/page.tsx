@@ -1,6 +1,5 @@
 import type { CSSProperties } from "react";
 import Link from "next/link";
-import { LiquidBackground } from "@/components/LiquidBackground";
 import { getCounts } from "@/lib/directus";
 import {
   homeLayout,
@@ -19,8 +18,6 @@ export default async function Home() {
 
   return (
     <>
-      <LiquidBackground />
-
       <main className="orbital-home" aria-label={siteConfig.home.profileName}>
         <div
           className="orbital-stage"

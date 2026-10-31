@@ -4,14 +4,18 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePathname } from "next/navigation";
 import { createLiquidFluidRenderer, type LiquidFluidController, type LiquidVariant } from "@/lib/liquid-fluid";
 import { LIQUID_PREFERENCES_EVENT, LIQUID_STORAGE_KEY, defaultLiquidPreferences, liquidPaletteFromSettings, resolveLiquidPreferences, type LiquidPreferences } from "@/lib/liquid-preferences";
-import { liquidReadingScale } from "@/lib/viewing";
+import { liquidReadingScale, liquidRouteActive } from "@/lib/viewing";
 
 function readStoredPreferences() {
   try { return resolveLiquidPreferences(window.localStorage.getItem(LIQUID_STORAGE_KEY)).settings; }
   catch { return defaultLiquidPreferences(); }
 }
 
-/** Route speed is an ephemeral multiplier; saved appearance values stay untouched. */
+/**
+ * Mounted once in the root layout, outside PageTransition's route key, so navigation
+ * never restarts the simulation. Route speed is an ephemeral multiplier; saved
+ * appearance values stay untouched.
+ */
 export function LiquidBackground({ variant = "gray" }: { variant?: LiquidVariant }) {
   const pathname = usePathname() || "/";
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -19,7 +23,9 @@ export function LiquidBackground({ variant = "gray" }: { variant?: LiquidVariant
   const [renderer, setRenderer] = useState<"css" | "webgl">("css");
   const [preferences, setPreferences] = useState<LiquidPreferences | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
-  const speed = fullscreen ? 0 : (preferences?.speed ?? 0) * liquidReadingScale(pathname);
+  const [everywhere, setEverywhere] = useState(false);
+  const active = everywhere || liquidRouteActive(pathname);
+  const speed = fullscreen || !active ? 0 : (preferences?.speed ?? 0) * liquidReadingScale(pathname);
 
   useEffect(() => {
     setPreferences(readStoredPreferences());
@@ -29,9 +35,12 @@ export function LiquidBackground({ variant = "gray" }: { variant?: LiquidVariant
     const receiveStorage = (event: StorageEvent) => {
       if (event.key === LIQUID_STORAGE_KEY || event.key === null) setPreferences(readStoredPreferences());
     };
-    const watching = () => setFullscreen(document.documentElement.dataset.watching === "fullscreen");
+    const watching = () => {
+      setFullscreen(document.documentElement.dataset.watching === "fullscreen");
+      setEverywhere(document.documentElement.hasAttribute("data-liquid-everywhere"));
+    };
     const observer = new MutationObserver(watching);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-watching"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-watching", "data-liquid-everywhere"] });
     watching();
     window.addEventListener(LIQUID_PREFERENCES_EVENT, receivePreferences);
     window.addEventListener("storage", receiveStorage);
@@ -57,8 +66,8 @@ export function LiquidBackground({ variant = "gray" }: { variant?: LiquidVariant
     return () => { reducedMotion.removeEventListener("change", reduce); controllerRef.current?.dispose(); controllerRef.current = null; };
   }, [variant]);
 
-  // The section layout survives detail/list navigation. Update the live renderer
-  // instead of rebuilding its simulation and flashing a new initial frame.
+  // Update the live renderer instead of rebuilding its simulation and flashing
+  // a new initial frame.
   useEffect(() => {
     if (preferences) controllerRef.current?.update({ speed, palette: liquidPaletteFromSettings(preferences) });
   }, [speed, preferences, variant]);
@@ -69,7 +78,7 @@ export function LiquidBackground({ variant = "gray" }: { variant?: LiquidVariant
     "--liquid-route-scale": liquidReadingScale(pathname),
     "--liquid-watching-play-state": fullscreen ? "paused" : "var(--liquid-play-state, running)",
   } as CSSProperties;
-  return <div className="liquid-bg" data-liquid-renderer={renderer} data-liquid-speed={speed} style={durations} aria-hidden="true">
+  return <div className="liquid-bg" data-liquid-active={active} data-liquid-renderer={renderer} data-liquid-speed={speed} style={durations} aria-hidden="true">
     <canvas ref={canvasRef} className="liquid-canvas" />
     <div className="liquid-blobs">{[1, 2, 3, 4, 5, 6].map(index => <div key={index} className={`blob blob-${index}`} />)}</div>
     <div className="liquid-grain" />

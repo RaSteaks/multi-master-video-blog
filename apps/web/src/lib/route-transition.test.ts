@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { routeReadiness, wipeDirection } from "./route-transition";
 
 describe("route readiness", () => {
-  const base = { committed: true, loading: false, coverReady: null, expired: false };
+  const base = { committed: true, loading: false, coverReady: null, mediaReady: true, expired: false };
 
   it("ends the wait early once content and the cover are ready", () => {
     expect(routeReadiness(base)).toBe("shared");
@@ -13,6 +13,11 @@ describe("route readiness", () => {
     expect(routeReadiness({ ...base, committed: false })).toBeNull();
     expect(routeReadiness({ ...base, loading: true })).toBeNull();
     expect(routeReadiness({ ...base, coverReady: false })).toBeNull();
+  });
+
+  it("holds the wipe until first-screen media is decoded", () => {
+    expect(routeReadiness({ ...base, mediaReady: false })).toBeNull();
+    expect(routeReadiness({ ...base, mediaReady: false, loading: true })).toBeNull();
   });
 
   it("drops only the cover morph when the cover is not decoded in time", () => {

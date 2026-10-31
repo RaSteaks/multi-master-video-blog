@@ -107,6 +107,8 @@
 html {
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
+  /* Short and long pages keep the same width on classic scrollbars. */
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -143,34 +145,33 @@ body {
 }
 
 /* ---- Background mode (navbar BackgroundControl) ---- */
-/* Liquid mode: hide every image layer; a gray liquid layer is portaled
-   onto <body> instead */
+/* Liquid mode: hide every image layer. The liquid layer is mounted once on
+   <body> by the root layout and is shown by LiquidBackground. */
 html[data-bg-mode="liquid"] .site-bg {
   display: none;
 }
 
-/* Image mode: hide every liquid layer (section + global) so the chosen
-   photo shows on home / posts / videos as well */
+/* Image mode: hide the liquid layer so the chosen photo shows on home / posts /
+   videos as well */
 html[data-bg-mode="image"] .liquid-bg {
   display: none;
 }
 
 /* A page that ships its own background image (post/about backgroundimage)
-   outranks the section liquid layer — otherwise the opaque liquid hides it.
+   outranks the liquid layer — otherwise the opaque liquid hides it.
    Explicit liquid mode still wins. */
-html:not([data-bg-mode="liquid"]) body:has(.page-transition .site-bg) .page-transition .liquid-bg {
+html:not([data-bg-mode="liquid"]) body:has(.page-transition .site-bg) > .liquid-bg {
   display: none;
 }
 
-/* Global liquid layer sits behind everything, like .site-bg */
+/* The liquid layer sits behind everything, like .site-bg */
 body > .liquid-bg {
   z-index: -1;
 }
 
-/* Pages with their own section-level liquid background keep it —
-   skip the global layer there to avoid double-rendering the blobs */
-body:has(.page-transition .liquid-bg) > .liquid-bg {
-  display: none;
+/* Kept in layout on routes without it, so the canvas holds its size. */
+.liquid-bg[data-liquid-active="false"] {
+  opacity: 0;
 }
 
 img,
@@ -1135,10 +1136,29 @@ h3 {
    Content Cards
    ========================================================================== */
 
+/* Every list section shares six columns and one gutter: standard cards span
+   two, wide cards span three, so outer edges and gaps hold across a route wipe. */
 .content-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.content-grid > * {
+  grid-column: span 2;
+  min-width: 0;
+}
+
+.content-grid--wide > * {
+  grid-column: span 3;
+}
+
+.content-grid > li {
+  display: grid;
+  grid-template-rows: 1fr auto;
 }
 
 .content-card {
@@ -1171,11 +1191,20 @@ h3 {
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
-.content-card img,
+.content-card-media {
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+}
+
+.content-grid--wide .content-card-media,
+.content-grid--wide .skeleton-media {
+  aspect-ratio: 16 / 10;
+}
+
+.content-card-media img,
 .media-placeholder {
   width: 100%;
-  height: auto;
-  aspect-ratio: 16 / 9;
+  height: 100%;
   object-fit: cover;
   transition: transform 650ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -1205,7 +1234,7 @@ h3 {
   text-transform: uppercase;
 }
 
-.content-card > div {
+.content-card-copy {
   padding: 18px 20px 20px;
 }
 
@@ -1237,6 +1266,62 @@ h3 {
 
 .content-card .meta-line {
   color: var(--accent-2);
+}
+
+/* Wide cards reserve the same text block, so a short card matches a full one. */
+.content-grid--wide .content-card-copy {
+  min-height: 150px;
+  padding: 22px 24px 24px;
+}
+
+.content-grid--wide .content-card h2 {
+  font-size: 1.25rem;
+}
+
+.content-grid--wide .content-card-copy > p:not(.meta-line) {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+/* Contact sheet: the same outline as a wide card, with sprocket rails in the
+   margins of the picture rather than over it. */
+.content-card--film .content-card-media {
+  position: relative;
+  padding: 12px 27px;
+  background: #090a0b;
+}
+
+.content-card--film .content-card-media::before,
+.content-card--film .content-card-media::after {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(213, 208, 198, 0.52) 0 7px,
+    transparent 7px 18px
+  );
+  content: "";
+  opacity: 0.38;
+  pointer-events: none;
+}
+
+.content-card--film .content-card-media::before {
+  left: 9px;
+}
+
+.content-card--film .content-card-media::after {
+  right: 9px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .content-card--film:hover {
+    border-color: rgba(215, 160, 82, 0.4);
+  }
 }
 
 /* ==========================================================================
@@ -5626,8 +5711,8 @@ h3 {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
-  .content-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .content-grid > * {
+    grid-column: span 3;
   }
 
   .upload-grid {
@@ -5743,8 +5828,11 @@ h3 {
   }
 
   .content-grid {
-    grid-template-columns: 1fr;
     gap: 14px;
+  }
+
+  .content-grid > * {
+    grid-column: 1 / -1;
   }
 
   .article-toc nav {
@@ -5891,7 +5979,6 @@ h3 {
   --album-paper: #d5d0c6;
 }
 
-.album-page-header,
 .album-detail-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -5899,16 +5986,10 @@ h3 {
   align-items: end;
 }
 
-.album-page-header .page-header {
-  max-width: 720px;
-}
-
-.album-page-header h1,
 .album-detail-header h1 {
   margin-bottom: 16px;
 }
 
-.album-page-header .summary,
 .album-detail-header .summary {
   max-width: 690px;
 }
@@ -5918,6 +5999,12 @@ h3 {
   justify-items: end;
   align-self: end;
   gap: 8px;
+}
+
+.list-page-header .album-toolbar {
+  width: auto;
+  max-width: 50%;
+  justify-items: end;
 }
 
 .album-toolbar-status {
@@ -5992,101 +6079,17 @@ h3 {
   opacity: 0.42;
 }
 
-/* ---- Contact sheet list ---- */
-.album-contact-sheet {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(22px, 3vw, 34px);
-  padding: 0;
-  list-style: none;
-}
-
-.album-card {
-  position: relative;
-  display: grid;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.035), transparent 42%),
-    rgba(12, 14, 16, 0.87);
-  box-shadow:
-    0 18px 50px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  cursor: pointer;
-  transition:
-    border-color 220ms ease,
-    box-shadow 220ms ease,
-    translate 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.album-card::before,
-.album-card::after {
-  position: absolute;
-  z-index: 2;
-  top: 12px;
-  bottom: 12px;
-  width: 8px;
-  background: repeating-linear-gradient(
-    to bottom,
-    rgba(213, 208, 198, 0.52) 0 7px,
-    transparent 7px 18px
-  );
-  content: "";
-  opacity: 0.38;
-  pointer-events: none;
-}
-
-.album-card::before {
-  left: 8px;
-}
-
-.album-card::after {
-  right: 8px;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .album-card:hover {
-    border-color: rgba(215, 160, 82, 0.4);
-    box-shadow:
-    0 24px 64px rgba(0, 0, 0, 0.32),
-    0 0 0 1px rgba(215, 160, 82, 0.1);
-    translate: 0 -3px;
-  }
-}
-
-.album-card:focus-visible {
-  outline-color: var(--album-amber);
-  outline-offset: 5px;
-}
-
+/* ---- Contact sheet card contents ---- */
 .album-card-frame {
   position: relative;
-  margin: 24px 27px 0;
+  height: 100%;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.11);
   background: #090a0b;
 }
 
-.album-card-frame img,
 .album-card-placeholder {
-  width: 100%;
-  height: auto;
-  aspect-ratio: 3 / 2;
-  object-fit: cover;
-  transition:
-    scale 700ms cubic-bezier(0.22, 1, 0.36, 1),
-    filter 260ms ease;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .album-card:hover .album-card-frame img {
-    filter: saturate(1.05) contrast(1.02);
-    scale: 1.025;
-  }
-}
-
-.album-card-placeholder {
+  height: 100%;
   display: grid;
   place-items: center;
   background:
@@ -6171,62 +6174,6 @@ h3 {
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
-  }
-}
-
-.album-card-copy {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 18px;
-  padding: 22px 31px 26px;
-}
-
-.album-card-kicker {
-  margin-bottom: 6px !important;
-  color: var(--album-amber) !important;
-  font-family: var(--font-mono);
-  font-size: 0.68rem !important;
-  font-weight: 650;
-  letter-spacing: 0.075em;
-  text-transform: uppercase;
-}
-
-.album-card-copy h2 {
-  margin: 0;
-  font-size: clamp(1.25rem, 2.3vw, 1.7rem);
-  letter-spacing: -0.025em;
-}
-
-.album-card-copy > p {
-  display: -webkit-box;
-  grid-column: 1 / -1;
-  margin: 10px 0 0;
-  overflow: hidden;
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-  line-height: 1.65;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-}
-
-.album-card-copy .album-card-empty-copy {
-  color: var(--muted);
-}
-
-.album-card-arrow {
-  align-self: center;
-  color: var(--muted);
-  font-size: 1.2rem;
-  transition:
-    color var(--transition-fast),
-    translate var(--transition-fast);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .album-card:hover .album-card-arrow {
-    color: var(--album-amber);
-    translate: 2px -2px;
   }
 }
 
@@ -7488,7 +7435,6 @@ h3 {
     align-items: flex-start;
   }
 
-  .album-page-header,
   .album-detail-header {
     grid-template-columns: 1fr;
     align-items: start;
@@ -7502,10 +7448,6 @@ h3 {
 
   .album-toolbar-status {
     text-align: left;
-  }
-
-  .album-contact-sheet {
-    grid-template-columns: 1fr;
   }
 
   .album-pair-row {
@@ -7556,13 +7498,6 @@ h3 {
     white-space: nowrap;
   }
 
-  .list-page-header {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 20px;
-  }
-
-  .album-index,
   .album-detail {
     gap: 38px;
   }
@@ -7571,25 +7506,21 @@ h3 {
     width: 100%;
   }
 
-  .album-card-frame {
-    margin: 18px 21px 0;
+  .content-card--film .content-card-media {
+    padding: 10px 21px;
   }
 
-  .album-card-copy {
-    padding: 18px 25px 22px;
-  }
-
-  .album-card::before,
-  .album-card::after {
+  .content-card--film .content-card-media::before,
+  .content-card--film .content-card-media::after {
     width: 6px;
   }
 
-  .album-card::before {
-    left: 6px;
+  .content-card--film .content-card-media::before {
+    left: 7px;
   }
 
-  .album-card::after {
-    right: 6px;
+  .content-card--film .content-card-media::after {
+    right: 7px;
   }
 
   .album-empty-state {

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BackgroundControl } from "@/components/BackgroundControl";
+import { LiquidBackground } from "@/components/LiquidBackground";
 import { PageTools } from "@/components/PageTools";
 import { AuthorControl } from "@/components/AuthorControl";
 import { NavBar } from "@/components/NavBar";
@@ -71,6 +72,7 @@ export default async function RootLayout({
             aria-hidden="true"
           />
         ) : null}
+        <LiquidBackground />
 
         <a href="#main-content" className="skip-link">
           跳到主要内容
