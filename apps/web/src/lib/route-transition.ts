@@ -2,7 +2,7 @@
  * What a view-transition navigation does once its wait ends:
  *   shared   content and every shared element it morphs are ready — full transition
  *   content  content is ready but the cover is not — wipe only, cover loads on its own
- *   skip     still loading — release native snapshots; a live veil/divider wipe follows content
+ *   skip     still loading — release native snapshots and switch without a delayed decorative wipe
  */
 export type RouteReadiness = "shared" | "content" | "skip";
 

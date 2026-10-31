@@ -500,29 +500,15 @@ html.route-transition-pending body::after {
    document.startViewTransition where supported; the veil above is the
    fallback). The animation runs on root pseudo-elements, so page content and
    its backdrop-filter panels are never composited differently. */
-.site-header {
-  view-transition-name: site-header;
-}
-
-/* Home has no header: there it belongs to the page and wipes with it. */
-html[data-vt-home] .site-header {
-  view-transition-name: none;
-}
-
-/* The header persists across routes: show it as-is (live) instead of
-   cross-fading it with itself, so the nav pill slide stays visible. */
-::view-transition-group(site-header),
-::view-transition-new(site-header) {
-  animation: none;
-}
-
-/* Hide the old header only once the new one exists. An animation on a
-   view-transition pseudo-element starts when the transition is ready (new
-   state captured); `display: none` instead would blank the header for the
-   whole wait before that. */
-::view-transition-old(site-header) {
-  animation: vt-hide 1ms both;
-}
+/* Keep the header in the root image. The reveal includes its full height from
+   the first frame, avoiding a separate named image that can disappear in WebKit.
+   Home transitions set --wipe-top to zero, so the whole viewport wipes there. */
+.site-header { view-transition-name: none; }
+::view-transition-group(root) { z-index: 0; }
+::view-transition { pointer-events: none; }
+/* The root captures the header once. Settle its pill before capture rather
+   than freezing a half-finished slide and jumping when the snapshot leaves. */
+html[data-vt-direction] .site-header nav .nav-pill[data-ready="true"] { transition: none; }
 
 @keyframes vt-hide {
   to {
@@ -550,16 +536,25 @@ html[data-vt-home] .site-header {
 
 ::view-transition-group(route-wipe-line) {
   animation: vt-wipe-line var(--motion-wipe-duration) var(--motion-wipe-ease) both;
+  z-index: 20;
 }
 
 /* The line is sheared to the edge's slant (around the viewport's vertical
    middle, where the edge crosses its own midpoint); a shear, unlike a
    rotation, keeps its top end level with the header's lower edge. */
-::view-transition-new(route-wipe-line) {
-  animation: none;
+::view-transition-image-pair(route-wipe-line) {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent calc(50% - 0.75px),
+    color-mix(in srgb, var(--text) 90%, transparent) calc(50% - 0.75px),
+    color-mix(in srgb, var(--text) 90%, transparent) calc(50% + 0.75px), transparent calc(50% + 0.75px));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent-readable) 55%, transparent));
   transform: skewX(calc(-1 * var(--wipe-slant)));
   transform-origin: 50% calc(50vh - var(--wipe-top, 0px));
 }
+/* Draw the line on the native animation layer itself: WebKit can leave a
+   newly added element's snapshot image blank even while its group animates. */
+::view-transition-new(route-wipe-line) { animation: none; opacity: 0; }
 
 html[data-vt-direction="back"]::view-transition-new(root) {
   animation-name: vt-wipe-reveal-back;
@@ -570,7 +565,7 @@ html[data-vt-direction="back"]::view-transition-group(route-wipe-line) {
 }
 
 /* Mirrored slant for the right → left wipe: the top leans left. */
-html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
+html[data-vt-direction="back"]::view-transition-image-pair(route-wipe-line) {
   transform: skewX(var(--wipe-slant));
 }
 
@@ -579,21 +574,25 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
    2 × run apart throughout. Forward the top leads (on the right); back the
    top leads too (on the left), mirroring the slant. */
 @keyframes vt-wipe-reveal {
-  from { clip-path: polygon(0 0, 0 0, calc(-2 * var(--wipe-run)) 100%, 0 100%); }
-  to { clip-path: polygon(0 0, calc(100% + 2 * var(--wipe-run)) 0, 100% 100%, 0 100%); }
+  from { clip-path: polygon(0 0, 100% 0, 100% var(--wipe-top, 0px),
+    calc(-1 * var(--wipe-top, 0px) * tan(var(--wipe-slant))) var(--wipe-top, 0px),
+    calc(-2 * var(--wipe-run)) 100%, 0 100%); }
+  to { clip-path: polygon(0 0, 100% 0, 100% var(--wipe-top, 0px),
+    calc(100% + 2 * var(--wipe-run) - var(--wipe-top, 0px) * tan(var(--wipe-slant))) var(--wipe-top, 0px),
+    100% 100%, 0 100%); }
 }
 
 @keyframes vt-wipe-reveal-back {
   from {
     clip-path: polygon(
-      100% 0, calc(100% + 2 * var(--wipe-run)) 0,
-      calc(100% + 2 * var(--wipe-run)) 100%, calc(100% + 2 * var(--wipe-run)) 100%
+      0 0, 100% 0, 100% 100%, calc(100% + 2 * var(--wipe-run)) 100%,
+      calc(100% + var(--wipe-top, 0px) * tan(var(--wipe-slant))) var(--wipe-top, 0px), 0 var(--wipe-top, 0px)
     );
   }
   to {
     clip-path: polygon(
-      calc(-2 * var(--wipe-run)) 0, calc(100% + 2 * var(--wipe-run)) 0,
-      calc(100% + 2 * var(--wipe-run)) 100%, 0 100%
+      0 0, 100% 0, 100% 100%, 0 100%,
+      calc(-2 * var(--wipe-run) + var(--wipe-top, 0px) * tan(var(--wipe-slant))) var(--wipe-top, 0px), 0 var(--wipe-top, 0px)
     );
   }
 }
@@ -611,11 +610,13 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
   to { translate: calc(-1 * var(--wipe-run)) 0; }
 }
 
-/* The divider: a thin lit line with a soft glow. It runs from --wipe-top
+/* The divider's native group bounds. The image-pair paints its line and glow
+   directly, so the live DOM element never flashes at the viewport edge.
+   It runs from --wipe-top
    (the header's lower edge, set by PageTransition on the root so the
    transition pseudo-elements can read it too) to the bottom, leaving the
-   navigation alone. The box is wider than the line so the snapshot holds the
-   glow; its centre sits on the viewport's left edge. */
+   navigation alone. The box is wider than the line to leave room for its glow;
+   its centre sits on the viewport's left edge. */
 .route-wipe-line {
   position: fixed;
   top: var(--wipe-top, 0px);
@@ -625,48 +626,6 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
   width: 24px;
   pointer-events: none;
   view-transition-name: route-wipe-line;
-}
-
-.route-wipe-line::before {
-  position: absolute;
-  inset: 0 auto 0 11.25px;
-  width: 1.5px;
-  background: color-mix(in srgb, var(--text) 90%, transparent);
-  box-shadow:
-    0 0 6px color-mix(in srgb, var(--accent-readable) 55%, transparent),
-    0 0 1px var(--text);
-  content: "";
-}
-
-/* Slow routes release the native snapshot budget instead of freezing the old
-   page. Once real content arrives, reveal it through the existing veil with
-   the same divider geometry, direction and duration. No page subtree is clipped. */
-.route-veil[data-wipe-direction] {
-  opacity: 1;
-  animation: route-veil-wipe var(--motion-wipe-duration) var(--motion-wipe-ease) both;
-}
-.route-veil[data-wipe-direction="back"] { animation-name: route-veil-wipe-back; }
-.route-wipe-line-fallback {
-  opacity: 0;
-  view-transition-name: none;
-  transform: skewX(calc(-1 * var(--wipe-slant)));
-  transform-origin: 50% calc(50vh - var(--wipe-top, 0px));
-}
-.route-wipe-line-fallback[data-wipe-direction] {
-  opacity: 1;
-  animation: vt-wipe-line var(--motion-wipe-duration) var(--motion-wipe-ease) both;
-}
-.route-wipe-line-fallback[data-wipe-direction="back"] {
-  transform: skewX(var(--wipe-slant));
-  animation-name: vt-wipe-line-back;
-}
-@keyframes route-veil-wipe {
-  from { clip-path: polygon(0 0, 100% 0, 100% 100%, calc(-2 * var(--wipe-run)) 100%); }
-  to { clip-path: polygon(calc(100% + 2 * var(--wipe-run)) 0, 100% 0, 100% 100%, 100% 100%); }
-}
-@keyframes route-veil-wipe-back {
-  from { clip-path: polygon(0 0, 100% 0, calc(100% + 2 * var(--wipe-run)) 100%, 0 100%); }
-  to { clip-path: polygon(0 0, calc(-2 * var(--wipe-run)) 0, 0 100%, 0 100%); }
 }
 
 /* Shared cover/title morph ("Morph"-style): the group interpolates position
@@ -687,10 +646,6 @@ html[data-vt-direction="back"]::view-transition-new(route-wipe-line) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .route-veil[data-wipe-direction], .route-wipe-line-fallback[data-wipe-direction] {
-    animation: none;
-    opacity: 0;
-  }
   ::view-transition-group(*),
   ::view-transition-old(*),
   ::view-transition-new(*) {

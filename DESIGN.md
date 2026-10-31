@@ -155,11 +155,19 @@ corners and inset preview chips use 4px corners.
   route wipes 1200 ms, and reduced-motion fades 100 ms. These are role budgets rather than mandatory
   effects on every element. Keep the reference-room identity; media comparison
   surfaces must not receive decorative colour, luminance or blur changes.
-  `PageTransition` keeps the native snapshot wait bounded (180ms, 450ms toward
-  home). Slow or rejected snapshots hand off to a live veil/divider wipe when real
-  content arrives, using the same direction, line and timing tokens. It never
-  clips/transforms the page subtree; a new navigation or history traversal cancels
-  prior effects. Reduced motion remains unanimated.
+  `NavBar` fully prefetches its five routes. `PageTransition` permits header
+  navigation up to 3s to prepare real old/new snapshots (other links retain the
+  180ms budget, or 450ms toward home). The divider and revealed pixels share one
+  native transition. A timed-out/rejected snapshot switches directly: never tint
+  an already-visible destination and replay a decorative divider over it. No
+  live page subtree is clipped/transformed; navigation/history cancels prior
+  effects, and reduced motion remains unanimated.
+  The root snapshot reveal keeps the header region visible from the first frame;
+  its navigation pill settles on the target before capture to avoid a frozen
+  intermediate position. Ordinary navigation retains the pill slide.
+  The divider is painted directly on its native image-pair layer (not a new-only
+  element image), and both wipe animations share one start time. Pixel checks
+  verify old/new visibility, the header, and the divider's alignment to the reveal.
   `panel-motion.ts` reads the runtime tokens for live content transitions and
   interruption cleanup. Appearance category controls remain usable immediately;
   local transitions do not take document snapshots or compete with route motion.

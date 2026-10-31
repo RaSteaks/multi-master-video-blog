@@ -7,7 +7,6 @@ import {
   routeReadiness,
   wipeDirection,
   type RouteReadiness,
-  type WipeDirection,
 } from "@/lib/route-transition";
 
 const animatedSections = new Set([
@@ -30,9 +29,9 @@ const VEIL_EASING = "cubic-bezier(.22, 1, .36, 1)";
 /**
  * Two independent concerns (docs/performance-optimization-plan.md §7):
  *
- * Enter animation — animated routes reveal their content using a native wipe
- * or a separate veil above the page (see globals.css "Enter transition"). The
- * live page remains interactive; the veil is only decoration. It plays when
+ * Enter animation — native snapshots reveal the destination at the divider,
+ * keeping outgoing pixels in front of content the line has not passed yet.
+ * Unsupported/programmatic navigation uses a short decorative veil when
  * the *real content* appears: at once
  * if the committed route shows content, or when the loading skeleton is
  * replaced by it, so a slow load is not "used up" while only a skeleton shows.
@@ -54,8 +53,8 @@ const VEIL_EASING = "cubic-bezier(.22, 1, .36, 1)";
  *     marked `data-vt` (cover, title) morph between the clicked card and the
  *     destination
  *   - content is on screen but the cover is not decoded: the wipe alone
- *   - still a skeleton or not committed: release the native snapshot and wipe
- *     the veil with a live divider once real content replaces the skeleton
+ *   - still loading after the bounded wait, or snapshot capture failed: switch
+ *     directly, without tinting the visible destination or replaying a divider
  * The veil also remains the fallback for unsupported browsers.
  *
  * Loading hint — only navigations that outlast SLOW_NAV_THRESHOLD_MS show the
@@ -77,11 +76,12 @@ const VEIL_EASING = "cubic-bezier(.22, 1, .36, 1)";
 const SLOW_NAV_THRESHOLD_MS = 100;
 const TRANSITION_RECOVERY_TIMEOUT_MS = 15_000;
 
-// How long a view transition waits for the destination. Rendering is
-// suppressed on the old page while the transition callback is pending, so the
-// app never extends the wait past this budget: a slower load skips the
-// snapshot and falls back to the progress bar, skeleton and live veil wipe. Snapshot
-// capture and main-thread work add to the visible freeze on top of it.
+// Native snapshots must wait for the destination to preserve real old/new
+// pixels. Header routes are fully prefetched, but a cold production response
+// can still take hundreds of milliseconds. Bound that wait below the browser's
+// own snapshot timeout; on failure show content directly, never a fake late wipe.
+const NAVIGATION_READY_MS = 3000;
+// Card/cover morphs keep the short image-readiness budget.
 const VT_DECISION_MS = 180;
 // The home page is the way back from everywhere and has no skeleton to show, so
 // it may hold the old page a little longer for the wipe to play. Production
@@ -99,11 +99,8 @@ export function PageTransition({ children }: { children: ReactNode }) {
   // live veil is skipped meanwhile: native snapshots own the page wipe.
   const viewTransitionNavRef = useRef<number | null>(null);
   const activeTransitionRef = useRef<ReturnType<Document["startViewTransition"]> | null>(null);
-  const fallbackWipeRef = useRef<{ id: number; fromPathname: string; direction: WipeDirection; touchesHome: boolean } | null>(null);
+  const suppressEnterNavRef = useRef<number | null>(null);
   const cancelEnterRef = useRef<(() => void) | undefined>(undefined);
-  // Set when a skipped view transition hands its enter animation to the veil
-  // after the route already committed, so the veil effect runs again.
-  const [veilHandoff, setVeilHandoff] = useState(0);
   const thresholdTimerRef = useRef<number | null>(null);
   const recoveryTimerRef = useRef<number | null>(null);
   // Loading-hint state only: whether the in-flight navigation has exceeded the
@@ -114,7 +111,6 @@ export function PageTransition({ children }: { children: ReactNode }) {
   const section = pathname.split("/").filter(Boolean)[0] || "home";
   const wrapperRef = useRef<HTMLDivElement>(null);
   const veilRef = useRef<HTMLDivElement>(null);
-  const fallbackLineRef = useRef<HTMLDivElement>(null);
 
   // Decide the animation mode synchronously while the new page renders, so
   // `data-animate-route` is already correct on the first painted frame (an
@@ -131,45 +127,25 @@ export function PageTransition({ children }: { children: ReactNode }) {
   useLayoutEffect(() => {
     const veil = veilRef.current;
     const wrapper = wrapperRef.current;
-    const line = fallbackLineRef.current;
-    if (!veil || !wrapper || !line) return;
+    if (!veil || !wrapper) return;
     // A superseded navigation's veil must not keep playing over the new page.
     veil.getAnimations().forEach((animation) => animation.cancel());
-    if (animateRoute !== "true" || viewTransitionNavRef.current !== null) return;
-    const fallback = fallbackWipeRef.current;
-    // A native snapshot may reject before the router commits. Never animate
-    // the old page just because the previous navigation was also animated.
-    if (fallback?.fromPathname === pathname) return;
+    if (animateRoute !== "true" || viewTransitionNavRef.current !== null
+      || suppressEnterNavRef.current === navIdRef.current) return;
     const id = navIdRef.current;
     let observer: MutationObserver | undefined;
 
     const cleanup = () => {
       if (cancelEnterRef.current !== cleanup) return;
       observer?.disconnect();
-      for (const element of [veil, line]) {
-        element.getAnimations().forEach(animation => animation.cancel());
-        delete element.dataset.wipeDirection;
-      }
-      line.style.removeProperty("--wipe-top");
+      veil.getAnimations().forEach(animation => animation.cancel());
       if (cancelEnterRef.current === cleanup) cancelEnterRef.current = undefined;
     };
     cancelEnterRef.current = cleanup;
 
     const play = () => {
       if (id !== navIdRef.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-      if (fallback?.id === id) {
-        // Use a separate, unnamed live line: native finished/skip cleanup must
-        // not remove it, and the next snapshot must not treat it as a shared node.
-        fallbackWipeRef.current = null;
-        line.style.setProperty("--wipe-top", `${fallback.touchesHome ? 0 : contentTop()}px`);
-        veil.dataset.wipeDirection = fallback.direction;
-        line.dataset.wipeDirection = fallback.direction;
-        // Bind cleanup to this animation, not a delayed DOM animationcancel
-        // event from the preceding route on the same reused veil element.
-        const animation = veil.getAnimations()[0];
-        if (animation) void animation.finished.then(cleanup, cleanup);
-        else cleanup();
-      } else playVeil(veil);
+      playVeil(veil);
     };
 
     if (!wrapper.querySelector(LOADING_SELECTOR)) {
@@ -185,7 +161,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
     });
     observer.observe(wrapper, { childList: true, subtree: true });
     return cleanup;
-  }, [pathname, animateRoute, veilHandoff]);
+  }, [pathname, animateRoute]);
 
   useLayoutEffect(() => {
     pathnameRef.current = pathname;
@@ -233,7 +209,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
       historyNavRef.current = true;
       navIdRef.current += 1;
       viewTransitionNavRef.current = null;
-      fallbackWipeRef.current = null;
+      suppressEnterNavRef.current = null;
       activeTransitionRef.current?.skipTransition();
       cancelEnterRef.current?.();
       clearSnapshotStyles();
@@ -268,7 +244,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
       const id = (navIdRef.current += 1);
       activeTransitionRef.current?.skipTransition();
       activeTransitionRef.current = null;
-      fallbackWipeRef.current = null;
+      suppressEnterNavRef.current = null;
       cancelEnterRef.current?.();
       clearSnapshotStyles();
       // Superseded view transitions no longer own the enter animation.
@@ -328,8 +304,8 @@ export function PageTransition({ children }: { children: ReactNode }) {
       // The home page has no header, so across that boundary the header wipes
       // with the page instead of staying fixed above it.
       const touchesHome = fromPathname === "/" || url.pathname === "/";
-      fallbackWipeRef.current = { id, fromPathname, direction, touchesHome };
-      document.documentElement.toggleAttribute("data-vt-home", touchesHome);
+      const pageBudgetMs = url.pathname === "/" ? HOME_DECISION_MS : VT_DECISION_MS;
+      const snapshotBudgetMs = anchor.closest(".site-header") ? NAVIGATION_READY_MS : pageBudgetMs;
       const transition = document.startViewTransition(async () => {
         router.push(`${url.pathname}${url.search}${url.hash}`);
         const readiness = await waitForRouteReady(
@@ -337,7 +313,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
           pathnameRef,
           sharedKinds.has("cover"),
           isCurrent,
-          url.pathname === "/" ? HOME_DECISION_MS : VT_DECISION_MS,
+          snapshotBudgetMs,
         );
         // Superseded: the newer navigation owns all shared state.
         if (!isCurrent()) return;
@@ -359,13 +335,11 @@ export function PageTransition({ children }: { children: ReactNode }) {
         // card's cover and title simply fade out with the page.
         if (readiness === "content") return;
 
-        // Still loading: release the snapshot, then wipe the veil and divider
-        // when real content arrives. Network speed must not remove the line.
-        // Before commit, the veil effect picks this up when the pathname
-        // changes; after commit it has already run, so run it again.
+        // A failed/late snapshot cannot conceal the destination with old pixels.
+        // Do not darken an already-visible page and sweep a decorative line over it.
+        suppressEnterNavRef.current = id;
         transition.skipTransition();
         viewTransitionNavRef.current = null;
-        if (pathnameRef.current !== fromPathname) setVeilHandoff(id);
       });
       activeTransitionRef.current = transition;
       const done = () => {
@@ -376,13 +350,20 @@ export function PageTransition({ children }: { children: ReactNode }) {
       };
       transition.finished.then(done, done);
       transition.ready.then(() => {
-        if (isCurrent()) fallbackWipeRef.current = null;
-      }, () => {
-        // The browser can also reject a snapshot independently of our budget.
-        // Keep the same fallback and ensure an already-committed route plays it.
         if (!isCurrent()) return;
+        // Different native pseudo-elements can start a few milliseconds apart.
+        // Share the reveal's clock so the line stays exactly on its clip edge.
+        const animations = document.getAnimations().filter((animation): animation is CSSAnimation =>
+          animation instanceof CSSAnimation && /^vt-wipe-(reveal|line)/.test(animation.animationName));
+        const reveal = animations.find(animation => animation.animationName.startsWith("vt-wipe-reveal"));
+        const startTime = reveal?.startTime ?? document.timeline.currentTime;
+        if (startTime != null) for (const animation of animations) animation.startTime = startTime;
+      }, () => {
+        // Snapshot failures and superseded transitions never schedule a second
+        // enter animation over the destination's first visible frame.
+        if (!isCurrent()) return;
+        suppressEnterNavRef.current = id;
         viewTransitionNavRef.current = null;
-        if (pathnameRef.current !== fromPathname) setVeilHandoff(id);
       });
     }
 
@@ -409,7 +390,6 @@ export function PageTransition({ children }: { children: ReactNode }) {
   return (
     <>
       <div ref={veilRef} className="route-veil" aria-hidden="true" />
-      <div ref={fallbackLineRef} className="route-wipe-line route-wipe-line-fallback" aria-hidden="true" />
       <div
         key={pathname}
         ref={wrapperRef}
@@ -460,7 +440,6 @@ function clearSnapshotStyles() {
   clearSharedElementNames();
   wipeLine().remove();
   delete document.documentElement.dataset.vtDirection;
-  document.documentElement.removeAttribute("data-vt-home");
   document.documentElement.style.removeProperty("--wipe-top");
 }
 
