@@ -105,6 +105,34 @@ corners and inset preview chips use 4px corners.
   dimmed or blurred. The API remains the file-validation owner. Task byte/film
   progress is measured, encoding is indeterminate, and completion is temporary.
 
+- `AuthorTray` is the held-Tab variant of the existing author actions, with the
+  same route groups, icons and Link navigation guards as `AuthorMenu`. It is
+  available only for a verified session and a fine pointer. A short Tab advances
+  page focus on release (wrapping at the end); holding 180ms opens a circular tray
+  centered exactly on the pointer. The 340–352px disk reads as a lens iris:
+  curved HTML Link blades leave a near-circular opening along its tangent, the
+  first action at twelve o'clock and each label on its blade's center. The
+  opening (36%) is the cancellation zone. An author device with a lapsed session
+  explains a held Tab with a short hint instead of opening; short Tab is unchanged.
+  Moving onto a sector highlights it; releasing Tab follows its real Link. Release without a target, Escape, blur, resize, route/session change
+  and modal/fullscreen entry cancel. Inputs, editor content, native media focus,
+  Shift+Tab and existing panels keep their own keys. The ordinary menu remains
+  the keyboard/click alternative. The body portal uses `--z-author-tray` (90),
+  `--surface-strong`, `--line-light` and existing accent/type/radius tokens.
+  It opens with the appearance panel's circular reveal centered on the pointer
+  (220ms) while the blades turn back and the opening dilates, then labels arrive
+  clockwise. Only the decorative layer moves, so hit areas are live throughout.
+  Cancel stops the iris down onto the pointer; commit lifts the chosen blade and
+  clears the disk, then navigates after 150ms so the route wipe never snapshots it.
+  Blur, resize, modal and fullscreen entry remove it instantly.
+  `tabbable` owns short-press focus ordering so disabled, hidden and radio controls
+  do not require a custom selector. Native input/menu Tab and Shift+Tab are untouched.
+  The center never shifts away from the cursor. With insufficient edge clearance,
+  a temporary hint requests an inward move; the disk opens only once its full
+  radius fits with 12px margins. A window too small retains the ordinary menu
+  alternative. It never dims or blurs page/media, and only fades for
+  `--motion-control-duration`; reduced motion removes that fade.
+
 - `LiquidBackground` multiplies saved speed by 0.35 on article/video details
   without modifying colors or preferences. It updates the live WebGL controller
   and local CSS duration variables together. `player-viewing.ts` owns the

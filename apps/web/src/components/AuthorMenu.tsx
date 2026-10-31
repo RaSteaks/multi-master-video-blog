@@ -1,9 +1,10 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ActionMenu, type ActionMenuGroup } from "@/components/ActionMenu";
+import { AuthorTray } from "@/components/AuthorTray";
 import { AuthorSignIn } from "@/components/AuthorSignIn";
 import { signOut, useAuthorDevice, useAuthorSession } from "@/lib/author-session";
 import { classifyDroppedFiles, stageDroppedFiles } from "@/lib/dropped-files";
@@ -119,10 +120,12 @@ export function AuthorMenu() {
     };
   }, [session.author, pathname, router]);
 
-  const contextGroups = pathname === "/project" ? [GROUPS[2], GROUPS[0], GROUPS[1]]
-    : pathname.startsWith("/albums") ? [GROUPS[1], GROUPS[0], GROUPS[2]] : GROUPS;
-  const groups = /^\/albums\/[^/]+$/.test(pathname)
-    ? [{ items: [{ label: "上传到此相簿", href: `${pathname}?action=upload`, icon: <PhotoIcon /> }] }, ...contextGroups] : contextGroups;
+  const groups = useMemo(() => {
+    const contextGroups = pathname === "/project" ? [GROUPS[2], GROUPS[0], GROUPS[1]]
+      : pathname.startsWith("/albums") ? [GROUPS[1], GROUPS[0], GROUPS[2]] : GROUPS;
+    return /^\/albums\/[^/]+$/.test(pathname)
+      ? [{ items: [{ label: "上传到此相簿", href: `${pathname}?action=upload`, icon: <PhotoIcon /> }] }, ...contextGroups] : contextGroups;
+  }, [pathname]);
   const authenticatedGroups = groups.map(group => ({ ...group, items: group.items.map(item => {
     if (!("href" in item) || session.author) return item;
     const { href, ...action } = item;
@@ -159,6 +162,8 @@ export function AuthorMenu() {
       </div>
     </>} /> : null;
   return <>
+    {/* Routes can share the same groups object; every route change still revokes a held gesture. */}
+    <AuthorTray key={pathname} enabled={session.author} expired={device && !session.author} groups={groups} />
     {pathname === "/" ? createPortal(menu, document.body) : menu}
     {loginOpen ? <AuthorSignIn onClose={() => setLoginOpen(false)} onSuccess={() => { setLoginOpen(false); const next = continuation.current; continuation.current = undefined; next?.(); }} /> : null}
     {dragging ? createPortal(<div className="author-drop-layer" role="status">松开以上传</div>, document.body) : null}

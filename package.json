@@ -26,6 +26,7 @@
     "build:web": "npm --workspace @multi-master-video-blog/web run build",
     "test:web": "npm --workspace @multi-master-video-blog/web run test",
     "test:article-editor-browser": "node tests/article-editor-browser.cjs",
+    "test:author-tray-browser": "node tests/author-tray-browser.cjs",
     "test:create-menu-browser": "node tests/create-menu-browser.cjs",
     "test:phase6-browser": "node tests/phase6-browser.cjs",
     "test:phase6-cache": "node tests/phase6-cache.cjs",
