@@ -171,7 +171,11 @@ URL, cookie, or browser storage.
 The author menu exchanges this token for a fixed six-hour in-memory session.
 Only a random session ID is sent in the HttpOnly `author_session` cookie
 (`Path=/api`); the API stores its SHA-256 digest. The readable `author_hint`
-cookie is only a client-side hint and never grants access. Session responses
+cookie is only a client-side hint and never grants access. Opening or returning
+to a browser window checks the server session even if readable hints are missing;
+a valid session also restores the author controls. The persistent session cookie
+survives browser restarts within its original six-hour expiry, provided the browser
+retains site cookies and the API process remains running. Session responses
 are `no-store`; public page rendering does not read session or device cookies. Up to 16
 devices may be signed in; another login evicts the oldest session.
 
@@ -214,6 +218,10 @@ Run `npm run test:create-menu-browser` for author/upload regressions and
 Both use disposable localhost fixtures and headless WebKit;
 `PHASE6_BROWSER=firefox npm run test:phase6-browser` selects headless Firefox.
 Evidence is saved under `test-results/create-menu` and `test-results/phase6-<browser>`.
+Run `node tests/author-session-browser.cjs` for browser restart, missing display
+hints and cross-window logout regressions. It uses a disposable persistent WebKit
+profile; `AUTHOR_BROWSER=firefox` selects Firefox. Evidence is saved under
+`test-results/author-session-<browser>`.
 
 API process termination revokes every author session. Manager saves token
 settings before restarting the API: if it reports `restartOk: false`, confirm

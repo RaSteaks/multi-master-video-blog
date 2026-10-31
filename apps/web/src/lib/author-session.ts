@@ -17,13 +17,9 @@ export class AuthorSessionError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
-export function hasAuthorHint() {
-  return document.cookie.split(";").some(cookie => cookie.trim() === "author_hint=1");
-}
-
 function publish(next: AuthorSession) {
   session = next;
-  device = document.cookie.split(";").some(cookie => cookie.trim() === "author_device=1");
+  device = next.author || document.cookie.split(";").some(cookie => cookie.trim() === "author_device=1");
   clearTimeout(expiryTimer);
   if (next.author) expiryTimer = setTimeout(() => invalidateAuthorSession(), Math.max(0, next.expiresAt - Date.now()));
   listeners.forEach(listener => listener());
@@ -105,7 +101,9 @@ function initialize() {
     if (document.visibilityState === "hidden") return;
     // Device visibility must not wait for a slow/offline session endpoint.
     publish(session);
-    if (!hasAuthorHint()) { revision++; publish(guest); return; }
+    // Readable hints can be missing while the HttpOnly session is still valid.
+    // Always ask the server when opening or returning to a window; hints never
+    // determine identity, and a restored author must also regain their tools.
     // Temporary network errors do not revoke a still-valid server session.
     void refreshStatus().catch(() => {});
   }
