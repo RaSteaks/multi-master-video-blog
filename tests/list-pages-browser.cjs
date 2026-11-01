@@ -92,6 +92,28 @@ async function main() {
     await page.waitForFunction(() => document.querySelector("main iframe") && !document.querySelector("main [data-media-pending]"));
     assert.equal(await page.evaluate(() => Boolean(document.documentElement.dataset.vtDirection)), true, "The frame should fade in under the wipe.");
     pass("a slow preview starts on arrival, does not block the wipe and fades in during it");
+
+    fixture.collections.external_projects.push(...[2, 3, 4].map(id => ({ ...fixture.collections.external_projects[0],
+      id, title: `无说明网站${id}`, description: "", sort_order: id })));
+    await page.goto(`${fixture.url}/project`, { waitUntil: "networkidle" });
+    const heights = await page.locator("main .content-card").evaluateAll(cards => cards.map(card => card.getBoundingClientRect().height));
+    assert.equal(heights.length, 4);
+    assert.equal(heights[1], heights[0], "A bare card matches the described card beside it.");
+    assert.equal(heights[3], heights[2]);
+    assert.ok(heights[0] - heights[2] > 30, `A row of bare cards should shrink, got ${heights}.`);
+    await page.screenshot({ path: path.join(fixture.output, "list-bare-cards.png"), fullPage: true });
+    pass("a row of cards without descriptions drops the reserved text block");
+
+    const albumCard = page.locator("main .content-card");
+    const cardHeight = () => albumCard.evaluate(card => card.getBoundingClientRect().height);
+    await page.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
+    const describedAlbum = await cardHeight();
+    fixture.collections.albums[0].description = "";
+    await page.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
+    assert.equal(await albumCard.locator(".content-card-copy > p:not(.meta-line)").count(), 0);
+    assert.ok(describedAlbum - await cardHeight() > 30, "An album without a description should shrink.");
+    await page.screenshot({ path: path.join(fixture.output, "list-bare-album.png") });
+    pass("an album without a description shows no placeholder and drops the reserved text block");
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

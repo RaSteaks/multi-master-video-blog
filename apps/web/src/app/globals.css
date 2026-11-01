@@ -1274,8 +1274,18 @@ h3 {
   padding: 22px 24px 24px;
 }
 
+/* With no description there is no text block to reserve. A row still shares
+   one height, so this only shows once every card beside it is bare too. */
+.content-grid--wide .content-card-copy:has(> h2:last-child) {
+  min-height: 0;
+}
+
 .content-grid--wide .content-card h2 {
   font-size: 1.25rem;
+}
+
+.content-grid--wide .content-card-copy > h2:last-child {
+  margin-bottom: 0;
 }
 
 .content-grid--wide .content-card-copy > p:not(.meta-line) {

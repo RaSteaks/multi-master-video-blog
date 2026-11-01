@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 /** The inside of a `.content-card`; the caller owns the link or button that carries the card. */
 export function MediaCard({ media, meta, title, description, morphTitle }: {
   media: ReactNode;
-  meta: string;
+  meta?: string;
   title: string;
   description?: string | null;
   morphTitle?: boolean;
@@ -12,7 +12,7 @@ export function MediaCard({ media, meta, title, description, morphTitle }: {
     <>
       <div className="content-card-media">{media}</div>
       <div className="content-card-copy">
-        <p className="meta-line">{meta}</p>
+        {meta ? <p className="meta-line">{meta}</p> : null}
         <h2 data-vt={morphTitle ? "title" : undefined}>{title}</h2>
         {description ? <p>{description}</p> : null}
       </div>

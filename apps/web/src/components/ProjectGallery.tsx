@@ -151,7 +151,7 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
             media={<ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />} />
         </a> : <button type="button" className={`content-card ${styles.cardEntry}`} aria-label={`查看${project.title}`}
           onClick={event => { event.currentTarget.focus(); setViewing(project); }}>
-          <MediaCard meta="站内查看" title={project.title} description={project.description}
+          <MediaCard title={project.title} description={project.description}
             media={<ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />} />
         </button>}
         {management ? <div className={styles.cardManagement}>

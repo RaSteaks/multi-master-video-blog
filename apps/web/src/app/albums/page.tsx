@@ -57,7 +57,7 @@ export default async function AlbumsPage({
                   <MediaCard
                     meta={`${photoCount} 张照片${hdrCount ? ` · ${hdrCount} 组 HDR` : " · SDR"}`}
                     title={album.title}
-                    description={album.description || "尚未填写相簿说明。"}
+                    description={album.description}
                     media={
                       <div className="album-card-frame">
                         <span className="album-frame-index" aria-hidden="true">
