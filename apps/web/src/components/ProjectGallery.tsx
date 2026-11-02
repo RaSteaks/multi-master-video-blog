@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import { requestAuthorSignIn, useAuthorDevice, useAuthorSession } from "@/lib/author-session";
 import { projectRequest, readProjectList, readSavedProject, type WebsiteProject } from "@/lib/external-projects";
@@ -17,7 +18,7 @@ type ProjectList = { projects: WebsiteProject[]; hasMore: boolean; unavailable: 
 /** Cards only passing through the viewport during a scroll should not load their frames. */
 const PREVIEW_SETTLE_MS = 250;
 
-export function ProjectGallery({ initial, createRequested }: { initial: ProjectList; createRequested: boolean }) {
+export function ProjectGallery({ initial, createRequested, linkedProject }: { initial: ProjectList; createRequested: boolean; linkedProject?: number }) {
   const router = useRouter();
   const session = useAuthorSession();
   const device = useAuthorDevice();
@@ -36,6 +37,10 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     if (createRequested) setEditor("create");
   }
   const [viewing, setViewing] = useState<WebsiteProject | null>(null);
+  const linked = initial.projects.find(project => project.id === linkedProject && project.open_mode !== "external");
+  // Holds a route wipe back until the viewer below is on screen, so the visitor
+  // lands inside the site rather than on a list that a dialog then covers.
+  const [linkOpening, setLinkOpening] = useState(Boolean(linked));
   const [live, setLive] = useState<number[]>([]);
   const galleryRef = useRef<HTMLOListElement>(null);
   const listRequest = useRef<AbortController | null>(null);
@@ -60,6 +65,15 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     return () => controller.abort();
   }, [management, initial]);
   useEffect(() => () => listRequest.current?.abort(), []);
+
+  // A contact-strip link opens the site itself. The viewer is browser-only, so
+  // this waits for the mount; focusing the card gives closing the click's trail.
+  useEffect(() => {
+    if (!linked) return;
+    galleryRef.current?.querySelector<HTMLElement>(`#project-${linked.id} button`)?.focus({ preventScroll: true });
+    setViewing(linked);
+    setLinkOpening(false);
+  }, [linked]);
 
   useEffect(() => {
     const reduced = matchMedia("(prefers-reduced-motion: reduce)");
@@ -106,6 +120,19 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     finally { loadingMore.current = false; if (version === requestVersion.current) setBusy(false); }
   }
 
+  function closeViewer() {
+    // The dialog holds the page's scroll until it has gone.
+    flushSync(() => setViewing(null));
+    const url = new URL(location.href);
+    const project = url.searchParams.get("project");
+    if (!project) return;
+    document.getElementById(`project-${project}`)?.scrollIntoView({ block: "nearest" });
+    // Reloading should show the laboratory rather than reopen the site. The native
+    // call keeps this list: a server refresh would drop a row from beyond page one.
+    url.searchParams.delete("project");
+    window.history.replaceState(null, "", url);
+  }
+
   function closeEditor() {
     setEditor(null);
     const url = new URL(location.href);
@@ -143,7 +170,7 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
       <span aria-hidden="true">◇</span><h2>{management ? "还没有网站项目" : "作品整理中"}</h2>
       <p>{session.author ? "从页头工具添加第一个网站。" : "新的网页实验将在这里展出。"}</p>
     </div> : null}
-    <ol ref={galleryRef} className="content-grid content-grid--wide" aria-label="网站作品">
+    <ol ref={galleryRef} className="content-grid content-grid--wide" aria-label="网站作品" data-media-pending={linkOpening ? "" : undefined}>
       {projects.map(project => <li key={project.id} id={`project-${project.id}`}
         data-preview-id={project.preview_enabled ? project.id : undefined}>
         {project.open_mode === "external" ? <a className={`content-card ${styles.cardEntry}`} href={project.url} target="_blank" rel="noopener noreferrer"
@@ -169,6 +196,6 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
       setNotice(saved.published ? "网站已发布到实验室。" : "草稿已保存，可在管理网站中继续编辑。");
       closeEditor();
     }} /> : null}
-    {viewing ? <ProjectViewer project={viewing} onClose={() => setViewing(null)} /> : null}
+    {viewing ? <ProjectViewer project={viewing} onClose={closeViewer} /> : null}
   </>;
 }

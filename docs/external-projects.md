@@ -45,11 +45,14 @@ The page's author-only **管理网站** control shows published records and draf
 Its per-card menu edits or changes publication. Sorting is edited in the form.
 
 - `GET /api/external-projects?page=1`: published rows, 24 per page with `hasMore`.
-- `/project?project=<id>#project-<id>`: the contact strip's public destination.
+- `/project?project=<id>`: the contact strip's public destination.
+  An in-site project opens straight in its viewer; closing it scrolls to its card
+  on the list and drops the query, so a reload shows the laboratory.
   The server adds the requested published project when it is outside the first
   page; ordinary Load more keeps its page offsets and deduplicates that row.
   Missing or unpublished targets show an unavailable notice alongside the public
-  list. The query never enables draft or management access.
+  list, and an independently opened project stays a card. The query never enables
+  draft or management access.
 - `GET /api/external-projects/manage?page=1`: same bounded listing including drafts,
   protected by the existing upload authority (session + CSRF or explicit token).
 - `POST /api/external-projects`: create; JSON or multipart.

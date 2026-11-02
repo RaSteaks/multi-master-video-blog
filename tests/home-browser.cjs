@@ -338,7 +338,7 @@ async function main() {
     const frameWidth = await live.first().evaluate(frame => frame.getBoundingClientRect().width);
     assert.ok(frameWidth < 93, `The page fits inside its frame, got ${frameWidth}px.`);
     await page.locator(".contact-frame", { hasText: "实时网站6" }).click();
-    await page.waitForURL(`${fixture.url}/project?project=6#project-6`);
+    await page.waitForURL(`${fixture.url}/project?project=6`);
     await page.goto(`${fixture.url}/`, { waitUntil: "networkidle" });
     await live.first().waitFor({ state: "attached" });
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -400,29 +400,51 @@ async function main() {
     fixture.collections.external_projects.splice(0, fixture.collections.external_projects.length,
       ...Array.from({ length: 30 }, (_, index) => project(index + 1)), { ...project(31), title: "回归草稿", published: false });
     await page.goto(fixture.url, { waitUntil: "networkidle" });
-    await page.locator('.contact-frame[href="/project?project=1#project-1"]').click();
-    await page.waitForURL(`${fixture.url}/project?project=1#project-1`);
-    await page.locator("#project-1").waitFor({ state: "visible" });
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.locator('.contact-frame[href="/project?project=1"]').click();
+    await page.waitForFunction(() => document.getAnimations().some(animation => animation.animationName === "vt-wipe-reveal-frame"));
+    assert.equal(await page.evaluate(() => document.querySelector("dialog.project-viewer")?.open), true, "The frame opens into the site, not onto the list.");
+    await page.waitForURL(`${fixture.url}/project?project=1`);
+    const linkedViewer = page.getByRole("dialog", { name: "回归网站1", exact: true });
+    await linkedViewer.waitFor();
+    assert.equal(await linkedViewer.locator("iframe").getAttribute("src"), "http://127.0.0.1:18128/project/1", "A strip link opens the site itself.");
     assert.equal(await page.locator('ol[aria-label="网站作品"] > li').count(), 25, "Only the requested row is added to the first page.");
+    await linkedViewer.getByRole("button", { name: "← 返回实验室", exact: true }).click();
+    await linkedViewer.waitFor({ state: "hidden" });
+    assert.equal(page.url(), `${fixture.url}/project`, "Closing drops the query.");
+    assert.equal(await page.locator("#project-1").count(), 1, "Closing keeps a row from beyond the first page.");
+    assert.equal(await page.evaluate(() => document.activeElement.getAttribute("aria-label")), "查看回归网站1", "Focus returns to the card.");
     await page.getByRole("button", { name: "查看回归网站1", exact: true }).click();
-    await page.locator(".project-viewer iframe").waitFor();
+    await linkedViewer.waitFor();
+    assert.equal(await linkedViewer.locator("iframe").count(), 1, "The card still opens its viewer.");
     await page.keyboard.press("Escape");
+    await linkedViewer.waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "加载更多", exact: true }).click();
     await page.waitForFunction(() => document.querySelectorAll('ol[aria-label="网站作品"] > li').length === 30);
     assert.equal(await page.locator("#project-1").count(), 1, "Ordinary pagination does not duplicate the requested row.");
     await page.screenshot({ path: path.join(fixture.output, "home-project-target.png"), fullPage: true });
-    await page.goto(`${fixture.url}/project?project=7#project-7`, { waitUntil: "networkidle" });
+    await page.goto(`${fixture.url}/project?project=7`, { waitUntil: "networkidle" });
+    await page.getByRole("dialog", { name: "回归网站7", exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => scrollY), 0, "The list does not move under the viewer.");
+    await page.keyboard.press("Escape");
+    await page.waitForURL(`${fixture.url}/project`);
     await page.waitForFunction(() => scrollY > 0);
-    await page.waitForTimeout(700);
     const landing = await page.evaluate(() => ({
       card: document.querySelector("#project-7").getBoundingClientRect().top,
       header: document.querySelector(".site-header").getBoundingClientRect().bottom,
     }));
     assert.ok(landing.card >= landing.header, `A linked card lands below the header, got ${JSON.stringify(landing)}.`);
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await page.getByRole("dialog").count(), 0, "A reload after closing shows the laboratory.");
+    fixture.collections.external_projects[9].open_mode = "external";
+    await page.goto(`${fixture.url}/project?project=10`, { waitUntil: "networkidle" });
+    await page.locator("#project-10").waitFor();
+    assert.equal(await page.getByRole("dialog").count(), 0, "An independently opened site stays a card.");
     for (const id of [31, 999]) {
-      await page.goto(`${fixture.url}/project?project=${id}#project-${id}`, { waitUntil: "networkidle" });
+      await page.goto(`${fixture.url}/project?project=${id}`, { waitUntil: "networkidle" });
       await page.getByText("此网站已下架或不存在，以下为其他已发布作品。", { exact: true }).waitFor();
       assert.equal(await page.locator(`#project-${id}`).count(), 0);
+      assert.equal(await page.getByRole("dialog").count(), 0);
       assert.equal(await page.locator('ol[aria-label="网站作品"] > li').count(), 24);
     }
     pass("contact links resolve later-page projects without exposing drafts or breaking pagination");
@@ -430,11 +452,11 @@ async function main() {
     fixture.collections.external_projects.splice(0, fixture.collections.external_projects.length,
       ...Array.from({ length: 200 }, (_, index) => project(index + 1)));
     await page.goto(fixture.url, { waitUntil: "networkidle" });
-    assert.equal(await page.locator('.contact-frame[href="/project?project=1#project-1"]').count(), 1);
+    assert.equal(await page.locator('.contact-frame[href="/project?project=1"]').count(), 1);
     fixture.collections.external_projects.push(project(201));
     await page.reload({ waitUntil: "networkidle" });
-    assert.equal(await page.locator('.contact-frame[href="/project?project=201#project-201"]').count(), 1);
-    assert.equal(await page.locator('.contact-frame[href="/project?project=1#project-1"]').count(), 0);
+    assert.equal(await page.locator('.contact-frame[href="/project?project=201"]').count(), 1);
+    assert.equal(await page.locator('.contact-frame[href="/project?project=1"]').count(), 0);
     assert.equal(await page.locator(".contact-frame").count(), 203, "Display payloads retain their per-collection limit.");
     pass("the strip keeps the newest 200 projects at its per-collection limit");
 

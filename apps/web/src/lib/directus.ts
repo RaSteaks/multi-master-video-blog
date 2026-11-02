@@ -680,7 +680,7 @@ export async function getContactSheet() {
           preview_url: project.preview_url && isWebsiteUrl(project.preview_url) ? project.preview_url : null,
           preview_enabled: boolValue(project.preview_enabled),
         };
-        return { key: `project-${project.id}`, title: project.title, href: external ? project.url : `/project?project=${project.id}#project-${project.id}`, external,
+        return { key: `project-${project.id}`, title: project.title, href: external ? project.url : `/project?project=${project.id}`, external,
           cover: assetUrl(project.cover_image, "content-card"), addedAt: project.created_at,
           // A cover is already a picture, and costs the visitor far less than a running page.
           preview: !project.cover_image && preview.preview_enabled ? preview : undefined };

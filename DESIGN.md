@@ -180,7 +180,8 @@ corners and inset preview chips use 4px corners.
   frames scroll away to the left, with room to clear the fade. Records stay capped
   at the 200 most recently added per collection, independent of list-page order. A project link carries
   its ID as a query parameter so the laboratory can fetch one public target beyond
-  the first page, without changing ordinary pagination or exposing drafts. Pictures
+  the first page, without changing ordinary pagination or exposing drafts, and an
+  in-site project opens directly in its viewer over the list. Pictures
   are not tinted or covered. Hovering or focusing a frame is a light table: one lamp
   under the film follows it, lighting the base and sprocket holes around it, the
   frame rises 14% from its lower edge, and a centred label hangs below
