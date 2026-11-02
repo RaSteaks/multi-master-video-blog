@@ -147,12 +147,68 @@ corners and inset preview chips use 4px corners.
   Home's three action slots use published project links and laboratory fallbacks;
   profile, layout breakpoints and visual tokens remain unchanged.
 
+- `HomeDiagram` draws reference line work on a canvas above the liquid background
+  and behind the home cards, in the empty side of the desktop composition and at
+  low opacity behind the cards at 1200px and below. It offers a vectorscope (standard,
+  points, ×2) and a waveform (luma, RGB or YCbCr parade, RGB overlay), both read from
+  one scan line of a real Rec.709 signal (`scope-signal.ts`: 75% or 100% bars, a hue
+  sweep or ColorChecker) with white, green, amber or signal-coloured phosphor, and
+  random grain per visit (`scope-drawing.ts`), or a slowly turning gamut solid
+  (`color-volume.ts`: Rec.709, P3-D65, Rec.2020 or ACES AP0, a random one each visit
+  unless pinned, in CIE XYZ, CIE xyY, CIELAB, Oklab, ICtCp or CAM16-UCS, with labelled axes).
+  XYZ and xyY are as measured, so AP0 keeps its D60 white and its negative Y. xyY
+  places chromaticity x/y on the base and relative luminance Y upward (white Y=1);
+  edges approaching black use their own limiting chromaticity, never an invented
+  common black xy. The six coordinate choices use two rows of three. The appearance
+  models adapt AP0 to D65. Everything drawn is computed from the real signal or model, and only
+  the solid animates; reduced motion leaves one still frame. Above 1200px, where it
+  clears every card, the solid can be dragged: a flick is speed-limited and eases back
+  to the resting turn, and reduced motion keeps dragging without the throw. By default each visit
+  draws one of the three diagrams at random, with every option of that diagram random
+  too; choosing a diagram pins it, and its signal, style and phosphor can each stay
+  random or be pinned. The Appearance
+  background tab chooses it per browser (`home-diagram.ts`), including off. Storage
+  events synchronize resets across tabs; an in-memory override exists only while
+  persistence fails, and also represents a local reset explicitly.
+
+- `ContactStrip` closes the home page, on the first screen wherever the content
+  fits: published videos,
+  articles, albums and laboratory sites on full-width film, with the album card's
+  sprocket values turned to run along it, fading out toward both window edges as the
+  owner's explicit exception for this strip. Time runs left to right by date added.
+  The newest frame holds the centre of the page with bare film ahead of it, and older
+  frames scroll away to the left, with room to clear the fade. Records stay capped
+  at the 200 most recently added per collection, independent of list-page order. A project link carries
+  its ID as a query parameter so the laboratory can fetch one public target beyond
+  the first page, without changing ordinary pagination or exposing drafts. Pictures
+  are not tinted or covered. Hovering or focusing a frame is a light table: one lamp
+  under the film follows it, lighting the base and sprocket holes around it, the
+  frame rises 14% from its lower edge, and a centred label hangs below
+  the frame, with the MM-DD added date above the title,
+  and a work with no cover shows its title in the frame. A coverless laboratory site
+  runs the shared `ProjectPreview` instead: on-screen frames only, the newest three
+  at most, never under reduced motion, with its title beneath until the page loads.
+  If the CMS fails the strip is omitted and the page still renders.
+  A frame prefetches its full destination only when a pointer rests on it for 90 ms,
+  is pressed or takes focus, so a low-memory host never fetches the whole strip. On
+  a click it opens: the destination is revealed from the frame's own rectangle out
+  to the window behind a lit 1 px edge, while the old page dims. A picture with the
+  same cover waiting (article, video) flies there on the same curve, so it stays
+  inside the opening; albums and laboratory sites dissolve in place. It may wait up
+  to 3s for real pixels, then switches directly as any late navigation does.
+
+- The loading line ramps from pure black at the left to pure white at its leading
+  end, and on finishing reaches the right edge before it fades. SDR is a CSS gradient. `@media (dynamic-range: high)` layers a cICP-tagged
+  BT.2100 HLG PNG (`scripts/generate-hlg-ramp.cjs`), whose peak signal follows the
+  display's own headroom. There is no setting; a capable browser and display get
+  it automatically.
+
 - Backdrop declarations use `-webkit-backdrop-filter` before `backdrop-filter`
   so production CSS retains the standard property. Blur values are unchanged.
 
 - Motion roles are owned by the `--motion-*` variables in `globals.css`: controls
   130 ms, panel changes 260 ms / 12 px, media reveals 180 ms, emphasis 420 ms,
-  route wipes 1200 ms, and reduced-motion fades 100 ms. These are role budgets rather than mandatory
+  route wipes 1200 ms, strip frame openings 760 ms, and reduced-motion fades 100 ms. These are role budgets rather than mandatory
   effects on every element. Keep the reference-room identity; media comparison
   surfaces must not receive decorative colour, luminance or blur changes.
   `NavBar` fully prefetches its five routes. `PageTransition` permits header

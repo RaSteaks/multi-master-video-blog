@@ -3,6 +3,11 @@ function envText(name: string, fallback: string) {
   return value || fallback;
 }
 
+/** Env files keep a value on one line, so a literal `\\n` in it marks a line break. */
+function envLines(name: string, fallback: string) {
+  return envText(name, fallback).replace(/\\n/g, "\n");
+}
+
 function envList(name: string, fallback: string[]) {
   const value = process.env[name]?.trim();
   if (!value) return fallback;
@@ -27,7 +32,7 @@ export const siteConfig = {
     ),
     profileName: envText("SITE_HOME_PROFILE_NAME", "Creator Name"),
     profileRole: envText("SITE_HOME_PROFILE_ROLE", "Image maker / writer / web builder"),
-    profileBio: envText(
+    profileBio: envLines(
       "SITE_HOME_PROFILE_BIO",
       "A personal archive for video projects, technical notes, writing, and experiments around web-based media publishing.",
     ),

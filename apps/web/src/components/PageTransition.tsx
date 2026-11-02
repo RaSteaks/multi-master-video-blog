@@ -56,6 +56,8 @@ const VEIL_EASING = "cubic-bezier(.22, 1, .36, 1)";
  *   - content is on screen but the cover is not decoded: the wipe alone
  *   - still loading after the bounded wait, or snapshot capture failed: switch
  *     directly, without tinting the visible destination or replaying a divider
+ * A contact-strip frame opens instead of wiping: the destination grows out of
+ * the frame's own rectangle (see markFrameOrigin).
  * The veil also remains the fallback for unsupported browsers.
  *
  * Loading hint — only navigations that outlast SLOW_NAV_THRESHOLD_MS show the
@@ -78,8 +80,9 @@ const SLOW_NAV_THRESHOLD_MS = 100;
 const TRANSITION_RECOVERY_TIMEOUT_MS = 15_000;
 
 // Native snapshots must wait for the destination to preserve real old/new
-// pixels. Header routes are fully prefetched, but a cold production response
-// can still take hundreds of milliseconds. Bound that wait below the browser's
+// pixels. Header routes are fully prefetched, and strip frames once a pointer
+// rests on them, but a cold production response can still take hundreds of
+// milliseconds. Bound that wait below the browser's
 // own snapshot timeout; on failure show content directly, never a fake late wipe.
 const NAVIGATION_READY_MS = 3000;
 // Card/cover morphs keep the short image-readiness budget.
@@ -298,6 +301,7 @@ export function PageTransition({ children }: { children: ReactNode }) {
       // beginNavigation removed the previous snapshot's names and divider so
       // neither can be captured as part of this navigation's old page.
       const sharedKinds = markSharedElements(anchor);
+      const opensFrame = markFrameOrigin(anchor);
 
       const fromPathname = pathnameRef.current;
       const isCurrent = () => navIdRef.current === id;
@@ -310,13 +314,14 @@ export function PageTransition({ children }: { children: ReactNode }) {
       // with the page instead of staying fixed above it.
       const touchesHome = fromPathname === "/" || url.pathname === "/";
       const pageBudgetMs = url.pathname === "/" ? HOME_DECISION_MS : VT_DECISION_MS;
-      const snapshotBudgetMs = anchor.closest(".site-header") ? NAVIGATION_READY_MS : pageBudgetMs;
+      const snapshotBudgetMs = anchor.closest(".site-header") || opensFrame ? NAVIGATION_READY_MS : pageBudgetMs;
       const transition = document.startViewTransition(async () => {
         router.push(`${url.pathname}${url.search}${url.hash}`);
         const readiness = await waitForRouteReady(
           fromPathname,
           pathnameRef,
           sharedKinds.has("cover"),
+          opensFrame,
           isCurrent,
           snapshotBudgetMs,
         );
@@ -333,7 +338,8 @@ export function PageTransition({ children }: { children: ReactNode }) {
           // Only the first match per kind: a destination that is itself a list
           // (e.g. nav → /videos) has many [data-vt] elements, and duplicate
           // names would abort the whole transition.
-          markSharedElements(document.getElementById("main-content"), sharedKinds);
+          const landed = markSharedElements(document.getElementById("main-content"), sharedKinds);
+          if (landed.has("cover")) document.documentElement.dataset.vtCover = "landed";
           return;
         }
         // "content": the old snapshot is already captured, so the clicked
@@ -435,6 +441,20 @@ function markSharedElements(root: Element | null, kinds?: Set<string>) {
   return marked;
 }
 
+// The rectangle a contact-strip frame opens from, for the reveal and its lit edge.
+function markFrameOrigin(anchor: HTMLAnchorElement) {
+  const picture = anchor.closest(".contact-strip") && anchor.querySelector(".contact-frame-picture");
+  if (!picture) return false;
+  const { top, left, width, height } = picture.getBoundingClientRect();
+  const root = document.documentElement;
+  root.dataset.vtOrigin = "frame";
+  root.style.setProperty("--frame-top", `${top}px`);
+  root.style.setProperty("--frame-left", `${left}px`);
+  root.style.setProperty("--frame-width", `${width}px`);
+  root.style.setProperty("--frame-height", `${height}px`);
+  return true;
+}
+
 function clearSharedElementNames() {
   document.querySelectorAll<HTMLElement>(SHARED_SELECTOR).forEach((element) => {
     element.style.removeProperty("view-transition-name");
@@ -444,8 +464,13 @@ function clearSharedElementNames() {
 function clearSnapshotStyles() {
   clearSharedElementNames();
   wipeLine().remove();
-  delete document.documentElement.dataset.vtDirection;
-  document.documentElement.style.removeProperty("--wipe-top");
+  const root = document.documentElement;
+  delete root.dataset.vtDirection;
+  delete root.dataset.vtOrigin;
+  delete root.dataset.vtCover;
+  for (const property of ["--wipe-top", "--frame-top", "--frame-left", "--frame-width", "--frame-height"]) {
+    root.style.removeProperty(property);
+  }
 }
 
 // Waits up to budgetMs for the new route's real content (and, when the
@@ -456,6 +481,7 @@ function waitForRouteReady(
   fromPathname: string,
   pathnameRef: { current: string },
   morphsCover: boolean,
+  opensFrame: boolean,
   isCurrent: () => boolean,
   budgetMs: number,
 ) {
@@ -481,11 +507,13 @@ function waitForRouteReady(
 
     // Only an <img> cover can be confirmed decoded; any other cover (the
     // video player frame), a missing one or a failed decode cross-fades the
-    // page without waiting out the budget.
+    // page without waiting out the budget. A frame opening into the player
+    // still flies there: it is the same work, and its poster counts as media.
     function watchCover() {
       const cover = main?.querySelector('[data-vt="cover"]');
       if (!(cover instanceof HTMLImageElement)) {
-        coverUnavailable = true;
+        if (cover && opensFrame) coverReady = true;
+        else coverUnavailable = true;
         return;
       }
       if (cover === watchedCover) return;
@@ -522,6 +550,12 @@ function waitForRouteReady(
         image.loading = "eager";
         mediaPending++;
         image.decode().then(settle, settle);
+      });
+      main?.querySelectorAll<HTMLVideoElement>("video[poster]").forEach((video) => {
+        const poster = new Image();
+        poster.src = video.poster;
+        mediaPending++;
+        poster.decode().then(settle, settle);
       });
     }
 

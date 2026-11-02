@@ -1,5 +1,6 @@
 import { connection } from "next/server";
-import { readWebsiteProject } from "./external-projects";
+import { contactFrames, type ContactWork } from "./contact-sheet";
+import { isWebsiteUrl, readWebsiteProject } from "./external-projects";
 import {
   assetUrl as publicAssetUrl,
   type AssetPreset,
@@ -28,7 +29,7 @@ export function assetUrl(fileId: DirectusFileId, preset?: AssetPreset) {
   return src ? previewAssetUrl(src) : null;
 }
 
-export async function getExternalProjects() {
+export async function getExternalProjects(projectId?: number) {
   // Publication edits should be visible immediately after the create dialog closes.
   await connection();
   try {
@@ -36,14 +37,28 @@ export async function getExternalProjects() {
       fields: "id,title,description,url,preview_url,preview_enabled,open_mode,cover_image,published,sort_order",
       "filter[published][_eq]": "true", sort: "sort_order,-id", limit: "25",
     });
-    const response = await fetchDirectusPreview(`/items/external_projects?${params}`);
-    if (!response.ok) throw new Error(`CMS project request failed: ${response.status}`);
-    const result: unknown = await response.json();
-    if (!result || typeof result !== "object" || !("data" in result) || !Array.isArray(result.data)) throw new Error("Invalid CMS project list");
-    return { projects: result.data.slice(0, 24).map(readWebsiteProject), hasMore: result.data.length > 24, unavailable: false };
+    const rows = await fetchWebsiteProjects(params);
+    const projects = rows.slice(0, 24);
+    if (projectId !== undefined && !projects.some(project => project.id === projectId)) {
+      // A contact-strip link can address a later page. Fetch just that public row;
+      // keep the ordinary page offset so Load more neither skips nor duplicates it.
+      params.set("filter[id][_eq]", String(projectId));
+      params.set("limit", "1");
+      projects.unshift(...await fetchWebsiteProjects(params));
+    }
+    return { projects, hasMore: rows.length > 24, unavailable: false,
+      missingProject: projectId !== undefined && !projects.some(project => project.id === projectId) };
   } catch {
     return { projects: [], hasMore: false, unavailable: true };
   }
+}
+
+async function fetchWebsiteProjects(params: URLSearchParams) {
+  const response = await fetchDirectusPreview(`/items/external_projects?${params}`);
+  if (!response.ok) throw new Error(`CMS project request failed: ${response.status}`);
+  const result: unknown = await response.json();
+  if (!result || typeof result !== "object" || !("data" in result) || !Array.isArray(result.data)) throw new Error("Invalid CMS project list");
+  return result.data.map(readWebsiteProject);
 }
 
 export type Post = {
@@ -222,6 +237,10 @@ const directusUrl = stripTrailingSlash(
 const showDrafts = process.env.DIRECTUS_SHOW_DRAFTS === "true";
 
 const configuredRevalidate = Number(process.env.DIRECTUS_REVALIDATE);
+// Bounds one home render on a low-memory host, per collection.
+const CONTACT_SHEET_LIMIT = 200;
+// The strip keeps the most recently added works, whatever order a list page shows them in.
+const CONTACT_SHEET_SORT = "-created_at,-id";
 const REVALIDATE_SECONDS = Number.isFinite(configuredRevalidate)
   ? Math.max(0, configuredRevalidate)
   : process.env.NODE_ENV === "production"
@@ -402,10 +421,10 @@ export function isPublished(item: { published: boolean | number }) {
   return boolValue(item.published);
 }
 
-export async function getPosts(limit = 24) {
+export async function getPosts(limit = 24, sort = "-id") {
   const params = new URLSearchParams({
     fields: POST_LIST_FIELDS,
-    sort: "-id",
+    sort,
     limit: String(limit),
   });
   addPublishedFilter(params);
@@ -432,10 +451,10 @@ export async function getPost(slug: string) {
   return response.data[0] ?? null;
 }
 
-export async function getVideoProjects(limit = 24) {
+export async function getVideoProjects(limit = 24, sort = "sort_order,-id") {
   const params = new URLSearchParams({
     fields: VIDEO_LIST_FIELDS,
-    sort: "sort_order,-id",
+    sort,
     limit: String(limit),
   });
   addPublishedFilter(params);
@@ -623,6 +642,55 @@ export async function getCounts() {
     videos: aggregateCount(videosRes),
     albums: aggregateCount(albumsRes),
   };
+}
+
+type ProjectFrame = {
+  id: number; title: string; url: string; preview_url: string | null; preview_enabled: boolean | number;
+  open_mode: string; cover_image: DirectusFileId; published: boolean | number; created_at: string | null;
+};
+
+async function getProjectFrames() {
+  const params = new URLSearchParams({
+    fields: "id,title,url,preview_url,preview_enabled,open_mode,cover_image,published,created_at",
+    sort: CONTACT_SHEET_SORT, limit: String(CONTACT_SHEET_LIMIT),
+  });
+  addPublishedFilter(params);
+  const response = await directusFetch<DirectusListResponse<ProjectFrame>>(`/items/external_projects?${params}`);
+  return response.data.filter(project => isWebsiteUrl(project.url));
+}
+
+/** Every published video, article, album and laboratory site, oldest first, capped per collection. */
+export async function getContactSheet() {
+  try {
+    const [videos, posts, albums, projects] = await Promise.all([
+      getVideoProjects(CONTACT_SHEET_LIMIT, CONTACT_SHEET_SORT), getPosts(CONTACT_SHEET_LIMIT, CONTACT_SHEET_SORT),
+      getAlbums(CONTACT_SHEET_LIMIT), getProjectFrames(),
+    ]);
+    const works: ContactWork[] = [
+      ...posts.map(post => ({ key: `post-${post.id}`, title: post.title, href: `/posts/${post.slug}`, external: false,
+        cover: assetUrl(post.cover_image, "content-card"), addedAt: post.created_at, morphsCover: Boolean(post.cover_image) })),
+      ...videos.map(video => ({ key: `video-${video.id}`, title: video.title, href: `/videos/${video.slug}`, external: false,
+        cover: assetUrl(video.cover_image, "content-card"), addedAt: video.created_at, morphsCover: Boolean(video.cover_image) })),
+      ...albums.map(album => ({ key: `album-${album.id}`, title: album.title, href: `/albums/${album.slug}`, external: false,
+        cover: assetUrl(album.cover_image || album.photos?.[0]?.sdr_image || null, "album-cover"), addedAt: album.created_at })),
+      ...projects.map(project => {
+        const external = project.open_mode === "external";
+        const preview = {
+          title: project.title, url: project.url, cover_image: null, published: isPublished(project),
+          preview_url: project.preview_url && isWebsiteUrl(project.preview_url) ? project.preview_url : null,
+          preview_enabled: boolValue(project.preview_enabled),
+        };
+        return { key: `project-${project.id}`, title: project.title, href: external ? project.url : `/project?project=${project.id}#project-${project.id}`, external,
+          cover: assetUrl(project.cover_image, "content-card"), addedAt: project.created_at,
+          // A cover is already a picture, and costs the visitor far less than a running page.
+          preview: !project.cover_image && preview.preview_enabled ? preview : undefined };
+      }),
+    ];
+    return contactFrames(works);
+  } catch {
+    // The strip is a bonus on this page; the profile and index must still load.
+    return [];
+  }
 }
 
 function aggregateCount(response: DirectusAggregateResponse) {

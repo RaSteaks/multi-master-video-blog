@@ -407,6 +407,25 @@ let base;
     assert.equal(stalledLog.some((event) => event.type === "announce" && event.detail.startsWith("已切换")), false);
     pass("A missing compositor callback times out without a false success announcement");
     await stalledContext.close();
+
+    const { context: seekContext, page: sought } = await newPage();
+    await seekTo(sought, 1.2);
+    await video(sought).evaluate((element) => {
+      // WebKit can finish a paused seek without a callback, as the slow switch above
+      // intermittently showed: the picture is there and the switch must still confirm.
+      element.requestVideoFrameCallback = () => 1;
+      element.cancelVideoFrameCallback = () => {};
+    });
+    const sought0 = await now(sought);
+    await sought.getByRole("button", { name: "Switch to SDR B (sdr)" }).click();
+    await ready(sought, "SDR B");
+    await sought.waitForFunction(() => window.__announcement === "已切换到 SDR B", null, { timeout: 2000 });
+    const soughtLog = await events(sought, sought0);
+    const release = soughtLog.find((event) => event.type === "freeze-off");
+    const settled = soughtLog.filter((event) => event.type === "video:seeked" && event.at < release.at).at(-1);
+    assert.ok(release.at - settled.at < 1000, `the held frame is not kept to the timeout (${Math.round(release.at - settled.at)}ms after seeked)`);
+    pass("A paused seek with no frame callback still confirms the switch without waiting out the timeout");
+    await seekContext.close();
   }
 
   // ---- Unmount mid-switch, reduced motion, phone size ----

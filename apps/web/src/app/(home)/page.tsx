@@ -1,6 +1,8 @@
 import type { CSSProperties } from "react";
 import Link from "next/link";
-import { getCounts } from "@/lib/directus";
+import { ContactStrip } from "@/components/ContactStrip";
+import { HomeDiagram } from "@/components/HomeDiagram";
+import { getContactSheet, getCounts } from "@/lib/directus";
 import {
   homeLayout,
   type HomeWidgetLayout,
@@ -10,15 +12,16 @@ import { siteConfig } from "@/lib/site-config";
 type HomeWidgetStyle = CSSProperties & Record<`--${string}`, string | number>;
 
 export default async function Home() {
-  const {
+  const [{
     posts: postCount,
     videos: videoCount,
     albums: albumCount,
-  } = await getCounts();
+  }, frames] = await Promise.all([getCounts(), getContactSheet()]);
 
   return (
     <>
       <main className="orbital-home" aria-label={siteConfig.home.profileName}>
+        <HomeDiagram />
         <div
           className="orbital-stage"
           style={{ "--home-stage-height": homeLayout.stage.minHeight } as HomeWidgetStyle}
@@ -41,6 +44,7 @@ export default async function Home() {
             <BilibiliWidget />
           </div>
         </div>
+        <ContactStrip frames={frames} />
       </main>
     </>
   );

@@ -33,6 +33,8 @@ import {
   type ResolvedThemeColor,
   type StoredThemeColor,
 } from "@/lib/theme-color";
+import { saveHomeDiagram } from "@/lib/home-diagram";
+import { HomeDiagramSettings } from "./HomeDiagramSettings";
 import { HsvPicker } from "./HsvPicker";
 import { LiquidSettings, useLiquidPreferences } from "./LiquidSettings";
 
@@ -396,6 +398,7 @@ export function AppearanceControl({
 
   function resetBackground() {
     liquid.reset();
+    saveHomeDiagram(null);
     removeLocal(MODE_KEY);
     removeLocal(BLUR_KEY);
     removeLocal(IMAGE_KEY);
@@ -900,6 +903,7 @@ export function AppearanceControl({
             <LiquidSettings controller={liquid} />
           )}
           </div>
+          <HomeDiagramSettings />
           </section>
         )}
         </div>

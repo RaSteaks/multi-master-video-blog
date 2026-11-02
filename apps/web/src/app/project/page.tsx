@@ -9,10 +9,11 @@ export const metadata: Metadata = {
 };
 
 export default async function ProjectPage({ searchParams }: {
-  searchParams: Promise<{ dialog?: string | string[] }>;
+  searchParams: Promise<{ dialog?: string | string[]; project?: string | string[] }>;
 }) {
   const query = await searchParams;
-  const result = await getExternalProjects();
+  const projectId = typeof query.project === "string" && /^[1-9]\d*$/.test(query.project) ? Number(query.project) : undefined;
+  const result = await getExternalProjects(Number.isSafeInteger(projectId) ? projectId : undefined);
   return <main className="shell page-stack project-index">
     <ProjectGallery initial={result} createRequested={query.dialog === "create"} />
   </main>;

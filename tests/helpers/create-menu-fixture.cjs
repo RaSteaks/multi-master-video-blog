@@ -98,8 +98,13 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
           return json(res, { data: [...groups.values()] });
         }
         if (collection === "albums") selected = selected.map(row => ({ ...row, photos: collections.album_photos.filter(photo => photo.album_id === row.id) }));
-        if (collection === "external_projects" && !id) {
-          selected.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || b.id - a.id);
+        if (!id && url.searchParams.get("sort") === "-created_at,-id") {
+          selected.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")) || b.id - a.id);
+          selected = selected.slice(0, Number(url.searchParams.get("limit") || 100));
+        } else if (!id && (collection === "external_projects" || url.searchParams.get("fields") === "id,created_at")) {
+          selected.sort(url.searchParams.get("sort") === "id"
+            ? (a, b) => a.id - b.id
+            : (a, b) => (a.sort_order || 0) - (b.sort_order || 0) || b.id - a.id);
           const offset = Number(url.searchParams.get("offset") || 0);
           selected = selected.slice(offset, offset + Number(url.searchParams.get("limit") || 100));
         }

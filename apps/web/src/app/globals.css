@@ -83,6 +83,7 @@
      asymmetric curve such as 0.4, 0, 0.2, 1 rushes 78% of the way in half
      the time, then crawls). */
   --motion-wipe-duration: 1200ms;
+  --motion-frame-duration: 760ms;
   --motion-wipe-ease: cubic-bezier(0.37, 0, 0.63, 1);
   /* The wipe edge leans with its travel: like "/" moving left → right, like
      "\" (mirrored) moving right → left. --wipe-run is how far its top and
@@ -459,22 +460,34 @@ body::after {
   inset: 0 0 auto;
   z-index: 200;
   height: 2px;
-  background: linear-gradient(
-    90deg,
-    var(--accent-base),
-    var(--accent-2),
-    var(--accent-readable)
-  );
+  background: linear-gradient(90deg, #000000, #ffffff);
   content: "";
   opacity: 0;
   pointer-events: none;
-  transform: scaleX(0);
+  /* At rest it is complete: leaving the animation, the line reaches the right
+     end, white included, before it fades. */
+  transform: scaleX(1);
   transform-origin: left center;
-  transition: opacity 120ms ease;
+  transition: opacity 220ms ease-out;
+}
+
+/* HDR displays only: the same ramp as a BT.2100 HLG PNG (cICP-tagged, from
+   scripts/generate-hlg-ramp.cjs). Signal 1.0 is the display's own peak, so the
+   leading end rises above SDR white as far as the screen allows. Where the file
+   cannot be decoded the gradient above shows through. */
+@media (dynamic-range: high) {
+  :root {
+    --hlg-ramp: url("data:image/png;base64,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");
+  }
+
+  body::after {
+    dynamic-range-limit: no-limit;
+    background: var(--hlg-ramp) 0 0 / 100% 100% no-repeat, linear-gradient(90deg, #000000, #ffffff);
+  }
 }
 
 html.route-transition-pending body::after {
-  opacity: 0.9;
+  opacity: 1;
   animation: route-progress 1.8s cubic-bezier(.16, 1, .3, 1) forwards;
 }
 
@@ -644,6 +657,84 @@ html[data-vt-direction="back"]::view-transition-image-pair(route-wipe-line) {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* With a cover waiting at the far end, the picture in flight stays solid and the
+   destination's fades in over it. WebKit can leave the new image blank until the
+   transition ends, and a cross-fade would then dissolve the cover into nothing. */
+html[data-vt-cover]::view-transition-old(vt-cover) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+html[data-vt-cover]::view-transition-new(vt-cover) {
+  animation: vt-cover-land var(--motion-panel-duration) var(--motion-ease) both;
+  mix-blend-mode: normal;
+}
+
+@keyframes vt-cover-land {
+  from { opacity: 0; }
+}
+
+/* A contact-strip frame opens into its page, as a print is made from one frame
+   of a contact sheet. The reveal starts on the frame's rectangle, and the cover
+   starts there too on the same curve, so it stays inside the opening all the
+   way to its place. The lit edge is the divider's light turned into a frame.
+   vt-wipe-* names let PageTransition share one clock with the reveal. */
+html[data-vt-origin="frame"]::view-transition-new(root) {
+  animation: vt-wipe-reveal-frame var(--motion-frame-duration) var(--motion-ease) both;
+}
+
+html[data-vt-origin="frame"]::view-transition-old(root) {
+  animation: vt-frame-recede var(--motion-frame-duration) var(--motion-ease) both;
+}
+
+html[data-vt-origin="frame"]::view-transition-group(vt-cover) {
+  animation-duration: var(--motion-frame-duration);
+}
+
+html[data-vt-origin="frame"] .route-wipe-line {
+  top: 0;
+  left: 0;
+  width: 100vw;
+}
+
+html[data-vt-origin="frame"]::view-transition-group(route-wipe-line) {
+  animation: vt-wipe-line-frame var(--motion-frame-duration) var(--motion-ease) both;
+}
+
+html[data-vt-origin="frame"]::view-transition-image-pair(route-wipe-line) {
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--text) 90%, transparent);
+  background: none;
+  transform: none;
+}
+
+@keyframes vt-wipe-reveal-frame {
+  from {
+    clip-path: inset(var(--frame-top) calc(100% - var(--frame-left) - var(--frame-width))
+      calc(100% - var(--frame-top) - var(--frame-height)) var(--frame-left));
+  }
+  to { clip-path: inset(0); }
+}
+
+@keyframes vt-wipe-line-frame {
+  from {
+    width: var(--frame-width);
+    height: var(--frame-height);
+    translate: var(--frame-left) var(--frame-top);
+  }
+  70% { opacity: 1; }
+  to {
+    width: 100%;
+    height: 100%;
+    translate: 0 0;
+    opacity: 0;
+  }
+}
+
+@keyframes vt-frame-recede {
+  to { filter: brightness(0.45); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1159,6 +1250,8 @@ h3 {
 .content-grid > li {
   display: grid;
   grid-template-rows: 1fr auto;
+  /* A linked card lands below the sticky header. */
+  scroll-margin-top: 92px;
 }
 
 .content-card {
@@ -4870,6 +4963,7 @@ h3 {
 .profile-hub .summary {
   max-width: 320px;
   font-size: 0.96rem;
+  white-space: pre-line;
 }
 
 .profile-actions {
@@ -8854,6 +8948,10 @@ object {
     position: relative;
   }
 
+  .content-grid > li {
+    scroll-margin-top: 16px;
+  }
+
   .markdown-body h1,
   .markdown-body h2,
   .markdown-body h3,
@@ -9010,6 +9108,417 @@ object {
 .author-drop-layer { position: fixed; inset: 12px; z-index: 90; display: grid; place-content: center; border: 2px dashed var(--text-secondary); border-radius: var(--radius-lg); background: rgb(12 14 16 / 0.94); color: var(--text); pointer-events: none; }
 /* Prevent long project names from contributing a min-content width to the home grid. */
 .orbital-stage, .home-action-row { min-width: 0; }
+
+/* The stage keeps the space above the contact strip, which lies along the
+   bottom of the first screen. */
+.orbital-home {
+  grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
+  padding-bottom: max(2px, env(safe-area-inset-bottom));
+  overflow-x: clip;
+}
+
+.orbital-stage {
+  z-index: 1;
+}
+
+/* A phone's stage would otherwise fill the screen and push the strip below it.
+   The grid still holds the strip at the bottom of a short page, and long content
+   scrolls as usual. */
+@media (max-width: 640px) and (orientation: portrait) {
+  .orbital-stage {
+    min-height: 0;
+    padding-top: clamp(24px, 3.5svh, 44px);
+    padding-bottom: 0;
+    gap: clamp(10px, 1.6svh, 16px);
+  }
+
+  .orbital-home .contact-strip {
+    margin-top: 12px;
+  }
+}
+
+/* Reference signals behind the profile. Line work only, so it reads as part of
+   the room rather than a picture. It sits in the empty side of the composition,
+   and behind the cards where there is no empty side. */
+.home-diagram {
+  position: absolute;
+  z-index: 0;
+  top: max(38dvh, 250px);
+  left: calc(50% + 236px);
+  display: grid;
+  width: min(calc(50% - 276px), 480px);
+  margin: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.home-diagram canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  opacity: 0.6;
+}
+
+.home-diagram figcaption {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  margin-top: -16px;
+  text-align: center;
+}
+
+/* No empty side here: it runs behind the cards, so it stays well under the text. */
+@media (min-width: 1201px) {
+  /* Clear of every card at this width, so it can sit above the stage to be held. */
+  .home-diagram[data-draggable] {
+    z-index: 2;
+  }
+
+  .home-diagram[data-draggable] canvas {
+    cursor: grab;
+    pointer-events: auto;
+    touch-action: pan-y;
+    user-select: none;
+  }
+
+  .home-diagram[data-draggable] canvas:active {
+    cursor: grabbing;
+  }
+}
+
+@media (max-width: 1200px) {
+  .home-diagram {
+    top: 0;
+    left: 50%;
+    width: min(150vw, 760px);
+    transform: translateX(-50%);
+  }
+
+  .home-diagram canvas {
+    opacity: 0.2;
+  }
+
+  .home-diagram figcaption {
+    display: none;
+  }
+}
+
+/* A strip of 35mm laid along the bottom of the page: the album card's sprocket
+   rails turned to run with the film. Time runs left to right and the newest
+   frame holds the centre of the page, with bare film ahead of it. row-reverse
+   opens a long strip at that position without script. Pictures stay unfiltered
+   and uncovered; a label prints in the rail below. Hovering is a light table: a
+   lamp under the film follows the frame being looked at, lighting the base and
+   the sprocket holes around it, and that frame rises from the film. */
+@property --lamp-x {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@property --lamp-glow {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+.contact-strip {
+  --strip-film: #090a0b;
+  --strip-fade-width: 30%;
+  --strip-fade: linear-gradient(to right, transparent, #000000 var(--strip-fade-width), #000000 calc(100% - var(--strip-fade-width)), transparent);
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: row-reverse;
+  width: 100vw;
+  min-width: 0;
+  margin: 20px calc(50% - 50vw) 0;
+  padding-bottom: 12px;
+  overflow: auto hidden;
+  scrollbar-color: var(--line-light) transparent;
+  scrollbar-width: thin;
+  justify-self: center;
+  /* Keyboard focus stops short of the fades, so a focused frame stays readable. */
+  scroll-padding-inline: var(--strip-fade-width);
+  /* The film fades into the room at both ends, whatever frame is scrolled there. */
+  -webkit-mask-image: var(--strip-fade);
+  mask-image: var(--strip-fade);
+}
+
+.contact-strip-track {
+  position: relative;
+  display: flex;
+  flex: none;
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  /* The oldest frame can scroll clear of the left fade. */
+  padding: 15px calc(50% - 46.5px) 15px var(--strip-fade-width);
+  justify-content: flex-end;
+  gap: 8px;
+  --lamp-reach: linear-gradient(to right,
+    rgb(0 0 0 / 0.38) calc(var(--lamp-x) - 150px),
+    rgb(0 0 0 / calc(0.38 + 0.62 * var(--lamp-glow))) var(--lamp-x),
+    rgb(0 0 0 / 0.38) calc(var(--lamp-x) + 150px));
+  background:
+    radial-gradient(150px 70px at var(--lamp-x) 50%, rgb(213 208 198 / calc(0.17 * var(--lamp-glow))), transparent),
+    var(--strip-film);
+  list-style: none;
+  transition: --lamp-glow var(--motion-panel-duration) var(--motion-ease);
+}
+
+.contact-strip-track[data-lamp] {
+  --lamp-glow: 1;
+}
+
+.contact-strip-track::before,
+.contact-strip-track::after {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 6px;
+  background: repeating-linear-gradient(
+    to right,
+    rgba(213, 208, 198, 0.52) 0 7px,
+    transparent 7px 18px
+  );
+  content: "";
+  -webkit-mask-image: var(--lamp-reach);
+  mask-image: var(--lamp-reach);
+  pointer-events: none;
+}
+
+.contact-strip-track::before {
+  top: 5px;
+}
+
+.contact-strip-track::after {
+  bottom: 5px;
+}
+
+.contact-frame {
+  position: relative;
+  display: block;
+  width: 93px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.contact-frame-picture {
+  display: flex;
+  width: 100%;
+  height: 62px;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  background: #111315;
+  transform-origin: 50% 100%;
+  transition: border-color var(--transition-fast);
+}
+
+.contact-frame-picture img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* A live site in the frame; the shared preview's own card corners do not apply. */
+.contact-frame-picture > div {
+  width: 100%;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Articles and coverless works: the title is all the frame has to show. */
+.contact-frame-title {
+  display: -webkit-box;
+  overflow: hidden;
+  align-self: flex-start;
+  margin: 6px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  font-size: 0.66rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* Hangs from the frame past the film's lower edge, into the strip's clear margin,
+   so the film itself keeps its height. */
+.contact-frame-label {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 1px);
+  left: 50%;
+  display: grid;
+  width: max-content;
+  max-width: 150px;
+  justify-items: center;
+  border-radius: 0 0 3px 3px;
+  background: var(--strip-film);
+  padding: 0 6px 1px;
+  color: var(--text);
+  font-size: 0.62rem;
+  line-height: 12px;
+  text-align: center;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity var(--transition-fast);
+}
+
+.contact-frame-label time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.contact-frame-label strong {
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+
+.contact-frame:hover .contact-frame-label,
+.contact-frame:focus-visible .contact-frame-label {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .contact-frame:hover {
+    color: var(--text);
+  }
+
+  .contact-frame:hover .contact-frame-picture {
+    border-color: var(--line-light);
+  }
+}
+
+.contact-frame:focus-visible {
+  outline: none;
+}
+
+.contact-frame:focus-visible .contact-frame-picture {
+  outline: 2px solid var(--accent-readable);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .contact-strip-track[data-lamp] {
+    transition: --lamp-glow var(--motion-panel-duration) var(--motion-ease), --lamp-x var(--motion-panel-duration) var(--motion-ease);
+  }
+
+  .contact-frame-picture {
+    transition: border-color var(--transition-fast), transform var(--motion-media-duration) var(--motion-ease),
+      box-shadow var(--motion-media-duration) var(--motion-ease);
+  }
+
+  .contact-frame:focus-visible {
+    z-index: 2;
+  }
+
+  .contact-frame:focus-visible .contact-frame-picture {
+    transform: scale(1.14);
+    box-shadow: 0 8px 14px -4px rgb(0 0 0 / 0.75);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .contact-frame:hover {
+      z-index: 2;
+    }
+
+    .contact-frame:hover .contact-frame-picture {
+      transform: scale(1.14);
+      box-shadow: 0 8px 14px -4px rgb(0 0 0 / 0.75);
+    }
+
+    .contact-frame:active .contact-frame-picture {
+      transform: scale(1.08);
+      transition-duration: var(--motion-control-duration), 80ms, 80ms;
+    }
+  }
+}
+
+/* Appearance panel: home diagram */
+.home-diagram-settings {
+  display: grid;
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.home-diagram-rows > div {
+  display: grid;
+  gap: 10px;
+}
+
+.home-diagram-rows > div:not(:empty) {
+  padding-top: 10px;
+}
+
+.home-diagram-rows[data-panel-animating="true"] {
+  overflow: clip;
+}
+
+.home-diagram-group {
+  display: grid;
+  gap: 6px;
+}
+
+.home-diagram-group > span {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+
+.home-diagram-options {
+  display: grid;
+  grid-template-columns: repeat(var(--options), minmax(0, 1fr));
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 3px;
+}
+
+.home-diagram-options button {
+  min-width: 0;
+  min-height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.home-diagram-options button[aria-pressed="true"] {
+  background: var(--surface-overlay);
+  color: var(--text);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .home-diagram-options button:hover {
+    color: var(--text);
+  }
+}
+
+.home-diagram-options button:active {
+  scale: 0.97;
+}
+
+.home-diagram-options button:focus-visible {
+  outline: 2px solid var(--accent-readable);
+  outline-offset: 1px;
+}
 .home-action-row > .orbit-lab-entry { min-width: 0; max-width: 100%; }
 .orbit-lab-entry strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

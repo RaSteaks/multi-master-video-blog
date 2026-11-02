@@ -33,7 +33,7 @@ describe("master shortcuts", () => {
   });
 });
 
-function fakeVideo(state: Partial<{ readyState: number; seeking: boolean; currentTime: number; videoWidth: number; videoHeight: number }> = {}) {
+function fakeVideo(state: Partial<{ readyState: number; seeking: boolean; paused: boolean; currentTime: number; videoWidth: number; videoHeight: number }> = {}) {
   const listeners = new Map<string, Set<() => void>>();
   return {
     readyState: 1,
@@ -107,6 +107,48 @@ describe("presented frame wait", () => {
     video.seeking = false;
     video.emit("seeked");
     await expect(result).resolves.toBe("frame");
+  });
+
+  it("trusts a completed seek on a paused video that never reports a frame", async () => {
+    const video = fakeVideo({ readyState: 4, paused: true });
+    const result = waitForPresentedFrame(Object.assign(video, {
+      requestVideoFrameCallback: () => 7, cancelVideoFrameCallback: vi.fn(),
+    }), { ...immediateFrames, timeoutMs: 1000, pausedGraceMs: 5 });
+    video.emit("seeked");
+    await expect(result).resolves.toBe("ready");
+    expect(video.listenerCount()).toBe(0);
+  });
+
+  it("does not trust readyState alone on a paused video", async () => {
+    const result = waitForPresentedFrame(Object.assign(fakeVideo({ readyState: 4, paused: true }), {
+      requestVideoFrameCallback: () => 7, cancelVideoFrameCallback: vi.fn(),
+    }), { ...immediateFrames, timeoutMs: 30, pausedGraceMs: 5 });
+    await expect(result).resolves.toBe("timeout");
+  });
+
+  it("keeps waiting when a paused video seeks during its grace period", async () => {
+    const video = fakeVideo({ readyState: 4, paused: true });
+    const result = waitForPresentedFrame(Object.assign(video, {
+      requestVideoFrameCallback: () => 7, cancelVideoFrameCallback: vi.fn(),
+    }), { ...immediateFrames, timeoutMs: 1000, pausedGraceMs: 5 });
+    let finished = false;
+    void result.then(() => { finished = true; });
+    video.emit("seeked");
+    video.seeking = true;
+    await new Promise(resolve => setTimeout(resolve, 15));
+    expect(finished).toBe(false);
+    video.seeking = false;
+    video.emit("seeked");
+    await expect(result).resolves.toBe("ready");
+  });
+
+  it("gives a playing video no such grace", async () => {
+    const video = fakeVideo({ readyState: 4, paused: false });
+    const result = waitForPresentedFrame(Object.assign(video, {
+      requestVideoFrameCallback: () => 7, cancelVideoFrameCallback: vi.fn(),
+    }), { ...immediateFrames, timeoutMs: 30, pausedGraceMs: 5 });
+    video.emit("seeked");
+    await expect(result).resolves.toBe("timeout");
   });
 
   it("rejects a composited frame from the old playback position", async () => {

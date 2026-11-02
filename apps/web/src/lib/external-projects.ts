@@ -13,6 +13,9 @@ export type WebsiteProject = {
   sort_order: number;
 };
 
+/** What a live picture of a site needs; a home contact frame carries only this. */
+export type WebsitePreview = Pick<WebsiteProject, "title" | "url" | "preview_url" | "preview_enabled" | "cover_image" | "published">;
+
 export function isWebsiteUrl(value: string) {
   try {
     const url = new URL(value);

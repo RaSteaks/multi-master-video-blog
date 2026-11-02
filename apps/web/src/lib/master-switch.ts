@@ -8,6 +8,8 @@ export const MASTER_SHORTCUT_LIMIT = 3;
 export const LOADING_HINT_DELAY_MS = 150;
 /** Upper bound for holding a freeze frame when no frame callback ever arrives. */
 export const FRAME_WAIT_TIMEOUT_MS = 2500;
+/** How long a paused video may stay silent after a completed seek before its picture is trusted. */
+export const PAUSED_FRAME_GRACE_MS = 250;
 /** Keeps the captured bitmap bounded (a 4K SDR frame would otherwise be ~33 MB). */
 export const FREEZE_FRAME_MAX_WIDTH = 1920;
 
@@ -58,6 +60,7 @@ export function masterShortcutIndex(
 type FrameVideo = {
   readyState: number;
   seeking: boolean;
+  paused?: boolean;
   currentTime: number;
   videoWidth: number;
   videoHeight: number;
@@ -79,6 +82,7 @@ export function waitForPresentedFrame(
   video: FrameVideo,
   {
     timeoutMs = FRAME_WAIT_TIMEOUT_MS,
+    pausedGraceMs = PAUSED_FRAME_GRACE_MS,
     signal,
     requestFrame = (callback: () => void) =>
       typeof requestAnimationFrame === "function"
@@ -88,6 +92,7 @@ export function waitForPresentedFrame(
       typeof cancelAnimationFrame === "function" ? cancelAnimationFrame(handle) : clearTimeout(handle),
   }: {
     timeoutMs?: number;
+    pausedGraceMs?: number;
     signal?: AbortSignal;
     requestFrame?: (callback: () => void) => number;
     cancelFrame?: (handle: number) => void;
@@ -98,6 +103,8 @@ export function waitForPresentedFrame(
     let settled = false;
     let videoFrameHandle: number | null = null;
     let frameHandle: number | null = null;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    let seekCompleted = false;
     let usesVideoFrames = typeof video.requestVideoFrameCallback === "function";
     let presentedTime: number | null = null;
     const events = ["seeked", "loadeddata", "canplay", "playing"] as const;
@@ -106,14 +113,20 @@ export function waitForPresentedFrame(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (graceTimer !== null) clearTimeout(graceTimer);
       signal?.removeEventListener("abort", onAbort);
       events.forEach((type) => video.removeEventListener(type, check));
+      video.removeEventListener("seeked", onSeeked);
       if (videoFrameHandle !== null) video.cancelVideoFrameCallback?.(videoFrameHandle);
       if (frameHandle !== null) cancelFrame(frameHandle);
       resolve(result);
     }
     function onAbort() {
       finish("aborted");
+    }
+    function onSeeked() {
+      seekCompleted = true;
+      check();
     }
     function check() {
       // readyState only proves decoded data exists, not that the compositor has
@@ -125,6 +138,16 @@ export function waitForPresentedFrame(
         // media timestamp and confirm it when the element settles, rather than
         // waiting forever for another frame from an already-paused video.
         if (presentedTime !== null && Math.abs(presentedTime - video.currentTime) <= 0.35) finish("frame");
+        // Nor does WebKit always report a frame after a seek on a paused video. Seeked is
+        // the element's own word that it reached this position, unlike readyState, so it
+        // can stand in once a frame has had time to arrive. Without it the timeout holds.
+        else if (seekCompleted && video.paused && graceTimer === null) {
+          graceTimer = setTimeout(() => {
+            graceTimer = null;
+            if (video.seeking || video.readyState < 2) return;
+            finish("ready");
+          }, pausedGraceMs);
+        }
         return;
       }
       frameHandle = requestFrame(() => {
@@ -155,6 +178,7 @@ export function waitForPresentedFrame(
     }
     if (usesVideoFrames) requestVideoFrame();
     events.forEach((type) => video.addEventListener(type, check));
+    video.addEventListener("seeked", onSeeked);
     check();
   });
 }

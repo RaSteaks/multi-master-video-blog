@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { WebsiteProject } from "@/lib/external-projects";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { WebsitePreview } from "@/lib/external-projects";
 import { assetUrl } from "@/lib/asset-url";
 import { AuthenticatedAssetImage } from "./AuthenticatedAssetImage";
 import styles from "./Projects.module.css";
 
-export function ProjectPreview({ project, active, auto, coverOverride }: {
-  project: WebsiteProject; active: boolean; auto?: boolean; coverOverride?: string;
+export function ProjectPreview({ project, active, auto, coverOverride, fallback }: {
+  project: WebsitePreview; active: boolean; auto?: boolean; coverOverride?: string; fallback?: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(0);
@@ -35,7 +35,7 @@ export function ProjectPreview({ project, active, auto, coverOverride }: {
   const pending = auto && !cover && project.preview_enabled && !loaded && !expired;
   return <div ref={ref} className={styles.preview} data-media-pending={pending ? "" : undefined}>
     {cover ? <AuthenticatedAssetImage src={cover} token={project.published ? undefined : ""} alt="" loading="lazy" />
-      : <div className={styles.placeholder} data-waiting={auto && project.preview_enabled && !expired ? "" : undefined} aria-hidden="true"><span>◇</span></div>}
+      : fallback ?? <div className={styles.placeholder} data-waiting={auto && project.preview_enabled && !expired ? "" : undefined} aria-hidden="true"><span>◇</span></div>}
     {allowed && scale > 0 && (!expired || loaded) ? <div inert aria-hidden="true" className={styles.previewFrame}
       style={{ opacity: loaded ? 1 : 0 }}>
       <iframe src={src} title={`${project.title}动态预览`} tabIndex={-1}

@@ -45,6 +45,11 @@ The page's author-only **管理网站** control shows published records and draf
 Its per-card menu edits or changes publication. Sorting is edited in the form.
 
 - `GET /api/external-projects?page=1`: published rows, 24 per page with `hasMore`.
+- `/project?project=<id>#project-<id>`: the contact strip's public destination.
+  The server adds the requested published project when it is outside the first
+  page; ordinary Load more keeps its page offsets and deduplicates that row.
+  Missing or unpublished targets show an unavailable notice alongside the public
+  list. The query never enables draft or management access.
 - `GET /api/external-projects/manage?page=1`: same bounded listing including drafts,
   protected by the existing upload authority (session + CSRF or explicit token).
 - `POST /api/external-projects`: create; JSON or multipart.
@@ -64,6 +69,11 @@ unsaved work requires an application-owned confirmation. Save closes back to the
 list and clears `dialog` without racing a second route refresh.
 
 ## Preview and viewer contract
+
+The home contact strip reuses this preview for a preview-enabled site that has no
+cover. There a cover wins, because it is cheaper than a running page, and only the
+newest three on-screen frames run at once. A site that refuses embedding gives a
+blank frame, so give it a cover or a `preview_url` that can be framed.
 
 A preview takes priority over the cover: every preview-enabled card on screen
 starts its frame once scrolling settles, without hover or focus. The cover shows

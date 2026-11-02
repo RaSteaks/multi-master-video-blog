@@ -74,6 +74,13 @@ const nextConfig = {
     proxyTimeout: 300_000
   },
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
+  // Dev stylesheets keep their URL across edits, so a browser must not reuse one on
+  // reload. Production files are content-hashed and keep Next's immutable caching.
+  ...(process.env.NODE_ENV === "development" ? {
+    async headers() {
+      return [{ source: "/_next/static/chunks/:file(.*\\.css)", headers: [{ key: "Cache-Control", value: "no-store" }] }];
+    }
+  } : {}),
   async rewrites() {
     return [
       ...directusAdminRoutes.map((route) => ({

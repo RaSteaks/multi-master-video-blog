@@ -159,6 +159,34 @@ async function main() {
     await page.screenshot({ path: path.join(fixture.output, "timeout-direct.png") });
     pass("a response beyond the 3s snapshot budget switches directly without a late line or veil flash");
     await slowContext.close();
+
+    const stripContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    page = await stripContext.newPage();
+    page.on("pageerror", error => report.errors.push(error.message));
+    const prefetches = [];
+    page.on("request", request => {
+      if (new URL(request.url()).pathname.startsWith("/posts/fixture-post") && request.headers()["next-router-prefetch"]) prefetches.push(request.url());
+    });
+    await page.goto(fixture.url, { waitUntil: "networkidle" });
+    const frame = page.locator('.contact-frame[href="/posts/fixture-post"]');
+    assert.equal(prefetches.length, 0, "A frame on screen fetches nothing by itself.");
+    const box = await frame.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.move(10, 10);
+    await page.waitForTimeout(300);
+    assert.equal(prefetches.length, 0, "A pointer passing across a frame fetches nothing.");
+    await frame.hover();
+    await page.waitForTimeout(600);
+    assert.ok(prefetches.length > 0, "A pointer resting on a frame prepares its destination.");
+    assert.match(await page.locator(".contact-strip-track").evaluate(track => getComputedStyle(track).transitionProperty), /--lamp-x/,
+      "The production stylesheet keeps the registered lamp properties.");
+    assert.equal(await page.locator(".contact-strip-track").evaluate(track => getComputedStyle(track).getPropertyValue("--lamp-glow")), "1");
+    await frame.click();
+    await page.waitForFunction(() => document.getAnimations().some(animation => animation.animationName === "vt-wipe-reveal-frame"), null, { timeout: 1000 });
+    await page.waitForURL(`${fixture.url}/posts/fixture-post`);
+    await page.waitForFunction(() => !document.documentElement.dataset.vtOrigin);
+    pass("a strip frame prepares its page only under a resting pointer, then opens into it without waiting");
+    await stripContext.close();
     assert.deepEqual(report.errors, []);
     report.passed = true;
   } catch (error) {

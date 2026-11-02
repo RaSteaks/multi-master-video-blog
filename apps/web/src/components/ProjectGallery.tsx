@@ -12,7 +12,7 @@ import { ProjectPreview } from "./ProjectPreview";
 import { ProjectViewer } from "./ProjectViewer";
 import styles from "./Projects.module.css";
 
-type ProjectList = { projects: WebsiteProject[]; hasMore: boolean; unavailable: boolean };
+type ProjectList = { projects: WebsiteProject[]; hasMore: boolean; unavailable: boolean; missingProject?: boolean };
 
 /** Cards only passing through the viewport during a scroll should not load their frames. */
 const PREVIEW_SETTLE_MS = 250;
@@ -133,6 +133,7 @@ export function ProjectGallery({ initial, createRequested }: { initial: ProjectL
     </ListHeader>
     {management ? <p className={styles.note}>草稿仅作者可见。通过页头工具中的“添加网站”创建，编辑网站可调整排序。</p> : null}
     <p className={styles.notice} role="status">{notice}</p>
+    {initial.missingProject ? <p className={styles.note} role="status">此网站已下架或不存在，以下为其他已发布作品。</p> : null}
     {error || list.unavailable ? <div className={styles.failure} role="alert">
       <p>{error || "实验室暂时无法载入，请稍后重试。"}</p>
       {session.author && list.unavailable ? <p>请确认媒体 API 正常运行，并已安装网站项目的 CMS 数据模型。</p> : null}
