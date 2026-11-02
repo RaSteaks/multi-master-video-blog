@@ -18,6 +18,7 @@ const {
 } = require("./directus-db-utils.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
+const configTransfer = require("./manager-config.cjs").createConfigTransfer(ROOT);
 const ROOT_ENV = loadEnvFile(path.join(ROOT, ".env"));
 const HOST = managerEnv("MANAGER_HOST", "127.0.0.1");
 const PORT = Number(managerEnv("MANAGER_PORT", 8070));
@@ -1317,6 +1318,18 @@ const server = http.createServer({ maxHeaderSize: 16384, headersTimeout: 10000, 
       return;
     }
 
+    if (req.method === "POST" && ["/api/config/export", "/api/config/import"].includes(pathname)) {
+      const payload = await readJsonBody(req, 2 * 1024 * 1024);
+      if (pathname.endsWith("/export")) {
+        const archive = await withOperation("config-export", () => configTransfer.exportConfig(payload.password));
+        sendJson(res, 200, archive);
+      } else {
+        const files = await withOperation("config-import", () => configTransfer.importConfig(payload.password, payload.archive));
+        sendJson(res, 200, { ok: true, files });
+      }
+      return;
+    }
+
     if (req.method === "POST" && pathname === "/api/upload-tokens") {
       const payload = await readJsonBody(req);
       const result = await withOperation("upload-tokens", () => handleUploadTokenChange(payload));
@@ -2067,6 +2080,20 @@ function html(csrfToken = "") {
     <footer class="foot">
       <dl class="foot-meta" id="managerMeta" aria-label="Manager runtime"></dl>
     </footer>
+    <section class="panel" aria-label="Configuration backup">
+      <header class="panel-head"><h3>Configuration backup</h3></header>
+      <div class="panel-body">
+        <p>Transfer encrypted configuration between servers, including .env credentials. Use the same backup password on both servers.</p>
+        <label for="backupPassword">Backup password (12–256 characters)</label>
+        <input class="cred-input" id="backupPassword" type="password" autocomplete="new-password" maxlength="256">
+        <button class="button" id="backupExport" type="button">Export configuration</button>
+        <p>Import replaces matching configuration files. Review server addresses and paths before restarting services.</p>
+        <label for="backupFile">Backup file</label>
+        <input id="backupFile" type="file" accept=".json,application/json">
+        <button class="button" id="backupImport" type="button">Import configuration</button>
+        <p id="backupResult" role="status"></p>
+      </div>
+    </section>
   </main>
 
   <dialog id="actionDialog" class="action-dialog" aria-labelledby="actionDialogTitle" aria-describedby="actionDialogMessage">
@@ -2087,6 +2114,44 @@ function html(csrfToken = "") {
       "Content-Type": "application/json",
       "X-Manager-CSRF": ${JSON.stringify(csrfToken)}
     };
+    const backupPassword = document.getElementById("backupPassword");
+    const backupFile = document.getElementById("backupFile");
+    const backupResult = document.getElementById("backupResult");
+    for (const action of ["export", "import"]) {
+      const button = document.getElementById(action === "export" ? "backupExport" : "backupImport");
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          const payload = { password: backupPassword.value };
+          if (payload.password.length < 12) throw new Error("Enter a backup password of at least 12 characters.");
+          if (action === "import") {
+            const file = backupFile.files[0];
+            if (!file || file.size > 2097152) throw new Error("Select a configuration backup under 2 MiB.");
+            if (!confirm("Replace this server's matching configuration files using this backup?")) return;
+            payload.archive = JSON.parse(await file.text());
+          }
+          const response = await managerFetch(apiPath("/api/config/" + action), {
+            method: "POST", headers: MUTATION_HEADERS, body: JSON.stringify(payload)
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Transfer failed.");
+          if (action === "export") {
+            const url = URL.createObjectURL(new Blob([JSON.stringify(result)], { type: "application/json" }));
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "video-blog-config-" + new Date().toISOString().slice(0,10) + ".json";
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            backupResult.textContent = "Encrypted backup downloaded.";
+          } else {
+            backupFile.value = "";
+            backupResult.textContent = "Imported: " + result.files.join(", ") + ". Review configuration and restart affected services.";
+          }
+          backupPassword.value = "";
+        } catch (error) { backupResult.textContent = error.message; }
+        finally { button.disabled = false; }
+      });
+    }
     const AUTO_REFRESH_INTERVAL_MS = 2000;
     const LOG_SOURCE_LABELS = Object.freeze({
       web: "Web",

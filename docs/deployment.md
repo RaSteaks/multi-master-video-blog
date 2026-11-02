@@ -416,3 +416,15 @@ For native systemd and Docker Compose deployment on 1–2 core, 2–4GB Linux ho
 see [Linux low-resource deployment](linux-deployment.md). It covers shared resource
 profiles, persistent storage, explicit initialization, on-host maintenance builds,
 rollback, and the remaining Linux/Vulkan acceptance checks.
+
+### Manager configuration transfer
+
+On the source Manager page, open **Configuration backup**, enter a backup password (12–256 characters), and choose **Export configuration**. On the destination Manager, enter the same password, select the JSON backup, and choose **Import configuration**. Export the destination's configuration first if you want a restore point. The backup contains credentials and uses scrypt and AES-256-GCM. Keep the password separately and use HTTPS or a local SSH tunnel to access Manager.
+
+The transfer preserves file bytes (including comments and multiline values) in the following supported slots:
+- Repository root, Web, API and Directus environment files: `.env`, `.env.local`, and development/production/test variants with optional `.local`.
+- Docker deployment: `.env`, `runtime.env`, and `.release.env` in `deployment/docker`.
+- Linux native deployment: `api.env`, `cms.env`, `web.env`, and `resources.env` in `/etc/video-blog`.
+- The project's Directus asset preset and private collection JSON files in `config/`.
+
+Install the destination deployment layout first. Manager needs read access for export and directory write access for import. Unsupported slots or unavailable destination directories reject the import. Absent source files leave destination files alone. Existing file ownership and permissions are preserved on Unix; newly created files are private to the Manager account. Review service read permissions, host-specific paths, addresses, OSS credentials and release tags before restarting the affected services (including Manager for its own settings). Database records, media objects, TLS keys and OS service definitions require separate migration.

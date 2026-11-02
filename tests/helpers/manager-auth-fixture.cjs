@@ -7,7 +7,9 @@ const { createRequire } = require("node:module");
 async function startAuthFixture({ port = 0, basePath = "/manager", password = "fixture-password-only" } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "manager-auth-test-"));
   const sourcePath = path.resolve(__dirname, "../../scripts/manager-dashboard.cjs");
-  const context = vm.createContext({ require: createRequire(sourcePath), module: { exports: {} },
+  const context = vm.createContext({ require: name => name === "./manager-config.cjs"
+      ? { createConfigTransfer: dir => require("../../scripts/manager-config.cjs").createConfigTransfer(dir, path.join(dir, "systemd")) }
+      : createRequire(sourcePath)(name), module: { exports: {} },
     __dirname: path.join(root, "scripts"), process: { env: { MANAGER_AUTH_PASSWORD: password, MANAGER_BASE_PATH: basePath }, pid: process.pid },
     console, Buffer, URL, AbortSignal, fetch, setTimeout, clearTimeout });
   vm.runInContext(await fs.readFile(sourcePath, "utf8"), context);
