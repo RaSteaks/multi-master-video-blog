@@ -1321,7 +1321,9 @@ const server = http.createServer({ maxHeaderSize: 16384, headersTimeout: 10000, 
     if (req.method === "POST" && ["/api/config/export", "/api/config/import"].includes(pathname)) {
       const payload = await readJsonBody(req, 2 * 1024 * 1024);
       if (pathname.endsWith("/export")) {
-        const archive = await withOperation("config-export", () => configTransfer.exportConfig(payload.password));
+        let included;
+        const archive = await withOperation("config-export", () => configTransfer.exportConfig(payload.password, names => { included = names; }));
+        res.setHeader("X-Config-File-Count", String(included.length));
         sendJson(res, 200, archive);
       } else {
         const files = await withOperation("config-import", () => configTransfer.importConfig(payload.password, payload.archive));
@@ -2084,6 +2086,7 @@ function html(csrfToken = "") {
       <header class="panel-head"><h3>Configuration backup</h3></header>
       <div class="panel-body">
         <p>Transfer encrypted configuration between servers, including .env credentials. Use the same backup password on both servers.</p>
+        <p>Includes available application and deployment environment files, project Compose, Nginx, systemd and database tuning files. Back up live host service definitions, certificates, database records and media separately.</p>
         <label for="backupPassword">Backup password (12–256 characters)</label>
         <input class="cred-input" id="backupPassword" type="password" autocomplete="new-password" maxlength="256">
         <button class="button" id="backupExport" type="button">Export configuration</button>
@@ -2142,7 +2145,7 @@ function html(csrfToken = "") {
             link.download = "video-blog-config-" + new Date().toISOString().slice(0,10) + ".json";
             link.click();
             setTimeout(() => URL.revokeObjectURL(url), 1000);
-            backupResult.textContent = "Encrypted backup downloaded.";
+            backupResult.textContent = "Encrypted backup downloaded (" + response.headers.get("X-Config-File-Count") + " configuration files).";
           } else {
             backupFile.value = "";
             backupResult.textContent = "Imported: " + result.files.join(", ") + ". Review configuration and restart affected services.";

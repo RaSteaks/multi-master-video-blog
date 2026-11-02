@@ -26,3 +26,21 @@ test("restore stages all files before changing any destination", async t => {
   await transfer(target).importConfig(password, archive);
   for (const name of paths) assert.deepEqual(await fs.readFile(path.join(source, name)), await fs.readFile(path.join(target, name)));
 });
+
+test("exports customized deployment settings and additional native env files", async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "manager-settings-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  for (const name of ["source", "dest"]) {
+    for (const folder of ["native", "cms", "deployment/docker", "deployment/nginx"]) {
+      await fs.mkdir(path.join(dir, name, folder), { recursive: true });
+    }
+  }
+  const slots = ["native/manager.env", "cms/.env", "deployment/docker/.env.production.local", "deployment/nginx/blog-routes.conf"];
+  for (const slot of slots) await fs.writeFile(path.join(dir, "source", slot), slot);
+  await fs.writeFile(path.join(dir, "source/native/private.key"), "excluded");
+  const transfer = server => createConfigTransfer(path.join(dir, server), path.join(dir, server, "native"));
+  const archive = await transfer("source").exportConfig("backup fixture password");
+  const restored = await transfer("dest").importConfig("backup fixture password", archive);
+  assert.equal(restored.length, slots.length);
+  for (const slot of slots) assert.equal(await fs.readFile(path.join(dir, "dest", slot), "utf8"), slot);
+});

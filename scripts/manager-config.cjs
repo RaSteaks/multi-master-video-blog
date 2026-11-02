@@ -10,18 +10,36 @@ const invalid = message => Object.assign(new Error(message), { statusCode: 400 }
 
 function createConfigTransfer(root, systemDir = process.platform === "linux" ? "/etc/video-blog" : null) {
   const targets = new Map();
-  for (const dir of ["", "apps/web", "apps/api", "apps/cms/directus"]) {
+  for (const dir of ["", "apps/web", "apps/api", "apps/cms/directus", "cms", "deployment/docker"]) {
     for (const suffix of ["", ".local", ".development", ".development.local", ".production", ".production.local", ".test", ".test.local"]) {
       const name = path.posix.join(dir, ".env" + suffix);
       targets.set(name, path.join(root, name));
     }
   }
-  for (const name of ["deployment/docker/.env", "deployment/docker/runtime.env", "deployment/docker/.release.env",
-    "config/directus-asset-presets.json", "config/private-cms-collections.json"]) targets.set(name, path.join(root, name));
-  if (systemDir) for (const name of ["api.env", "cms.env", "web.env", "resources.env"]) targets.set("systemd/" + name, path.join(systemDir, name));
+  // Use stable logical paths across machines, including customized deployment profiles.
+  for (const name of [
+    "deployment/docker/runtime.env", "deployment/docker/.release.env",
+    "deployment/docker/compose.yaml", "deployment/docker/compose.override.yaml",
+    "deployment/docker/compose.admin-local.yaml", "deployment/docker/compose.low-2gb.yaml",
+    "deployment/docker/compose.low-4gb.yaml", "deployment/docker/compose.https.yaml",
+    "deployment/docker/compose.vulkan.yaml", "deployment/docker/nginx.conf", "deployment/docker/nginx.https.conf",
+    "deployment/nginx/blog-routes.conf", "deployment/nginx/linux-nginx.example.conf", "deployment/nginx/windows-nginx.example.conf",
+    "deployment/linux/profiles/postgresql-low-2gb.conf", "deployment/linux/profiles/postgresql-low-4gb.conf",
+    "deployment/linux/systemd/video-blog-web.service", "deployment/linux/systemd/video-blog-api.service",
+    "deployment/linux/systemd/video-blog-cms.service",
+    "config/directus-asset-presets.json", "config/private-cms-collections.json"
+  ]) targets.set(name, path.join(root, name));
+
+  // Only direct *.env children of the dedicated configuration directory qualify.
+  // Apply the same rule at import even when the destination file does not exist.
+  function systemTarget(name) {
+    return systemDir && /^systemd\/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.env$/.test(name)
+      ? path.join(systemDir, name.slice("systemd/".length)) : undefined;
+  }
+  const target = name => targets.get(name) || systemTarget(name);
 
   async function inspect(name) {
-    const file = targets.get(name);
+    const file = target(name);
     // Resolve only fixed deployment slots. Reject linked files and linked subdirectories.
     const base = await fs.realpath(name.startsWith("systemd/") ? systemDir : root);
     const parent = path.dirname(file);
@@ -35,10 +53,19 @@ function createConfigTransfer(root, systemDir = process.platform === "linux" ? "
     if (typeof value !== "string" || value.length < 12 || value.length > 256) throw invalid("Use a backup password of 12–256 characters.");
     return value;
   }
-  async function exportConfig(passphrase) {
+  async function exportConfig(passphrase, onInventory) {
     password(passphrase);
     const files = {};
-    for (const [name, file] of targets) {
+    const names = [...targets.keys()];
+    if (systemDir) {
+      const entries = await fs.readdir(systemDir).catch(error => {
+        if (error.code !== "ENOENT") throw error;
+        return [];
+      });
+      names.push(...entries.map(entry => "systemd/" + entry).filter(systemTarget).sort());
+    }
+    for (const name of names) {
+      const file = target(name);
       try {
         if (await inspect(name)) files[name] = (await fs.readFile(file)).toString("base64");
       } catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -48,6 +75,7 @@ function createConfigTransfer(root, systemDir = process.platform === "linux" ? "
     const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv("aes-256-gcm", await deriveKey(passphrase, salt, 32), iv);
     const data = Buffer.concat([cipher.update(plain), cipher.final()]);
+    onInventory?.(Object.keys(files));
     return { format, data: Buffer.concat([salt, iv, cipher.getAuthTag(), data]).toString("base64") };
   }
 
@@ -65,9 +93,9 @@ function createConfigTransfer(root, systemDir = process.platform === "linux" ? "
     const staged = [], applied = [];
     try {
       for (const [name, value] of Object.entries(files)) {
-        if (!targets.has(name) || typeof value !== "string") throw invalid("Backup contains unsupported configuration.");
+        if (!target(name) || typeof value !== "string") throw invalid("Backup contains unsupported configuration.");
         const stat = await inspect(name);
-        const file = targets.get(name);
+        const file = target(name);
         const content = Buffer.from(value, "base64");
         if (content.toString("base64") !== value) throw invalid("Invalid file encoding.");
         const temp = file + "." + crypto.randomUUID();
