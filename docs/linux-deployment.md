@@ -229,3 +229,11 @@ Linux 和 Docker 的 `/media/` 统一经过 API 的规范路径、私有目录�
 整合远端私有媒体保护和 IMF 功能后，Linux/Docker 保留 API 媒体权限检查、私有扫描存储迁移和有时效的健康探测缓存；镜像包含共享格式模块，IMF 的 x265 线程池也遵守低资源限制。资源与安全回归合计 47 项通过，前端 136 项通过，单 worker 生产构建通过。远端测试依赖 proper-lockfile 在本机隔离临时目录中补齐后运行，未修改锁文件。
 
 本机旧 API 测试集合为 127/153 通过；余下失败包含缺失的 FFmpeg 测试二进制及旧 VM 测试夹具未注入新增运行上下文，不能据此宣称完整转码验收通过。此前的缺失视频格式模块已由远端更新补齐。Docker/Linux/Vulkan 实机验收仍未执行。
+
+### 阿里云 OSS 存储 Directus 文件
+
+在 systemd 部署中，编辑 `/etc/video-blog/cms.env`。Docker 部署编辑 Compose 使用的 `.env`。两个部署模板末尾都有 OSS 配置示例。将已有的 `STORAGE_LOCATIONS` 改为 `oss,local`，启用示例中的全部 `STORAGE_OSS_*` 项，填入仅对目标 bucket 有所需读写、分片和删除权限的 RAM 凭据。凭据文件权限设为 600。杭州只是示例，地域和内网 S3 兼容 endpoint 都要与 bucket 匹配，服务器须能访问该内网地址。[阿里云 endpoint 说明](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
+
+systemd 执行 `sudo systemctl restart video-blog-cms`。Docker 在原部署目录沿用原有 Compose 参数执行 `docker compose up -d cms`。从 Directus 文件库上传一张测试图，检查文件记录的 storage 为 oss、bucket 的 blog_all/ 前缀下出现对象，并从原资产链接打开图片。再打开一张切换前的图片，确认 local 仍可读。需要暂停新文件写入 OSS 时，把顺序改为 local,oss 并重启 CMS，以保留已有 OSS 文件的读取能力。
+
+该配置适用于 Directus 文件库。Blog 的专用视频上传、转码与 HLS 管线使用独立的本地媒体目录。CMS 上传仍经服务器中转，2 GB 主机可沿用 low-2gb 部署配置。
