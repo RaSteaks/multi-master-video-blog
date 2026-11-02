@@ -64,7 +64,11 @@ Use `deployment/nginx/windows-nginx.example.conf` as a reference only. Put real 
 
 ## Production Commands
 
-Apply the CMS model and run the release checks:
+Apply the CMS model and run the release checks. Manual list ordering needs
+`sort_order` on posts and albums: until it exists those lists keep their date
+order and saving an arrangement reports the missing migration. To add only those
+two fields, run `node scripts/setup-directus-schema.cjs --content-order-only`. The
+API must also be restarted on the new code, or saving reports that it is out of date.
 
 ```powershell
 npm run setup:cms-schema

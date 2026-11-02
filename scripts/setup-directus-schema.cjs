@@ -771,6 +771,7 @@ const fields = {
     jsonField("tags"),
     stringField("category", false, { width: "half" }),
     booleanField("published", false),
+    integerField("sort_order", { defaultValue: 0 }),
     dateTimeField("created_at"),
     dateTimeField("updated_at")
   ],
@@ -849,6 +850,7 @@ const fields = {
     textField("description"),
     fileField("cover_image"),
     booleanField("published", true),
+    integerField("sort_order", { defaultValue: 0 }),
     dateTimeField("created_at"),
     dateTimeField("updated_at"),
     aliasO2mField("photos", [
@@ -1637,8 +1639,9 @@ async function verifyVideoSourceFormat(token) {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.length > 1 || args.some((arg) => !["--video-source-format-only", "--external-projects-only"].includes(arg))) {
-    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only | --external-projects-only]");
+  const narrow = ["--video-source-format-only", "--external-projects-only", "--content-order-only"];
+  if (args.length > 1 || args.some((arg) => !narrow.includes(arg))) {
+    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only | --external-projects-only | --content-order-only]");
   }
   const token = await login();
 
@@ -1648,6 +1651,14 @@ async function main() {
     for (const field of fields.external_projects) await ensureField(token, "external_projects", field);
     await ensureRelation(token, fileRelation("external_projects", "cover_image"));
     console.log("External project schema is ready.");
+    return;
+  }
+
+  if (args.includes("--content-order-only")) {
+    for (const collection of ["posts", "albums"]) {
+      await ensureField(token, collection, fields[collection].find((field) => field.field === "sort_order"));
+    }
+    console.log("Content order fields are ready.");
     return;
   }
 

@@ -24,6 +24,7 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
   }));
   const token = "isolated-author-session-fixture";
   const unavailableCollections = new Set();
+  const unmigratedCollections = new Set();
   const failedReads = new Map();
   const collections = {
     albums: [{ id: 1, title: "验收相簿", slug: "fixture-album", description: "隔离测试数据", published: true, photos: [] }],
@@ -98,7 +99,23 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
           return json(res, { data: [...groups.values()] });
         }
         if (collection === "albums") selected = selected.map(row => ({ ...row, photos: collections.album_photos.filter(photo => photo.album_id === row.id) }));
-        if (!id && url.searchParams.get("sort") === "-created_at,-id") {
+        const sort = url.searchParams.get("sort") || "";
+        // Directus answers 403 for a field it does not have, sort included.
+        if (!id && unmigratedCollections.has(collection) && sort.includes("sort_order")) {
+          return json(res, { errors: [{ message: `You don't have permission to access field "sort_order" in collection "${collection}" or it does not exist.` }] }, 403);
+        }
+        if (!id && sort.startsWith("sort_order,")) {
+          const keys = sort.split(",").map(key => (key.startsWith("-") ? [key.slice(1), -1] : [key, 1]));
+          selected.sort((a, b) => {
+            for (const [key, direction] of keys) {
+              const [left, right] = [a[key] ?? 0, b[key] ?? 0];
+              if (left !== right) return (left < right ? -1 : 1) * direction;
+            }
+            return 0;
+          });
+          const offset = Number(url.searchParams.get("offset") || 0);
+          selected = selected.slice(offset, offset + Number(url.searchParams.get("limit") || 100));
+        } else if (!id && url.searchParams.get("sort") === "-created_at,-id") {
           selected.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")) || b.id - a.id);
           selected = selected.slice(0, Number(url.searchParams.get("limit") || 100));
         } else if (!id && (collection === "external_projects" || url.searchParams.get("fields") === "id,created_at")) {
@@ -113,6 +130,12 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
       let body = ""; for await (const chunk of req) body += chunk;
       const data = body ? JSON.parse(body) : {};
       if (req.method === "POST") { const row = { ...data, id: rows.length + 1 }; rows.push(row); return json(res, { data: row }); }
+      if (req.method === "PATCH" && Array.isArray(data)) {
+        return json(res, { data: data.flatMap(({ id: key, ...patch }) => {
+          const target = rows.find(item => item.id === key);
+          return target ? [Object.assign(target, patch)] : [];
+        }) });
+      }
       const row = rows.find(item => String(item.id) === id);
       if (req.method === "DELETE") { if (row) rows.splice(rows.indexOf(row), 1); fileBytes.delete(id); return json(res, { data: null }); }
       if (row) Object.assign(row, data);
@@ -183,7 +206,7 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
     await ready(`${webUrl}/write`);
     await ready(`${webUrl}/albums/fixture-album`);
     for (const route of ["/", "/studio", "/project", "/posts", "/videos"]) await ready(`${webUrl}${route}`);
-    return { output, temp, token, collections, unavailableCollections, failedReads, close, restartApi, envFile, url: webUrl, apiUrl, cmsUrl };
+    return { output, temp, token, collections, unavailableCollections, unmigratedCollections, failedReads, close, restartApi, envFile, url: webUrl, apiUrl, cmsUrl };
   } catch (error) { await close(); throw error; }
 }
 

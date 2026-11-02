@@ -11,6 +11,7 @@ import { MediaCard } from "./MediaCard";
 import { ProjectEditor } from "./ProjectEditor";
 import { ProjectPreview } from "./ProjectPreview";
 import { ProjectViewer } from "./ProjectViewer";
+import { SortableGrid } from "./SortableGrid";
 import styles from "./Projects.module.css";
 
 type ProjectList = { projects: WebsiteProject[]; hasMore: boolean; unavailable: boolean; missingProject?: boolean };
@@ -170,9 +171,11 @@ export function ProjectGallery({ initial, createRequested, linkedProject }: { in
       <span aria-hidden="true">◇</span><h2>{management ? "还没有网站项目" : "作品整理中"}</h2>
       <p>{session.author ? "从页头工具添加第一个网站。" : "新的网页实验将在这里展出。"}</p>
     </div> : null}
-    <ol ref={galleryRef} className="content-grid content-grid--wide" aria-label="网站作品" data-media-pending={linkOpening ? "" : undefined}>
-      {projects.map(project => <li key={project.id} id={`project-${project.id}`}
-        data-preview-id={project.preview_enabled ? project.id : undefined}>
+    {/* Refreshing would collapse rows fetched by Load more back to the first page. */}
+    <SortableGrid section="projects" label="网站作品" className="content-grid content-grid--wide" listRef={galleryRef} refreshes={page === 1}
+      listProps={{ "data-media-pending": linkOpening ? "" : undefined }}
+      items={projects.map(project => ({ id: project.id, title: project.title,
+        props: { id: `project-${project.id}`, "data-preview-id": project.preview_enabled ? project.id : undefined }, content: <>
         {project.open_mode === "external" ? <a className={`content-card ${styles.cardEntry}`} href={project.url} target="_blank" rel="noopener noreferrer"
           aria-label={`独立打开${project.title}（新标签页）`}>
           <MediaCard meta="独立打开 ↗" title={project.title} description={project.description}
@@ -189,8 +192,7 @@ export function ProjectGallery({ initial, createRequested, linkedProject }: { in
             { label: project.published ? "取消发布" : "发布到实验室", icon: <span aria-hidden="true">◇</span>, onSelect: () => void publication(project) },
           ] }]} />}
         </div> : null}
-      </li>)}
-    </ol>
+      </> }))} />
     {list.hasMore ? <button type="button" className={styles.more} onClick={() => void more()} disabled={busy} aria-busy={busy}>{busy ? "正在加载…" : "加载更多"}</button> : busy ? <p role="status" className={styles.note}>正在加载网站…</p> : null}
     {editor ? <ProjectEditor project={editor === "create" ? null : editor} onClose={closeEditor} onSaved={saved => {
       setNotice(saved.published ? "网站已发布到实验室。" : "草稿已保存，可在管理网站中继续编辑。");

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ListHeader } from "@/components/ListHeader";
 import { MediaCard } from "@/components/MediaCard";
+import { SortableGrid } from "@/components/SortableGrid";
 import { assetUrl, getVideoProjects } from "@/lib/directus";
 
 export default async function VideosPage() {
@@ -11,16 +12,15 @@ export default async function VideosPage() {
       <ListHeader eyebrow="视频库" title="视频与作品集" />
 
       {videos.length > 0 ? (
-        <div className="content-grid">
-          {videos.map((video, index) => {
+        <SortableGrid section="videos" label="视频作品" className="content-grid"
+          items={videos.map((video, index) => {
             const cover = assetUrl(video.cover_image, "content-card");
             const masterCount = video.masters?.length || 0;
 
-            return (
+            return { id: video.id, title: video.title, content: (
               <Link
                 className="content-card"
                 href={`/videos/${video.slug}`}
-                key={video.id}
                 aria-label={`${video.title} — ${masterCount} master${masterCount !== 1 ? "s" : ""}`}
               >
                 <MediaCard
@@ -46,9 +46,8 @@ export default async function VideosPage() {
                   )}
                 />
               </Link>
-            );
-          })}
-        </div>
+            ) };
+          })} />
       ) : (
         <div className="empty-state" role="status">
           暂无视频内容。

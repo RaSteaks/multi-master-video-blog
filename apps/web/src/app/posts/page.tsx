@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ListHeader } from "@/components/ListHeader";
 import { MediaCard } from "@/components/MediaCard";
+import { SortableGrid } from "@/components/SortableGrid";
 import { assetUrl, getPosts } from "@/lib/directus";
 
 export default async function PostsPage() {
@@ -11,15 +12,14 @@ export default async function PostsPage() {
       <ListHeader eyebrow="记录探索技术的路程" title="文章" />
 
       {posts.length > 0 ? (
-        <div className="content-grid">
-          {posts.map((post, index) => {
+        <SortableGrid section="posts" label="文章" className="content-grid"
+          items={posts.map((post, index) => {
             const cover = assetUrl(post.cover_image, "content-card");
 
-            return (
+            return { id: post.id, title: post.title, content: (
               <Link
                 className="content-card"
                 href={`/posts/${post.slug}`}
-                key={post.id}
                 aria-label={`${post.title} — ${post.category || "Article"}`}
               >
                 <MediaCard
@@ -44,9 +44,8 @@ export default async function PostsPage() {
                   )}
                 />
               </Link>
-            );
-          })}
-        </div>
+            ) };
+          })} />
       ) : (
         <div className="empty-state" role="status">
           暂无文章内容。

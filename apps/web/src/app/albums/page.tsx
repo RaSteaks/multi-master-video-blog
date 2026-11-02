@@ -3,6 +3,7 @@ import Link from "next/link";
 import { AlbumsToolbar } from "@/components/AlbumsToolbar";
 import { ListHeader } from "@/components/ListHeader";
 import { MediaCard } from "@/components/MediaCard";
+import { SortableGrid } from "@/components/SortableGrid";
 import { assetUrl, getAlbums } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
 
@@ -37,8 +38,8 @@ export default async function AlbumsPage({
       </ListHeader>
 
       {albums.length ? (
-        <ol className="content-grid content-grid--wide">
-          {albums.map((album, index) => {
+        <SortableGrid section="albums" label="相簿" className="content-grid content-grid--wide"
+          items={albums.map((album, index) => {
             const photos = album.photos ?? [];
             const coverId =
               album.cover_image || photos[0]?.sdr_image || null;
@@ -47,8 +48,7 @@ export default async function AlbumsPage({
             const photoCount = album.photo_count ?? photos.length;
             const hdrCount = album.hdr_photo_count ?? photos.filter((photo) => photo.hdr_image).length;
 
-            return (
-              <li key={album.id}>
+            return { id: album.id, title: album.title, content: (
                 <Link
                   className="content-card content-card--film"
                   href={`/albums/${album.slug}`}
@@ -60,9 +60,7 @@ export default async function AlbumsPage({
                     description={album.description}
                     media={
                       <div className="album-card-frame">
-                        <span className="album-frame-index" aria-hidden="true">
-                          {String(index + 1).padStart(2, "0")}
-                        </span>
+                        <span className="album-frame-index" aria-hidden="true" />
                         {cover ? (
                           <img
                             src={cover}
@@ -87,10 +85,8 @@ export default async function AlbumsPage({
                     }
                   />
                 </Link>
-              </li>
-            );
-          })}
-        </ol>
+            ) };
+          })} />
       ) : (
         <section className="album-empty-state" role="status">
           <span className="album-empty-mark" aria-hidden="true">

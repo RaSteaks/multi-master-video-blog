@@ -27,6 +27,7 @@ const expectedTables = {
     "tags",
     "category",
     "published",
+    "sort_order",
     "created_at",
     "updated_at"
   ],
@@ -100,6 +101,7 @@ const expectedTables = {
     "description",
     "cover_image",
     "published",
+    "sort_order",
     "created_at",
     "updated_at"
   ],

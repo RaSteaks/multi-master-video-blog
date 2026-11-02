@@ -61,6 +61,7 @@ const { createVideoUploadStore } = require("./video-upload-store.cjs");
 const { createCachedProbe } = require("./cached-probe.cjs");
 const { createAssetAuthorizer } = require("./asset-access.cjs");
 const { createExternalProjects, EXTERNAL_PROJECT_FIELDS } = require("./external-projects.cjs");
+const { createContentOrder } = require("./content-order.cjs");
 const { canReadMedia } = require("./media-access.cjs");
 const { createRequestBudget, requestAddress } = require("./request-budget.cjs");
 const { createAnalyticsRecorder } = require("./analytics-recorder.cjs");
@@ -226,6 +227,9 @@ const externalProjects = createExternalProjects({
   uploadCover: async (file, title) => directusUploadFile(await directusLogin(), file, title),
   removeUploadedCover: async id => rollbackDirectusFiles(await directusLogin(), [id]),
   allowLocal: env.NODE_ENV !== "production",
+});
+const contentOrder = createContentOrder({
+  request: async (route, options) => directusRequest(route, await directusLogin(), options),
 });
 const JSON_COMPRESSION_MIN_BYTES = 1024;
 const COLOR_REQUIRED_FIELDS = [
@@ -8316,6 +8320,17 @@ async function handleRequest(req, res) {
 
   if (["GET", "HEAD"].includes(req.method) && url.pathname.startsWith("/assets/")) {
     await handleAsset(req, url, res);
+    return;
+  }
+
+  const orderRoute = url.pathname.match(/^\/content-order\/(videos|posts|albums|projects)$/);
+  if (orderRoute) {
+    res.setHeader("Cache-Control", "no-store");
+    if (req.method !== "PATCH") throw httpError(405, "不支持此请求方法。");
+    // Ordering arranges a list; it publishes nothing, so articles need no article token.
+    requireUploadAuth(req);
+    const body = await readJsonBody(req, 16 * 1024);
+    sendJson(res, 200, await contentOrder.save(orderRoute[1], body?.ids));
     return;
   }
 

@@ -171,6 +171,19 @@ corners and inset preview chips use 4px corners.
   events synchronize resets across tabs; an in-memory override exists only while
   persistence fails, and also represents a local reset explicitly.
 
+- `SortableGrid` gives a signed-in author GitHub-style ordering on the videos,
+  articles, albums and laboratory lists: a six-dot handle chip at each card's top
+  right, always visible to the author and absent for visitors. The dragged card
+  follows the pointer over a dashed slot while the others glide aside (additive
+  WAAPI, so interrupted glides turn smoothly); near the window edges the page
+  scrolls, Escape cancels, and arrow keys, Home and End move a focused handle.
+  Mid-drag the order is CSS `order` only, because moving DOM nodes drops pointer
+  capture and reloads laboratory frames; dropping commits the DOM order, saves at
+  once and announces through a live region. A failed save restores the last saved
+  order with a visible message. `/api/content-order/<section>` rearranges only the
+  submitted works within the slots they hold, so drafts and works past the visible
+  page never move; arranged rows count from 1, so a new work (0) leads its list.
+
 - `ContactStrip` closes the home page, on the first screen wherever the content
   fits: published videos,
   articles, albums and laboratory sites on full-width film, with the album card's

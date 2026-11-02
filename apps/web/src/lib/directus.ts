@@ -421,19 +421,32 @@ export function isPublished(item: { published: boolean | number }) {
   return boolValue(item.published);
 }
 
-export async function getPosts(limit = 24, sort = "-id") {
-  const params = new URLSearchParams({
-    fields: POST_LIST_FIELDS,
-    sort,
-    limit: String(limit),
-  });
-  addPublishedFilter(params);
-  const response = await directusFetch<DirectusListResponse<Post>>(
-    `/items/posts?${params.toString()}`,
-    false,
-    ["posts:list"],
-  );
-  return response.data;
+// Schema upgrades are a separate deployment step. Until posts and albums have
+// sort_order the CMS rejects that sort, so they keep their date order and stay up.
+async function arrangedOrDated<T>(read: (sort: string) => Promise<T>, sort: string, dated: string) {
+  if (!sort.startsWith("sort_order,")) return read(sort);
+  try {
+    return await read(sort);
+  } catch {
+    return read(dated);
+  }
+}
+
+export async function getPosts(limit = 24, sort = "sort_order,-id") {
+  return arrangedOrDated(async order => {
+    const params = new URLSearchParams({
+      fields: POST_LIST_FIELDS,
+      sort: order,
+      limit: String(limit),
+    });
+    addPublishedFilter(params);
+    const response = await directusFetch<DirectusListResponse<Post>>(
+      `/items/posts?${params.toString()}`,
+      false,
+      ["posts:list"],
+    );
+    return response.data;
+  }, sort, "-id");
 }
 
 export async function getPost(slug: string) {
@@ -509,19 +522,21 @@ function addPublicAlbumFilters(params: URLSearchParams) {
   params.set("deep[photos][_sort]", "sort_order,id");
 }
 
-export async function getAlbums(limit = 100) {
-  const params = new URLSearchParams({
-    fields: ALBUM_LIST_FIELDS,
-    sort: "-created_at,-id",
-    limit: String(limit),
-  });
-  addPublicAlbumFilters(params);
-  // The list needs one fallback cover; counts come from a grouped query, not full galleries.
-  params.set("deep[photos][_limit]", "1");
-  const response = await directusFetch<DirectusListResponse<Album>>(
-    `/items/albums?${params}`, false, ["albums:list"],
-  );
-  const albums = filterPublishedAlbums(response.data);
+export async function getAlbums(limit = 100, sort = "sort_order,-created_at,-id") {
+  const albums = await arrangedOrDated(async order => {
+    const params = new URLSearchParams({
+      fields: ALBUM_LIST_FIELDS,
+      sort: order,
+      limit: String(limit),
+    });
+    addPublicAlbumFilters(params);
+    // The list needs one fallback cover; counts come from a grouped query, not full galleries.
+    params.set("deep[photos][_limit]", "1");
+    const response = await directusFetch<DirectusListResponse<Album>>(
+      `/items/albums?${params}`, false, ["albums:list"],
+    );
+    return filterPublishedAlbums(response.data);
+  }, sort, "-created_at,-id");
   if (!albums.length) return albums;
   const counts = new URLSearchParams({ "filter[album_id][_in]": albums.map(a => a.id).join(","),
     "filter[published][_eq]": "true", "filter[album_id][published][_eq]": "true",
@@ -664,7 +679,7 @@ export async function getContactSheet() {
   try {
     const [videos, posts, albums, projects] = await Promise.all([
       getVideoProjects(CONTACT_SHEET_LIMIT, CONTACT_SHEET_SORT), getPosts(CONTACT_SHEET_LIMIT, CONTACT_SHEET_SORT),
-      getAlbums(CONTACT_SHEET_LIMIT), getProjectFrames(),
+      getAlbums(CONTACT_SHEET_LIMIT, CONTACT_SHEET_SORT), getProjectFrames(),
     ]);
     const works: ContactWork[] = [
       ...posts.map(post => ({ key: `post-${post.id}`, title: post.title, href: `/posts/${post.slug}`, external: false,
