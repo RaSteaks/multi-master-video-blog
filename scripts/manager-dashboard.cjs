@@ -35,6 +35,8 @@ const MANAGER_AUTH_ENABLED = MANAGER_AUTH_PASSWORD.length > 0;
 // The public login nonce cannot authorize authenticated management mutations.
 const MANAGER_LOGIN_CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const managerAuth = createManagerAuth({ username: MANAGER_AUTH_USERNAME, password: MANAGER_AUTH_PASSWORD, basePath: MANAGER_BASE_PATH });
+const systemd = process.platform === "linux";
+const execFileAsync = require("node:util").promisify(require("node:child_process").execFile);
 const POSTGRES_SERVICE_NAME =
   managerEnv("POSTGRES_SERVICE_NAME", "postgresql-x64-17");
 const WEB_MODE_ENV_KEY = "MANAGER_WEB_MODE";
@@ -93,6 +95,19 @@ const services = [
     logName: "web"
   }
 ];
+
+// Ubuntu's postgresql.service is an aggregate oneshot. Control the actual cluster.
+if (systemd) {
+  for (const service of services) {
+    service.kind = "systemd";
+    service.serviceName = service.id === "postgres"
+      ? managerEnv("MANAGER_POSTGRES_UNIT", "postgresql@17-main.service")
+      : `video-blog-${service.id}.service`;
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.@-]*\.service$/.test(service.serviceName)) {
+      throw new Error("Invalid systemd service name: " + service.serviceName);
+    }
+  }
+}
 
 const serviceMap = new Map(services.map((service) => [service.id, service]));
 const operationJournal = createOperationJournal(ROOT);
@@ -857,7 +872,43 @@ async function getWindowsServiceStatus(service, databaseStatus) {
   }
 }
 
+async function getSystemdStatus(service, database) {
+  const status = { id: service.id, name: service.name, category: service.category,
+    kind: service.kind, serviceName: service.serviceName, openUrl: service.openUrl,
+    port: service.port, running: false, healthy: false };
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/systemctl", [
+      "show", "--property=LoadState,ActiveState,SubState,MainPID", service.serviceName
+    ], { timeout: 5000 });
+    const state = Object.fromEntries(stdout.trim().split("\n").map(line => line.split("=")));
+    status.unitState = state.LoadState === "loaded" ? state.ActiveState : state.LoadState;
+    status.subState = state.SubState;
+    status.pids = Number(state.MainPID) > 0 ? [Number(state.MainPID)] : [];
+    status.running = state.LoadState === "loaded" && state.ActiveState === "active";
+    if (status.running) {
+      const health = service.id === "postgres" ? { ok: database.healthy, error: database.error }
+        : await checkHttp(service.healthUrl);
+      status.healthy = health.ok;
+      status.error = health.error;
+      status.status = health.status;
+    }
+  } catch (error) {
+    status.unitState = "unknown";
+    status.error = error.message;
+  }
+  return status;
+}
+
+async function controlSystemd(service, action) {
+  // sudoers grants these exact commands only; never launch a second process on the port.
+  await execFileAsync("/usr/bin/sudo", ["-n", "/usr/bin/systemctl", action, service.serviceName],
+    { timeout: Math.max(WAIT_MS, 120000) });
+  if (action !== "stop" && service.healthUrl) await waitForProcessHealth(service);
+  return { message: `${service.serviceName}: ${action} completed.` };
+}
+
 async function getServiceStatus(service, databaseStatus) {
+  if (systemd) return getSystemdStatus(service, databaseStatus);
   if (service.kind === "windows-service") {
     return getWindowsServiceStatus(service, databaseStatus);
   }
@@ -949,6 +1000,10 @@ async function handleAction(serviceId, action) {
     throw error;
   }
 
+  if (systemd && ["start", "stop", "restart"].includes(action)) {
+    return serviceStep(service, action, () => controlSystemd(service, action));
+  }
+
   if (service.kind === "windows-service") {
     if (action === "start") return serviceStep(service, "start", () => startWindowsService(service));
     if (action === "stop") return serviceStep(service, "stop", () => stopWindowsService(service));
@@ -983,6 +1038,7 @@ async function handleAction(serviceId, action) {
 }
 
 async function handleWebModeChange(modeValue) {
+  if (systemd) throw new Error("Use the systemd unit and deployment workflow to change the Web build or mode.");
   const nextMode = parseWebMode(modeValue);
   if (!nextMode) {
     const error = new Error(`Unsupported web mode: ${modeValue}`);
@@ -1089,6 +1145,7 @@ async function handleUploadTokenChange(payload) {
 
 async function handleStackAction(action) {
   if (action === "refresh-app") {
+    if (systemd) throw new Error("Use the systemd unit and deployment workflow to change the Web build or mode.");
     // Release loaded files before npm changes either workspace. Build before
     // starting API so an install/build failure cannot start a partial rollout.
     const results = [];
@@ -1963,9 +2020,9 @@ function html(csrfToken = "") {
         <button class="button primary" type="button" data-stack="start-all">Start all</button>
         <button class="button warn" type="button" data-stack="restart-all">Restart all</button>
         <button class="button danger" type="button" data-stack="stop-all">Stop all</button>
-        <button class="button" type="button" data-stack="refresh-app">Update API + Web</button>
+        ${systemd ? "" : '<button class="button" type="button" data-stack="refresh-app">Update API + Web</button>'}
       </div>
-      <p class="service-help">Start: PostgreSQL → CMS → API → Web. Stop: reverse order. Restart reuses the current Web build. Update API + Web stops both services, installs their dependencies, then builds Web in Production and starts both services.</p>
+      <p class="service-help">Start: PostgreSQL → CMS → API → Web. Stop: reverse order. ${systemd ? "Units are managed by systemd." : "Restart reuses the current Web build. Update API + Web stops both services, installs their dependencies, then builds Web in Production and starts both services."}</p>
     </section>
 
     <p class="action-readout" id="actionReadout" role="status" aria-live="polite"></p>
@@ -2449,6 +2506,8 @@ function html(csrfToken = "") {
     }
 
     function serviceState(item) {
+      if (item.kind === "systemd" && !item.running && item.unitState !== "inactive")
+        return { label: item.unitState, cls: "warn" };
       if (item.healthy) return { label: "Healthy", cls: "ok" };
       if (item.running) return { label: "Degraded", cls: "warn" };
       return { label: "Stopped", cls: "off" };
@@ -2456,6 +2515,9 @@ function html(csrfToken = "") {
 
     function issueText(item) {
       if (item.healthy) return "";
+      if (item.kind === "systemd") return item.error || (item.running
+        ? "Health check failed" + (item.status ? " (HTTP " + item.status + ")" : "") + "."
+        : item.serviceName + ": " + item.unitState);
       if (item.kind === "windows-service") {
         if (!item.running) return item.error || "Windows service is " + String(item.status || "not running").toLowerCase() + ".";
         return "Service is running but the database check failed" + (item.error ? ": " + item.error : ".");
@@ -2476,10 +2538,14 @@ function html(csrfToken = "") {
 
     function serviceCard(item) {
       const status = serviceState(item);
-      const target = item.kind === "windows-service" ? item.serviceName : item.healthUrl;
+      const target = item.kind !== "process" ? item.serviceName : item.healthUrl;
       const pids = item.pids && item.pids.length ? item.pids.join(", ") : "N/A";
       let facts;
-      if (item.kind === "windows-service") {
+      if (item.kind === "systemd") {
+        facts = [fact("Unit", item.unitState), fact("State", item.subState || "N/A"),
+          fact("Main PID", pids), fact(item.id === "postgres" ? "DB check" : "HTTP",
+            item.id === "postgres" ? (item.healthy ? "OK" : "N/A") : item.status || "N/A")];
+      } else if (item.kind === "windows-service") {
         facts = [
           fact("Service", item.serviceName),
           fact("State", item.status),
@@ -2498,7 +2564,7 @@ function html(csrfToken = "") {
         }
       }
       const issue = issueText(item);
-      const webMode = item.id === "web"
+      const webMode = item.id === "web" && item.kind !== "systemd"
         ? '<div class="mode-switch" role="group" aria-label="Frontend Web mode">'
           + '<button class="button ' + (item.mode === "development" ? "active" : "") + '" type="button" data-web-mode="development" aria-pressed="' + (item.mode === "development") + '">Development</button>'
           + '<button class="button ' + (item.mode === "production" ? "active" : "") + '" type="button" data-web-mode="production" aria-pressed="' + (item.mode === "production") + '">Production</button>'
@@ -2522,14 +2588,14 @@ function html(csrfToken = "") {
         + '</header>'
         + (issue ? '<p class="svc-issue">' + esc(issue) + '</p>' : "")
         + '<dl class="facts">' + facts.join("") + '</dl>'
-        + '<p class="service-help">' + (item.id === "web"
+        + '<p class="service-help">' + (item.kind === "systemd" ? "Start, stop and restart control the systemd unit." : item.id === "web"
           ? (item.mode === "production" ? 'Start and Restart reuse the current production build. Source changes require Build + Restart; a failed build leaves Web stopped. Check the Build log before retrying.' : 'Development runs hot reload. Restart reloads the process; switch to Production to build for deployment.')
           : item.id === "postgres" ? 'Controls the Windows database service. Start all checks dependencies in order.'
           : item.id === "api" ? 'Restart reloads API code and configuration. Wait for uploads and conversions to finish first.'
           : 'Restart reloads CMS configuration. PostgreSQL should be healthy first.') + '</p>'
         + '<details class="command-reference"><summary>Equivalent commands</summary>'
-        + ['start', 'restart', 'stop', 'status', 'health'].map(action => '<code>npm run ' + esc(item.id) + ':' + action + '</code>').join('')
-        + (item.id === 'web' ? '<code>npm run web:rebuild-restart</code>' : '') + '</details>'
+        + (item.kind === "systemd" ? ['start', 'restart', 'stop', 'status'].map(action => '<code>systemctl ' + action + ' ' + esc(item.serviceName) + '</code>').join('') : ['start', 'restart', 'stop', 'status', 'health'].map(action => '<code>npm run ' + esc(item.id) + ':' + action + '</code>').join(''))
+        + (item.id === 'web' && item.kind !== 'systemd' ? '<code>npm run web:rebuild-restart</code>' : '') + '</details>'
         + '<div class="svc-ops">'
         + webMode
         + '<button class="button' + (item.running ? "" : " primary") + '" type="button" data-action="start" data-id="' + esc(item.id) + '" aria-label="Start ' + esc(item.name) + '">Start</button>'

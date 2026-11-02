@@ -237,3 +237,21 @@ Linux 和 Docker 的 `/media/` 统一经过 API 的规范路径、私有目录�
 systemd 执行 `sudo systemctl restart video-blog-cms`。Docker 在原部署目录沿用原有 Compose 参数执行 `docker compose up -d cms`。从 Directus 文件库上传一张测试图，检查文件记录的 storage 为 oss、bucket 的 blog_all/ 前缀下出现对象，并从原资产链接打开图片。再打开一张切换前的图片，确认 local 仍可读。需要暂停新文件写入 OSS 时，把顺序改为 local,oss 并重启 CMS，以保留已有 OSS 文件的读取能力。
 
 该配置适用于 Directus 文件库。Blog 的专用视频上传、转码与 HLS 管线使用独立的本地媒体目录。CMS 上传仍经服务器中转，2 GB 主机可沿用 low-2gb 部署配置。
+
+### Ubuntu 上通过 Manager 控制 systemd
+
+Linux 上 Manager 从 systemd 读取单元状态和 MainPID，同时检查数据库连接或 HTTP 健康状态。Web 返回 500 时会显示 Degraded。面板和整套启停使用同一组 systemd 单元，Web 的模式和构建由部署流程管理。
+
+默认控制 PostgreSQL 集群 `postgresql@17-main.service` 及 `video-blog-{cms,api,web}.service`。用 `pg_lsclusters` 和 `systemctl status postgresql@17-main.service` 核对实例；如果不同，在仓库根目录的 `.env` 设置 `MANAGER_POSTGRES_UNIT` 并同步替换下方 sudoers 文件中的集群单元名。请勿选择管理所有数据库集群的 `postgresql.service`。
+
+对于当前以 admin 运行的 Manager，从仓库根目录安装权限配置：
+
+```bash
+sudo visudo -cf deployment/linux/manager.sudoers &&
+sudo install -o root -g root -m 0440 deployment/linux/manager.sudoers /etc/sudoers.d/video-blog-manager &&
+sudo visudo -c
+sudo -u admin sudo -n -l /usr/bin/systemctl restart video-blog-web.service
+sudo systemctl restart video-blog-manager
+```
+
+若 Manager 使用其他账号，先把模板中的 admin 改为该服务账号并校验。受控单元文件及其根权限启动脚本必须只允许可信管理员修改；CMS/API/Web 单元使用非 root 用户运行。Manager 单元需允许 sudo 提权；不要为它启用 `NoNewPrivileges=true`。状态查询无须 sudo，面板的写操作通过非交互 sudo 执行，仅授权上面四个单元的 start、stop、restart。Manager 账号需要能写仓库 logs 目录。数据库和 CMS 健康检查读取项目的 Directus 配置，部署在 /etc 的配置应通过 Manager 单元的 EnvironmentFile 提供相应的数据库及健康检查凭据。

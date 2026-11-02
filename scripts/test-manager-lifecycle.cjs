@@ -6,9 +6,10 @@ const { createRequire } = require("node:module");
 const { test } = require("node:test");
 const sourcePath = path.join(__dirname, "manager-dashboard.cjs");
 const source = fs.readFileSync(sourcePath, "utf8");
-function harness(root = path.resolve(__dirname, ".."), env = {}) {
-  const context = vm.createContext({ require: createRequire(sourcePath), module: { exports: {} }, __dirname: path.join(root, "scripts"),
-    process: { env: { ...process.env, ...env }, pid: process.pid }, console, Buffer, URL, AbortSignal, fetch, setTimeout, clearTimeout });
+function harness(root = path.resolve(__dirname, ".."), env = {}, platform = "win32", execFile) {
+  const requireModule = createRequire(sourcePath);
+  const context = vm.createContext({ require: id => id === "node:child_process" && execFile ? { execFile } : requireModule(id), module: { exports: {} }, __dirname: path.join(root, "scripts"),
+    process: { env: { ...process.env, ...env }, pid: process.pid, platform }, console, Buffer, URL, AbortSignal, fetch, setTimeout, clearTimeout });
   vm.runInContext(source, context);
   return { context, run: (code) => vm.runInContext(code, context) };
 }
@@ -450,4 +451,29 @@ test("service startup releases the operation while the npm service stays running
   } finally {
     await run('stopProcessService(fixture)');
   }
+});
+
+test("Linux reports unit state separately from application health and controls only mapped units", async t => {
+  const calls = [];
+  let state = "active";
+  const execFile = (file, args, options, callback) => {
+    calls.push([file, ...args]);
+    callback(null, { stdout: `LoadState=loaded\nActiveState=${state}\nSubState=running\nMainPID=42\n` });
+  };
+  const { run } = harness(temporaryRoot(t), {}, "linux", execFile);
+  run('checkHttp = async () => ({ok:false,status:500}); waitForProcessHealth = async () => {};');
+  const web = await run('getServiceStatus(serviceMap.get("web"), {})');
+  assert.equal(web.running, true);
+  assert.equal(web.healthy, false);
+  assert.equal(web.status, 500);
+  assert.equal(web.pids[0], 42);
+  state = "failed";
+  assert.equal((await run('getServiceStatus(serviceMap.get("cms"), {})')).unitState, "failed");
+  for (const [id, unit] of Object.entries({ postgres: "postgresql@17-main", cms: "video-blog-cms", api: "video-blog-api", web: "video-blog-web" })) {
+    for (const action of ["start", "stop", "restart"]) {
+      await run(`handleAction("${id}", "${action}")`);
+      assert.deepEqual(calls.at(-1), ["/usr/bin/sudo", "-n", "/usr/bin/systemctl", action, unit + ".service"]);
+    }
+  }
+  await assert.rejects(run('handleStackAction("refresh-app")'), /deployment workflow/);
 });
