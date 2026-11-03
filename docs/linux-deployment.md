@@ -268,7 +268,7 @@ Linux 和 Docker 的 `/media/` 统一经过 API 的规范路径、私有目录�
 
 ### Ubuntu 上通过 Manager 控制 systemd
 
-Linux 上 Manager 从 systemd 读取单元状态和 MainPID，同时检查数据库连接或 HTTP 健康状态。Web 返回 500 时会显示 Degraded。面板和整套启停使用同一组 systemd 单元，Web 的模式和构建由部署流程管理。
+Linux 上 Manager 从 systemd 读取单元状态和 MainPID，同时检查数据库连接或 HTTP 健康状态。Web 返回 500 时会显示 Degraded。面板和整套启停使用同一组 systemd 单元。Frontend Web 的 Development / Production 按钮需要下面的一次性配置。
 
 默认控制 PostgreSQL 集群 `postgresql@17-main.service` 及 `video-blog-{cms,api,web}.service`。用 `pg_lsclusters` 和 `systemctl status postgresql@17-main.service` 核对实例；如果不同，在仓库根目录的 `.env` 设置 `MANAGER_POSTGRES_UNIT` 并同步替换下方 sudoers 文件中的集群单元名。请勿选择管理所有数据库集群的 `postgresql.service`。
 
@@ -280,10 +280,52 @@ sudo install -o root -g root -m 0440 deployment/linux/manager.sudoers /etc/sudoe
 sudo visudo -c
 sudo -u admin sudo -n -l /usr/bin/systemctl restart video-blog-web.service
 sudo -u admin sudo -n -l /usr/bin/systemctl --no-block restart video-blog-manager.service
+# 仅当当前 Manager 由此单元托管时使用；手动启动的 Manager 在原进程管理器中重启。
 sudo systemctl restart video-blog-manager
 ```
 
-若 Manager 使用其他账号，先把模板中的 admin 改为该服务账号并校验。受控单元文件及其根权限启动脚本必须只允许可信管理员修改；CMS/API/Web 单元使用非 root 用户运行。Manager 单元需允许 sudo 提权；不要为它启用 `NoNewPrivileges=true`。状态查询无须 sudo，面板的写操作通过非交互 sudo 执行，仅授权上面四个单元的 start、stop、restart，以及 Manager 单元自身的 `--no-block restart`。Manager 账号需要能写仓库 logs 目录。数据库和 CMS 健康检查读取项目的 Directus 配置，部署在 /etc 的配置应通过 Manager 单元的 EnvironmentFile 提供相应的数据库及健康检查凭据。
+若 Manager 使用其他账号，先把模板中的 admin 改为该服务账号并校验。受控单元文件及其根权限启动脚本必须只允许可信管理员修改；CMS/API/Web 单元使用非 root 用户运行。Manager 单元需允许 sudo 提权；不要为它启用 `NoNewPrivileges=true`。sudoers 授权四个服务的启停、固定 Web 构建单元的 start，以及 Manager 单元自身的 `--no-block restart`。Manager 账号需要能写仓库 logs 目录。数据库和 CMS 健康检查读取项目的 Directus 配置，部署在 /etc 的配置应通过 Manager 单元的 EnvironmentFile 提供相应的数据库及健康检查凭据。
+
+#### 在 Linux Manager 启用 Web 模式切换
+
+先把包含此功能的代码部署到 **Manager 的工作目录和 Web 的工作目录**。标准 release 安装使用仓库中的 `video-blog-web.service` 和 `video-blog-web-build.service`，二者使用同一工作目录、Web 账号和环境文件。按上一节安装最新 sudoers，并创建模式目录（以下以 Manager 账号 `admin` 为例）：
+
+```bash
+sudo install -d -m 0755 -o admin -g admin /var/lib/video-blog/manager
+sudo -u admin sudo -n -l /usr/bin/systemctl start video-blog-web-build.service
+```
+
+标准安装在没有模式文件时使用 Production。**现有自定义安装**若以 `admin` 在 `/github/multi-master-video-blog` 运行 `npm run dev:web`，按以下步骤保留现有 Development 模式。命令从已更新的仓库根目录执行。
+
+1. 安装构建单元。它只在切换到 Production 时按需运行，不需要 enable。用 drop-in 匹配现有 Web 的用户、组、工作目录和影响构建的环境文件。
+
+   ```bash
+   sudo install -m 0644 deployment/linux/systemd/video-blog-web-build.service /etc/systemd/system/
+   sudo systemctl edit video-blog-web-build.service
+   ```
+
+   ```ini
+   [Service]
+   User=admin
+   Group=admin
+   WorkingDirectory=/github/multi-master-video-blog
+   ```
+
+2. 首次接入且当前确实在运行 dev 时，写入当前模式。然后用 `sudo systemctl edit video-blog-web.service` 增加下面的配置，保留原有用户、工作目录和环境文件。
+
+   ```bash
+   sudo -u admin sh -c 'printf "%s\n" development > /var/lib/video-blog/manager/web-mode'
+   ```
+
+   ```ini
+   [Service]
+   ExecStart=
+   ExecStart=/usr/bin/node scripts/run-service.cjs managed-web
+   ```
+
+3. 核对 Web 和构建单元加载同一份生产 Web 配置，包含站点使用的 Directus 服务账号、API 地址及 Next 构建变量。执行 `sudo systemctl daemon-reload` 后，在维护窗口执行 `sudo systemctl restart video-blog-web.service`。用原启动方式重启 Manager 以加载新代码。若页面提示 Manager 本身不由 systemd 托管，就在原进程管理器中重启它。
+
+在 **Frontend Web** 卡片点 **Production** 并确认后，Manager 只停止 Web，等待生产构建完成，再启动 Web 并检查首页 HTTP。**Build** 日志来自 `journalctl -u video-blog-web-build.service`。返回 **Development** 时直接启动 `next dev`。构建或新模式启动失败会尝试恢复此前的模式和运行状态，结果显示在当前任务。2 GiB 及以下主机需要至少 2 GiB swap 才能开始切生产。普通 **Restart** 和服务器重启沿用已选择的模式，均不会触发重新构建。
 
 #### Manager 自身的监控与重启
 

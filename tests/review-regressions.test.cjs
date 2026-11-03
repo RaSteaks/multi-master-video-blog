@@ -198,6 +198,26 @@ test("native update build forwards shared and web overrides to the actual launch
   assert.equal(result.workers, "2"); assert.equal(result.url, "http://api.fixture:9000"); assert.equal(result.profile, "low-2gb");
 });
 
+test("managed systemd Web launcher starts Next in the persisted mode with matching NODE_ENV", async t => {
+  const dir = await temporary(t);
+  for (const sub of ["scripts", "config", "apps/web", "node_modules/next/dist/bin"]) await fs.mkdir(path.join(dir, sub), { recursive: true });
+  for (const file of ["scripts/run-service.cjs", "config/resource-profile.cjs"]) await fs.copyFile(path.join(root, file), path.join(dir, file));
+  const modeFile = path.join(dir, "web-mode");
+  // Redirect only the host's mode file and CMS health check; execute the actual unit command in a child.
+  await fs.writeFile(path.join(dir, "scripts/systemd-web-mode.cjs"), `exports.readWebMode = () => require(${JSON.stringify(path.join(root, "scripts/systemd-web-mode.cjs"))}).readWebMode(${JSON.stringify(modeFile)});`);
+  await fs.writeFile(path.join(dir, "scripts/directus-health.cjs"), "exports.directusHealth = async () => {};\n");
+  await fs.writeFile(path.join(dir, "node_modules/next/dist/bin/next.js"),
+    "console.log(JSON.stringify({ args: process.argv.slice(2), mode: process.env.NODE_ENV }));");
+  const unit = await fs.readFile(path.join(root, "deployment/linux/systemd/video-blog-web.service"), "utf8");
+  const args = unit.match(/^ExecStart=\/usr\/bin\/node (.+)$/m)[1].split(" ");
+  const launch = () => exec(process.execPath, args, { cwd: dir, env: { PATH: process.env.PATH, PORT: "3100", NODE_ENV: "production" } });
+  assert.deepEqual(JSON.parse((await launch()).stdout), { args: ["start", "-H", "127.0.0.1", "-p", "3100"], mode: "production" });
+  await fs.writeFile(modeFile, "development\n");
+  assert.deepEqual(JSON.parse((await launch()).stdout), { args: ["dev", "-H", "127.0.0.1", "-p", "3100"], mode: "development" });
+  await fs.writeFile(modeFile, "invalid\n");
+  await assert.rejects(launch(), /Invalid Web mode/);
+});
+
 test("schema upgrade adds the blocked choice once without replacing custom options", async () => {
   const source = await fs.readFile(path.join(root, "scripts/setup-directus-schema.cjs"), "utf8");
   let options = { allowOther: true, choices: [{ text: "Custom", value: "custom" }] }, writes = 0;

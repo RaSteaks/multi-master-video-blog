@@ -6,11 +6,11 @@ const { createRequire } = require("node:module");
 const { test } = require("node:test");
 const sourcePath = path.join(__dirname, "manager-dashboard.cjs");
 const source = fs.readFileSync(sourcePath, "utf8");
-function harness(root = path.resolve(__dirname, ".."), env = {}, platform = "win32", execFile) {
+function harness(root = path.resolve(__dirname, ".."), env = {}, platform = "win32", execFile, modules = {}) {
   const requireModule = createRequire(sourcePath);
   // execFile alone, or a { execFile, spawn } stand-in for the whole module.
   const childProcess = typeof execFile === "function" ? { execFile } : execFile;
-  const context = vm.createContext({ require: id => id === "node:child_process" && childProcess ? childProcess : requireModule(id), module: { exports: {} }, __dirname: path.join(root, "scripts"),
+  const context = vm.createContext({ require: id => id === "node:child_process" && childProcess ? childProcess : modules[id] ?? requireModule(id), module: { exports: {} }, __dirname: path.join(root, "scripts"),
     process: { env: { ...process.env, ...env }, pid: process.pid, platform }, console, Buffer, URL, AbortSignal, fetch, setTimeout, clearTimeout });
   vm.runInContext(source, context);
   return { context, run: (code) => vm.runInContext(code, context) };
@@ -478,6 +478,68 @@ test("Linux reports unit state separately from application health and controls o
     }
   }
   await assert.rejects(run('handleStackAction("refresh-app")'), /deployment workflow/);
+});
+
+test("Linux Web mode switch uses the active unit's build, persists both directions and recovers failures", async t => {
+  const root = temporaryRoot(t);
+  const modeFile = path.join(root, "web-mode");
+  fs.writeFileSync(modeFile, "development\n");
+  const mode = () => fs.readFileSync(modeFile, "utf8").trim();
+  let webCommand = "/usr/bin/node scripts/run-service.cjs managed-web";
+  let buildDirectory = root;
+  let swap = 2 * 1024 ** 2;
+  let failing = "";
+  let priorState = "active";
+  const actions = [];
+  const execFile = (file, args, options, callback) => {
+    const unit = args.at(-1);
+    if (args[0] === "show") {
+      const building = unit === "video-blog-web-build.service";
+      const command = building ? "/usr/bin/node scripts/run-service.cjs build" : webCommand;
+      return callback(null, { stdout: "LoadState=loaded\nActiveState=" + priorState + "\nSubState=running\nUser=admin\nWorkingDirectory=" +
+        (building ? buildDirectory : root) + "\nExecStart={ path=/usr/bin/node ; argv[]=" + command + " ; ignore_errors=no }\n" });
+    }
+    if (args.includes("-l")) return callback(null, { stdout: "" });
+    const action = unit === "video-blog-web-build.service" ? "build" : args.at(-2) + ":" + mode();
+    actions.push(action);
+    callback(action === failing ? Error(action + " failed") : null, { stdout: "" });
+  };
+  const { run } = harness(root, {}, "linux", execFile, {
+    "./systemd-web-mode.cjs": { ...require("./systemd-web-mode.cjs"), MODE_FILE: modeFile },
+    "node:fs/promises": { ...fs.promises, readFile: (file, ...args) => file === "/proc/meminfo"
+      ? Promise.resolve("MemTotal: 2000000 kB\nSwapTotal: " + swap + " kB\n") : fs.promises.readFile(file, ...args) }
+  });
+  run('waitForProcessHealth = async () => {}; checkHttp = async () => ({ok:true,status:200});');
+  const change = value => run(`withOperation("web-mode:${value}", () => handleWebModeChange("${value}"))`);
+  const status = () => run('getServiceStatus(serviceMap.get("web"), {})');
+  assert.equal((await status()).modeSwitchAvailable, true);
+  await change("production");
+  assert.deepEqual(actions.splice(0), ["stop:development", "build", "start:production"]);
+  assert.equal((await status()).mode, "production");
+  await change("production");
+  assert.deepEqual(actions, []);
+  await change("development");
+  assert.deepEqual(actions.splice(0), ["stop:production", "start:development"]);
+  for (failing of ["build", "start:production"]) {
+    await assert.rejects(change("production"), /Web restarted in its previous mode/);
+    assert.equal(mode(), "development");
+    assert.equal(actions.splice(0).at(-1), "start:development");
+    assert.equal((await run("operationJournal.read()")).state, "failed");
+  }
+  priorState = "inactive";
+  failing = "build";
+  await assert.rejects(change("production"), /Web is stopped/);
+  assert.deepEqual(actions.splice(0), ["stop:development", "build", "stop:development"]);
+  priorState = "active";
+  swap = 0;
+  await assert.rejects(change("production"), /swap/);
+  buildDirectory = root + "/wrong-release";
+  await assert.rejects(change("production"), /WorkingDirectory/);
+  webCommand = "/usr/bin/npm run dev:web";
+  assert.equal((await status()).mode, "development");
+  assert.equal((await status()).modeSwitchAvailable, false);
+  await assert.rejects(change("production"), /Enable Linux Web mode/);
+  assert.deepEqual(actions, [], "preflight failures must keep the old Web serving");
 });
 
 test("Windows pull + update verifies before stopping, updates only after both stop, then installs and starts", async () => {

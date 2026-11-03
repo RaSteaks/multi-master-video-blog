@@ -3,7 +3,7 @@ const { randomUUID } = require("node:crypto");
 const { html } = require("../../scripts/manager-dashboard.cjs");
 
 async function startFixture(port = 0) {
-  // Serve the real UI against synthetic state; never invoke Windows services.
+  // Serve the real UI against synthetic state; never invoke host services.
   const fixture = { operation: null, offline: false };
   const services = [
     ["postgres", "PostgreSQL"], ["cms", "Directus CMS"], ["api", "Upload API"], ["web", "Frontend Web"]
@@ -11,6 +11,7 @@ async function startFixture(port = 0) {
     kind: id === "postgres" ? "windows-service" : "process", category: "Fixture",
     port: 3000, pids: [123], status: 200, mode: "development", modeLabel: "Development",
     serviceName: "postgres-fixture", healthUrl: "http://localhost/health", logName: id }));
+  fixture.web = services.find(service => service.id === "web");
   fixture.begin = label => (fixture.operation = { id: randomUUID(), label, state: "running",
     startedAt: new Date().toISOString(), steps: [] });
   const server = http.createServer((req, res) => {
@@ -29,8 +30,8 @@ async function startFixture(port = 0) {
     else if (pathname.startsWith("/api/operations/")) data = { ok: true, operation: fixture.operation };
     else if (pathname.startsWith("/api/logs/")) data = { serviceId: "web", stdout: "", stderr: "", files: {} };
     else if (req.method === "POST" && pathname.startsWith("/api/services/")) {
-      const [, , , id, action] = pathname.split("/");
-      res.statusCode = 202; data = { ok: true, operation: fixture.begin(id + ":" + action) };
+      const [, , , id, action, mode] = pathname.split("/");
+      res.statusCode = 202; data = { ok: true, operation: fixture.begin(action === "mode" ? "web-mode:" + mode : id + ":" + action) };
     } else { res.statusCode = 404; data = { error: "Unknown fixture route" }; }
     res.end(JSON.stringify(data));
   });

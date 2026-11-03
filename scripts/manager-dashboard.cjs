@@ -8,6 +8,7 @@ const crypto = require("node:crypto");
 const { createManagerAuth } = require("./manager-auth.cjs");
 const { loginHtml } = require("./manager-login.cjs");
 const { createOperationJournal } = require("./service-operations.cjs");
+const { MODE_FILE, readWebMode, writeWebMode } = require("./systemd-web-mode.cjs");
 const { createRepoUpdater, COMMIT_ID } = require("./manager-repo.cjs");
 const {
   runPowerShell: executePowerShell,
@@ -902,15 +903,38 @@ async function getWindowsServiceStatus(service, databaseStatus) {
   }
 }
 
+async function readUnit(unit, properties) {
+  const { stdout } = await execFileAsync("/usr/bin/systemctl", ["show", "--property=" + properties, unit], { timeout: 5000 });
+  // ExecStart itself contains '=' signs. Keep everything after the first delimiter.
+  return Object.fromEntries(stdout.trim().split("\n").filter(Boolean).map(line => {
+    const delimiter = line.indexOf("=");
+    return [line.slice(0, delimiter), line.slice(delimiter + 1)];
+  }));
+}
+
+const WEB_BUILD_UNIT = "video-blog-web-build.service";
+const WEB_MODE_SETUP = "Enable Linux Web mode switching as described in docs/linux-deployment.md.";
+
+async function systemdWebMode(unit) {
+  const managed = /\brun-service\.cjs managed-web(?:\s|$)/.test(unit.ExecStart || "");
+  if (managed) {
+    const writable = await fsp.access(path.dirname(MODE_FILE), fs.constants.W_OK | fs.constants.X_OK).then(() => true, () => false);
+    return { mode: readWebMode(MODE_FILE), modeSwitchAvailable: writable && unit.LoadState === "loaded" && Boolean(unit.User) && !["root", "0"].includes(unit.User) };
+  }
+  const command = unit.ExecStart || "";
+  let mode = null;
+  if (/\b(?:dev:web|next dev)\b/.test(command)) mode = "development";
+  if (/\b(?:start:web|next start|run-service\.cjs web)\b/.test(command)) mode = "production";
+  return { mode, modeSwitchAvailable: false };
+}
+
 async function getSystemdStatus(service, database) {
   const status = { id: service.id, name: service.name, category: service.category,
     kind: service.kind, serviceName: service.serviceName, openUrl: service.openUrl,
     port: service.port, running: false, healthy: false };
   try {
-    const { stdout } = await execFileAsync("/usr/bin/systemctl", [
-      "show", "--property=LoadState,ActiveState,SubState,MainPID", service.serviceName
-    ], { timeout: 5000 });
-    const state = Object.fromEntries(stdout.trim().split("\n").map(line => line.split("=")));
+    const properties = "LoadState,ActiveState,SubState,MainPID";
+    const state = await readUnit(service.serviceName, service.id === "web" ? properties + ",ExecStart,User" : properties);
     status.unitState = state.LoadState === "loaded" ? state.ActiveState : state.LoadState;
     status.subState = state.SubState;
     status.pids = Number(state.MainPID) > 0 ? [Number(state.MainPID)] : [];
@@ -922,6 +946,7 @@ async function getSystemdStatus(service, database) {
       status.error = health.error;
       status.status = health.status;
     }
+    if (service.id === "web") Object.assign(status, await systemdWebMode(state));
   } catch (error) {
     status.unitState = "unknown";
     status.error = error.message;
@@ -935,6 +960,51 @@ async function controlSystemd(service, action) {
     { timeout: Math.max(WAIT_MS, 120000) });
   if (action !== "stop" && service.healthUrl) await waitForProcessHealth(service);
   return { message: `${service.serviceName}: ${action} completed.` };
+}
+
+async function checkWebBuildUnit(unit) {
+  const build = await readUnit(WEB_BUILD_UNIT, "LoadState,User,WorkingDirectory,ExecStart");
+  if (build.LoadState !== "loaded" || build.User !== unit.User || build.WorkingDirectory !== unit.WorkingDirectory ||
+      !/\brun-service\.cjs build(?:\s|$)/.test(build.ExecStart || "")) {
+    throw new Error("Install the Web build unit with the same User and WorkingDirectory as Web. " + WEB_MODE_SETUP);
+  }
+  const memory = await fsp.readFile("/proc/meminfo", "utf8");
+  if (Number(memory.match(/^MemTotal:\s+(\d+)/m)?.[1]) <= 2 * 1024 ** 2 &&
+      Number(memory.match(/^SwapTotal:\s+(\d+)/m)?.[1]) < 2 * 1024 ** 2) {
+    throw new Error("A production build on a 2 GiB host requires at least 2 GiB of swap. Web was not stopped.");
+  }
+  await execFileAsync("/usr/bin/sudo", ["-n", "-l", "/usr/bin/systemctl", "start", WEB_BUILD_UNIT], { timeout: 5000 });
+}
+
+async function switchSystemdWeb(web, nextMode) {
+  const unit = await readUnit(web.serviceName, "LoadState,ActiveState,User,WorkingDirectory,ExecStart");
+  const { mode: previousMode, modeSwitchAvailable } = await systemdWebMode(unit);
+  if (!modeSwitchAvailable) throw new Error(WEB_MODE_SETUP);
+  if (previousMode === nextMode) return { ok: true, mode: nextMode, message: "Web is already in " + webModeLabel(nextMode) + " mode." };
+  if (!["active", "inactive", "failed"].includes(unit.ActiveState)) throw new Error("Wait for the Web service operation to finish.");
+  if (nextMode === "production") await checkWebBuildUnit(unit);
+  // Fail before stopping Web if the Manager cannot persist the selection.
+  await writeWebMode(MODE_FILE, previousMode);
+  await serviceStep(web, "stop", () => controlSystemd(web, "stop"));
+  try {
+    if (nextMode === "production") {
+      await serviceStep(web, "build", () => execFileAsync("/usr/bin/sudo", ["-n", "/usr/bin/systemctl", "start", WEB_BUILD_UNIT],
+        { timeout: 31 * 60_000 }));
+    }
+    await writeWebMode(MODE_FILE, nextMode);
+    await serviceStep(web, "start", () => controlSystemd(web, "start"));
+  } catch (error) {
+    try {
+      await serviceStep(web, "recovery-stop", () => controlSystemd(web, "stop"));
+      await writeWebMode(MODE_FILE, previousMode);
+      if (unit.ActiveState === "active") await serviceStep(web, "recovery-start", () => controlSystemd(web, "start"));
+    } catch (recovery) {
+      throw new Error("Web switch failed: " + error.message + ". Recovery failed: " + recovery.message);
+    }
+    const recovered = unit.ActiveState === "active" ? "Web restarted in its previous mode." : "Previous mode restored. Web is stopped.";
+    throw new Error("Web switch failed: " + error.message + ". " + recovered);
+  }
+  return { ok: true, mode: nextMode, message: "Web switched to " + webModeLabel(nextMode) + " and passed its HTTP health check." };
 }
 
 async function getServiceStatus(service, databaseStatus) {
@@ -1223,7 +1293,6 @@ async function handleAction(serviceId, action) {
 }
 
 async function handleWebModeChange(modeValue) {
-  if (systemd) throw new Error("Use the systemd unit and deployment workflow to change the Web build or mode.");
   const nextMode = parseWebMode(modeValue);
   if (!nextMode) {
     const error = new Error(`Unsupported web mode: ${modeValue}`);
@@ -1231,6 +1300,8 @@ async function handleWebModeChange(modeValue) {
     throw error;
   }
 
+  const web = serviceMap.get("web");
+  if (systemd) return switchSystemdWeb(web, nextMode);
   if (nextMode === currentWebMode) {
     return {
       ok: true,
@@ -1239,7 +1310,6 @@ async function handleWebModeChange(modeValue) {
     };
   }
 
-  const web = serviceMap.get("web");
   const previousMode = currentWebMode;
   // Stop before next build: both modes share the .next output directory.
   await serviceStep(web, "stop", () => stopProcessService(web));
@@ -1523,8 +1593,9 @@ async function readServiceLogs(serviceId) {
   const logDir = path.join(ROOT, "logs");
   const stdoutPath = path.join(logDir, `${service.logName}.out.log`);
   const stderrPath = path.join(logDir, `${service.logName}.err.log`);
-  if (serviceId === "manager" && systemd && !fs.existsSync(stdoutPath) && !fs.existsSync(stderrPath)) {
-    return readManagerJournal();
+  if (systemd && serviceId === "web-build") return readUnitJournal(service, WEB_BUILD_UNIT);
+  if (systemd && ["manager", "web"].includes(serviceId) && !fs.existsSync(stdoutPath) && !fs.existsSync(stderrPath)) {
+    return readUnitJournal(service, serviceId === "manager" ? MANAGER_UNIT : service.serviceName);
   }
 
   return {
@@ -1540,15 +1611,13 @@ async function readServiceLogs(serviceId) {
   };
 }
 
-async function readManagerJournal() {
-  // A systemd unit without file redirection logs to the journal. The Manager
-  // account can read entries of its own processes without extra groups.
-  const source = "journalctl -u " + MANAGER_UNIT;
-  const output = await execFileAsync("/usr/bin/journalctl", ["--unit", MANAGER_UNIT, "--lines", "200", "--no-pager", "--output", "short-iso"],
+async function readUnitJournal(service, unit) {
+  const source = "journalctl -u " + unit;
+  const output = await execFileAsync("/usr/bin/journalctl", ["--unit", unit, "--lines", "200", "--no-pager", "--output", "short-iso"],
     { timeout: 5000, maxBuffer: 2 * 1024 * 1024 }).catch(error => ({ stdout: "", stderr: error.stderr || error.message }));
   return {
-    serviceId: "manager",
-    serviceName: "Service Manager",
+    serviceId: service.id,
+    serviceName: service.name,
     updatedAt: new Date().toISOString(),
     stdout: String(output.stdout || "").slice(-7000),
     stderr: String(output.stderr || "").slice(-7000),
@@ -2821,7 +2890,11 @@ function html(csrfToken = "") {
           if (["stop", "restart"].includes(control.dataset.action) && !service.running) reason = "Already stopped. Use Start.";
           if (control.dataset.action === "rebuild-restart" && service.mode !== "production") reason = "Available in Production mode only.";
         }
-        if (!reason && control.dataset.webMode && control.dataset.webMode === state?.services?.find(item => item.id === "web")?.mode) reason = "This mode is already selected.";
+        if (!reason && control.dataset.webMode) {
+          const web = state?.services?.find(item => item.id === "web");
+          if (web?.kind === "systemd" && !web.modeSwitchAvailable) reason = "Install the mode-aware Web unit first.";
+          else if (control.dataset.webMode === web?.mode) reason = "This mode is already selected.";
+        }
         if (!reason && control.dataset.stack === "start-all" && state?.services?.every(item => item.running)) reason = "All services are running. Use Restart for unhealthy services.";
         if (!reason && ["stop-all", "restart-all"].includes(control.dataset.stack) && state?.services?.every(item => !item.running)) reason = "The stack is stopped. Use Start all.";
         if (!reason && control.dataset.repo) reason = repoBlockReason(control.dataset.repo);
@@ -3061,18 +3134,19 @@ function html(csrfToken = "") {
           fact("HTTP", item.status || "N/A"),
           fact("Latency", item.elapsed != null ? item.elapsed + " ms" : "N/A")
         ];
-        if (item.id === "web") {
-          facts.push(fact("Mode", item.modeLabel), fact("Script", item.startScript));
-        }
+      }
+      if (item.id === "web") {
+        facts.push(fact("Mode", item.mode === "production" ? "Production" : item.mode === "development" ? "Development" : "Unknown"));
+        if (item.startScript) facts.push(fact("Script", item.startScript));
       }
       const issue = issueText(item);
-      const webMode = item.id === "web" && item.kind !== "systemd"
+      const webMode = item.id === "web"
         ? '<div class="mode-switch" role="group" aria-label="Frontend Web mode">'
           + '<button class="button ' + (item.mode === "development" ? "active" : "") + '" type="button" data-web-mode="development" aria-pressed="' + (item.mode === "development") + '">Development</button>'
           + '<button class="button ' + (item.mode === "production" ? "active" : "") + '" type="button" data-web-mode="production" aria-pressed="' + (item.mode === "production") + '">Production</button>'
           + '</div>'
         : "";
-      const rebuild = item.id === "web" && item.mode === "production"
+      const rebuild = item.id === "web" && item.kind !== "systemd" && item.mode === "production"
         ? '<button class="button" type="button" data-action="rebuild-restart" data-id="' + esc(item.id) + '" aria-label="Build and restart ' + esc(item.name) + '">Build + Restart</button>'
         : "";
       const open = item.openUrl
@@ -3090,7 +3164,9 @@ function html(csrfToken = "") {
         + '</header>'
         + (issue ? '<p class="svc-issue">' + esc(issue) + '</p>' : "")
         + '<dl class="facts">' + facts.join("") + '</dl>'
-        + '<p class="service-help">' + (item.kind === "systemd" ? "Start, stop and restart control the systemd unit." : item.id === "web"
+        + '<p class="service-help">' + (item.kind === "systemd" && item.id === "web"
+          ? (item.modeSwitchAvailable ? "Switching to Production stops Web, builds it, then starts it. Restart reuses the selected mode." : "To enable mode switching, follow the Linux Web setup in docs/linux-deployment.md.")
+          : item.kind === "systemd" ? "Start, stop and restart control the systemd unit." : item.id === "web"
           ? (item.mode === "production" ? 'Start and Restart reuse the current production build. Source changes require Build + Restart; a failed build leaves Web stopped. Check the Build log before retrying.' : 'Development runs hot reload. Restart reloads the process; switch to Production to build for deployment.')
           : item.id === "postgres" ? 'Controls the Windows database service. Start all checks dependencies in order.'
           : item.id === "api" ? 'Restart reloads API code and configuration. Wait for uploads and conversions to finish first.'

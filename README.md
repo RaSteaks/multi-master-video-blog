@@ -331,6 +331,8 @@ Linux 与 Docker 共用 `low-2gb`、`low-4gb` 资源档位，默认将重处理�
 
 ### Linux 原生部署（systemd）
 
+要在 Manager 页面切换 Development / Production，请按 [Linux Web 模式切换](docs/linux-deployment.md#在-linux-manager-启用-web-模式切换) 接入 Web 和构建单元。已有自定义 `dev:web` 服务可保留原用户和工作目录。
+
 #### 1. 准备环境与目录
 
 需要 **systemd、Node.js 22、npm、PostgreSQL 17、Nginx、FFmpeg / FFprobe、Git、curl、tar、util-linux**。服务单元使用 `/usr/bin/node`，请确认该路径安装的是 Node 22。FFmpeg 需匹配 FFprobe 版本；HDR 自动生成 SDR 还需要 libplacebo、zscale、Dolby Vision 支持和可用 Vulkan。

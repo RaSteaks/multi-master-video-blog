@@ -15,7 +15,7 @@ Environment=HOST=127.0.0.1
 Environment=PORT=3000
 EnvironmentFile=/etc/video-blog/resources.env
 EnvironmentFile=/etc/video-blog/web.env
-ExecStart=/usr/bin/node /opt/video-blog/current/scripts/run-service.cjs web
+ExecStart=/usr/bin/node scripts/run-service.cjs managed-web
 Restart=on-failure
 RestartSec=10
 KillMode=control-group

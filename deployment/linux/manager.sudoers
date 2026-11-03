@@ -3,5 +3,6 @@ admin ALL=(root) NOPASSWD: /usr/bin/systemctl start postgresql@17-main.service, 
 admin ALL=(root) NOPASSWD: /usr/bin/systemctl start video-blog-cms.service, /usr/bin/systemctl stop video-blog-cms.service, /usr/bin/systemctl restart video-blog-cms.service
 admin ALL=(root) NOPASSWD: /usr/bin/systemctl start video-blog-api.service, /usr/bin/systemctl stop video-blog-api.service, /usr/bin/systemctl restart video-blog-api.service
 admin ALL=(root) NOPASSWD: /usr/bin/systemctl start video-blog-web.service, /usr/bin/systemctl stop video-blog-web.service, /usr/bin/systemctl restart video-blog-web.service
+admin ALL=(root) NOPASSWD: /usr/bin/systemctl start video-blog-web-build.service
 # Manager restarts itself; --no-block lets systemd stop the requesting process safely.
 admin ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block restart video-blog-manager.service

@@ -26,7 +26,7 @@ function createConfigTransfer(root, systemDir = process.platform === "linux" ? "
     "deployment/nginx/blog-routes.conf", "deployment/nginx/linux-nginx.example.conf", "deployment/nginx/windows-nginx.example.conf",
     "deployment/linux/profiles/postgresql-low-2gb.conf", "deployment/linux/profiles/postgresql-low-4gb.conf",
     "deployment/linux/systemd/video-blog-web.service", "deployment/linux/systemd/video-blog-api.service",
-    "deployment/linux/systemd/video-blog-cms.service",
+    "deployment/linux/systemd/video-blog-cms.service", "deployment/linux/systemd/video-blog-web-build.service",
     "config/directus-asset-presets.json", "config/private-cms-collections.json"
   ]) targets.set(name, path.join(root, name));
 
