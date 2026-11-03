@@ -73,6 +73,76 @@ test("fetch reveals incoming commits and the services they affect without changi
   assert.match(fs.readFileSync(path.join(fixture.checkout, "logs/git.out.log"), "utf8"), /\$ git fetch/);
 });
 
+test("fetch explains an unwritable object directory and succeeds once access is restored", {
+  skip: process.platform === "win32" || process.geteuid?.() === 0
+}, async t => {
+  const fixture = sandbox(t);
+  const commit = fixture.publish({ "README.md": "Incoming change\n" });
+  // Fetch unpacks this commit into its two-character directory even when objects/ itself is writable.
+  const bucket = path.join(fixture.checkout, ".git", "objects", commit.slice(0, 2));
+  fs.mkdirSync(bucket, { recursive: true });
+  const mode = fs.statSync(bucket).mode & 0o777;
+  const repo = fixture.updater();
+  fs.chmodSync(bucket, 0o555);
+  try {
+    await assert.rejects(repo.fetch(), /Git cannot write incoming objects[\s\S]*insufficient permission for adding an object/);
+    assert.match(fs.readFileSync(path.join(fixture.checkout, "logs/git.err.log"), "utf8"), /Grant the account that runs Manager write access/);
+  } finally {
+    fs.chmodSync(bucket, mode);
+  }
+  assert.equal((await repo.fetch()).behind, 1);
+});
+
+test("pull preflight reports an existing index lock and leaves it in place", async t => {
+  const fixture = sandbox(t);
+  const commit = fixture.publish({ "README.md": "Incoming change\n" });
+  const lock = path.join(fixture.checkout, ".git", "index.lock");
+  fs.writeFileSync(lock, "in use");
+  await assert.rejects(fixture.updater().prepare(commit), /existing Git lock[\s\S]*index\.lock': File exists/i);
+  assert.equal(fs.readFileSync(lock, "utf8"), "in use");
+});
+
+test("pull preflight reports index lock permission denial and can retry after the directory is writable", {
+  skip: process.platform === "win32" || process.geteuid?.() === 0
+}, async t => {
+  const fixture = sandbox(t);
+  const commit = fixture.publish({ "README.md": "Incoming change\n" });
+  const repo = fixture.updater();
+  await repo.fetch();
+  const gitDir = path.join(fixture.checkout, ".git");
+  const mode = fs.statSync(gitDir).mode & 0o777;
+  fs.chmodSync(gitDir, 0o555);
+  try {
+    await assert.rejects(repo.prepare(commit), error => {
+      assert.match(error.message, /write access to the directory[\s\S]*index\.lock': Permission denied/i);
+      assert.doesNotMatch(error.message, /another Git process|delete the .lock/i);
+      return true;
+    });
+  } finally {
+    fs.chmodSync(gitDir, mode);
+  }
+  await repo.fastForward(await repo.prepare(commit));
+  assert.equal(fixture.git(fixture.checkout, "rev-parse", "HEAD"), commit);
+});
+
+test("pull handles stale file metadata while preserving staged and unstaged local edits", async t => {
+  const fixture = sandbox(t);
+  const repo = fixture.updater();
+  const target = fixture.publish({ "README.md": "New upstream documentation\n" });
+  const customized = "deployment/docker/compose.yaml";
+  fixture.write(fixture.checkout, customized, "staged configuration\n");
+  fixture.git(fixture.checkout, "add", "--", customized);
+  fixture.write(fixture.checkout, customized, "working configuration\n");
+  // A permissions change or touch can invalidate cached stat data without changing the blob.
+  const earlier = new Date("2020-01-01T00:00:00Z");
+  fs.utimesSync(path.join(fixture.checkout, "README.md"), earlier, earlier);
+
+  await repo.fastForward(await repo.prepare(target));
+  assert.equal(fixture.git(fixture.checkout, "rev-parse", "HEAD"), target);
+  assert.equal(fixture.git(fixture.checkout, "show", ":" + customized), "staged configuration");
+  assert.equal(fs.readFileSync(path.join(fixture.checkout, customized), "utf8"), "working configuration\n");
+});
+
 test("fast-forwards to the exact reviewed commit, even when upstream has moved on", async t => {
   const fixture = sandbox(t);
   const reviewed = fixture.publish({ "apps/web/src/page.tsx": "web v2\n" }, "Reviewed");

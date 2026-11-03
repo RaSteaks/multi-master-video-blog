@@ -303,7 +303,7 @@ function browserOperationHarness() {
     const match=script.match(new RegExp('    (?:async )?function '+name+'\\([\\s\\S]*?^    }','m'));
     assert.ok(match,name);return match[0];
   }).join('\n'),context);
-  return {context,run:code=>vm.runInContext(code,context),render(operation){context.incoming=operation;vm.runInContext('renderOperation(incoming)',context);}};
+  return {context,run:code=>vm.runInContext(code,context),summary:()=>nodes.get('operationSummary')?.textContent,render(operation){context.incoming=operation;vm.runInContext('renderOperation(incoming)',context);}};
 }
 const browserOperation = (id,state,second=0) => ({id,label:'api:restart',state,startedAt:`2026-01-01T00:00:0${second}.000Z`,steps:[],message:id+' '+state});
 
@@ -318,7 +318,9 @@ test("a newer terminal operation unlocks a missed completion without accepting s
     ui.render(browserOperation('A','succeeded'));
     ui.render(browserOperation('A','running'));
     assert.equal(ui.run('busy'),false);
-    assert.equal(ui.run('readout'),'B '+terminal);
+    // The operation panel keeps the accepted result; the readout does not repeat it.
+    assert.match(ui.summary(),new RegExp(' · B '+terminal+'$'));
+    assert.equal(ui.run('readout'),'');
   }
 });
 
@@ -367,7 +369,7 @@ test("failure from an expired poll cannot overwrite the newer completed result",
   const pending=ui.run('pollOperation()');
   ui.render(browserOperation('B','succeeded',2));
   reject(new Error('Old request timed out'));await pending;
-  assert.equal(ui.run('readout'),'B succeeded');assert.equal(ui.run('operationPollFailures'),0);
+  assert.equal(ui.summary(),'Completed · B succeeded');assert.equal(ui.run('readout'),'');assert.equal(ui.run('operationPollFailures'),0);
   assert.equal(ui.run('busy'),false);
 });
 

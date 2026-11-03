@@ -344,3 +344,16 @@ Manager 所在的仓库就是 `update-native.sh` 的源仓库，服务运行的�
 - 仓库归属其他账号时，Git 会报告 dubious ownership；以 Manager 账号执行 `git config --global --add safe.directory <仓库>`。Manager 账号需要对 `.git` 有写权限。
 - 可选：用 `MANAGER_GIT_PATH` 指定 git 可执行文件，用 `MANAGER_RELEASE_LINK` 指定 release 链接（默认 `/opt/video-blog/current`）。
 - 命令行：`node scripts/service-control.cjs repo status|fetch|pull [COMMIT]`，与页面共用同一把操作锁。输出写入 `logs/git.out.log` 与 `logs/git.err.log`，也可以在页面 **Git** 日志中查看。
+
+**Fetch 报 `insufficient permission for adding an object to repository database`** 表示 Git 无法把收到的对象写入服务器上的仓库。先用 `systemctl show video-blog-manager.service -p User -p WorkingDirectory` 核对服务账号，在面板 **Source repository → Checkout** 显示的仓库目录中检查。下面以 `admin` 为例，账号不同时替换它：
+
+```bash
+objects=$(sudo -u admin -- git rev-parse --path-format=absolute --git-path objects) &&
+sudo -u admin -- find "$objects" -type d \( ! -writable -o ! -executable \) -printf '%M %u:%g %p\n'
+```
+
+检查列出的目录，包括 `objects` 下的两位前缀目录。若这是由 Manager 账号独占维护的 checkout，且列出的目录误属 root，对这些目录执行 `sudo chown admin -- <目录>` 和 `sudo chmod u+rwx -- <目录>`。共享仓库则按原有组或 ACL 授予 Manager 账号目录写入和遍历权限。回到面板重试 **Check for updates** 即可，以后在该 checkout 中也用相同账号执行 Fetch 或 Pull。
+
+**创建锁时报 `Permission denied`** 时，按错误路径检查锁所在目录。Fetch 创建 `refs/remotes/origin/main.lock` 需要写入 `refs/remotes/origin`；Pull 预检创建 `index.lock` 需要写入索引所在的 Git 目录（普通 checkout 为 `.git`）。给 Manager 账号补上相应目录的写入和遍历权限后，以该账号执行 `git status --short --branch` 核对工作区，再从面板重试。只有报 `File exists` 时才按已有锁排查。
+
+**Pull 预检报 `Entry '…' not uptodate. Cannot merge.`** 时，以 Manager 账号在 checkout 中执行 `git update-index --refresh`，再执行 `git status --short --branch`。刷新会重新核对文件元数据，保留暂存内容和工作区文件。调整 ACL 后，如果只显示分支落后，直接重试 Pull。若上次更新中断且仍列出改动，用 `git diff -- <路径>` 和 `git diff --cached -- <路径>` 分别查看工作区和暂存区，再决定如何处理。

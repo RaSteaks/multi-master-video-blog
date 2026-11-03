@@ -55,6 +55,8 @@ async function main() {
     report.checks.push("Confirmation, pending installation phase, duplicate prevention and live dependency logs");
     release();
     await page.waitForFunction(() => document.querySelector("#operationSummary").textContent.includes("Needs attention"));
+    // Commands re-enable once the status refresh that follows a finished operation confirms service states.
+    await page.waitForFunction(() => !document.querySelector('[data-stack="refresh-app"]').disabled);
     assert.equal(await update.isEnabled(), true);
     assert.equal(vm.runInContext('calls.join(",")', fixture.context), "web:stop,api:stop,install");
     await page.screenshot({ path: path.join(output, "install-failed.png"), fullPage: true });

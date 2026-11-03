@@ -2975,9 +2975,14 @@ function html(csrfToken = "") {
         lastOperationSignature = signature;
         document.getElementById("operationTitle").textContent = label;
         const phase = operation.steps.find(step => step.state === "running");
+        const failed = operation.steps.find(step => step.state === "failed");
         document.getElementById("operationSummary").textContent = operation.state === "running"
           ? "In progress · " + (phase ? names[phase.serviceId] + " / " + (phases[phase.phase] || phase.phase) : "Preparing") + ". You can leave this page; the operation continues."
-          : (operation.state === "succeeded" ? "Completed · " : "Needs attention · ") + operation.message;
+          : operation.state === "succeeded" ? "Completed · " + operation.message
+          // The failed step below already carries this error; name the step instead of repeating it.
+          : failed && failed.message === operation.message
+            ? "Needs attention · " + (names[failed.serviceId] || failed.serviceId) + " / " + (phases[failed.phase] || failed.phase) + " failed."
+          : "Needs attention · " + operation.message;
         // Finished work folds to its summary; running or failed work keeps its steps open.
         document.getElementById("operationDetails").open = operation.state !== "succeeded";
         document.getElementById("operationSteps").innerHTML = operation.steps.map(step =>
@@ -2986,7 +2991,9 @@ function html(csrfToken = "") {
           + (step.message ? ': ' + esc(step.message) : '') + '</li>').join("");
       }
       if (operation.state === "running") {
-        setActionReadout(label + " is in progress. Follow the steps below.");
+        // The operation panel reports progress and results; the readout keeps
+        // only feedback the panel cannot show, such as rejected or unconfirmed requests.
+        setActionReadout("");
         trackedOperationId = operation.id;
         trackedOperationStartedAt = operation.startedAt || "";
         setBusy(true);
@@ -2998,7 +3005,7 @@ function html(csrfToken = "") {
         trackedOperationId = null;
         trackedOperationStartedAt = "";
         clearTimeout(operationPollTimer);
-        setActionReadout(operation.message, operation.state === "succeeded" ? "" : "error");
+        setActionReadout("");
         // Revalidate service states before enabling commands against the old cards.
         statusAvailable = false;
         setBusy(false);

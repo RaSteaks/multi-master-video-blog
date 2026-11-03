@@ -103,3 +103,15 @@ test("Git updates name the repository phase in both task panels", () => {
   assert.match(ui.nodes.get("operationSummary").textContent, /Git repository \/ Fast-forward/);
   assert.match(html(), /data-log="repo"/);
 });
+
+test("a failed step shows its error once while the summary names the step", () => {
+  const ui = taskHarness();
+  const error = "error: Entry 'docs/linux-deployment.md' not uptodate. Cannot merge.";
+  ui.render({ ...operation("repo:pull", "failed", [{ serviceId: "repo", phase: "fetch", state: "failed", message: error }]), message: error });
+  assert.equal(ui.nodes.get("operationSummary").textContent, "Needs attention · Git repository / Fetch and check failed.");
+  assert.equal(ui.nodes.get("operationSteps").innerHTML.split("Cannot merge.").length, 2);
+  // A recovery result differs from the failed step, so the summary still reports it.
+  const recovered = taskHarness();
+  recovered.render(operation("web-mode:production", "failed", [{ serviceId: "web", phase: "build", state: "failed", message: "Build failed" }]));
+  assert.equal(recovered.nodes.get("operationSummary").textContent, "Needs attention · Result");
+});

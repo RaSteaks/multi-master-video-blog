@@ -7,6 +7,7 @@ const path = require("node:path");
 const COMMIT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const COMMIT_FORMAT = "%H%x1f%h%x1f%s%x1f%an%x1f%cI";
 const LISTED = 20;
+const LOCK_WRITE_DENIED = /\.lock': Permission denied/i;
 
 function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform, loadedFiles = () => [], fetchTimeoutMs = 120000 }) {
   const outLog = path.join(root, "logs", "git.out.log");
@@ -79,8 +80,8 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
     return git(["diff", "--name-only", "--no-renames", "-z", ...range]).then(splitZ);
   }
 
-  function localChanges() {
-    return git(["status", "--porcelain=v1", "-z", "--untracked-files=no"]).then(parsePorcelain);
+  function localChanges(options) {
+    return git(["status", "--porcelain=v1", "-z", "--untracked-files=no"], options).then(parsePorcelain);
   }
 
   async function protectUntrackedFiles(from, to) {
@@ -232,7 +233,9 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
       const [count, files, local] = await Promise.all([
         git(["rev-list", "--count", from + ".." + to]).then(text => Number(trim(text))),
         changedFiles(from, to),
-        localChanges()
+        // Unlike polling, Pull must let status refresh the index's stat cache before read-tree.
+        // Otherwise an ACL or timestamp change alone can make a clean file look out of date.
+        localChanges({ write: true })
       ]);
       const conflicts = overlap(local, files);
       if (conflicts.length) {
@@ -258,7 +261,8 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
       try {
         await git(["merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", plan.to], { write: true, log: true, timeout: 120000 });
       } catch (error) {
-        if (platform === "win32" && /unable to unlink|permission denied|invalid argument|resource busy|unable to create file/i.test(error.message)) {
+        if (platform === "win32" && !LOCK_WRITE_DENIED.test(error.message)
+          && /unable to unlink|permission denied|invalid argument|resource busy|unable to create file/i.test(error.message)) {
           error.message += "\nA running process may hold a file in this checkout open. Pull + Update API + Web stops API and Web before updating.";
         }
         error.message += "\nRun git status in a terminal before retrying; an interrupted update can leave files changed.";
@@ -285,10 +289,14 @@ function gitError(args, error, stderr, timeout) {
     hint = "git " + args[0] + " did not finish within " + Math.round(timeout / 1000) + " s and was stopped. Check network access to the remote.";
   } else if (/dubious ownership/i.test(detail)) {
     hint = "Git does not trust this checkout because another account owns it. Run the safe.directory command below as the account that runs Manager.";
+  } else if (/insufficient permission for adding an object to repository database/i.test(detail)) {
+    hint = "Git cannot write incoming objects to this checkout. Grant the account that runs Manager write access to the object directories named below, then retry Check for updates.";
   } else if (/terminal prompts disabled|could not read (?:username|password)|authentication failed|permission denied \(publickey|host key verification failed/i.test(detail)) {
     hint = "The remote needs credentials that Manager cannot type. Configure a credential helper, token or SSH key that works without a prompt for the account that runs Manager.";
-  } else if (/index\.lock|\.lock': File exists/i.test(detail)) {
-    hint = "Another Git process is using this checkout. Wait for it to finish; delete the .lock file only if no Git process is running.";
+  } else if (LOCK_WRITE_DENIED.test(detail)) {
+    hint = "Git could not create the lock file. Grant the account that runs Manager write access to the directory containing the lock path below, then retry.";
+  } else if (/\.lock': File exists/i.test(detail)) {
+    hint = "An existing Git lock blocks this operation. Wait for any Git process using the checkout to finish before retrying.";
   } else if (/not a git repository/i.test(detail)) {
     hint = "Manager is not running from a Git checkout, so it cannot update it.";
   }
