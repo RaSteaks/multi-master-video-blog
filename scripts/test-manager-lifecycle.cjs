@@ -646,7 +646,7 @@ test("Linux restart requires owning the unit and the exact sudoers grant, then q
     callback(null, { stdout: `LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=${mainPid}\nNRestarts=2\n` });
   };
   const { run } = harness(temporaryRoot(t), {}, 'linux', execFile);
-  await assert.rejects(run('requestManagerRestart()'), error => error.statusCode === 400 && /not the main process of video-blog-manager\.service/.test(error.message));
+  await assert.rejects(run('requestManagerRestart()'), error => error.statusCode === 400 && /Cannot confirm this Manager belongs to video-blog-manager\.service/.test(error.message));
   mainPid = process.pid;
   sudoAllowed = false;
   await assert.rejects(run('requestManagerRestart()'), error => error.statusCode === 403 && /manager\.sudoers/.test(error.message));
@@ -665,6 +665,31 @@ test("Linux restart requires owning the unit and the exact sudoers grant, then q
   const logs = await run('readServiceLogs("manager")');
   assert.deepEqual(calls.at(-1).slice(0, 3), ['/usr/bin/journalctl', '--unit', 'video-blog-manager.service']);
   assert.equal(logs.files.stdout, 'journalctl -u video-blog-manager.service');
+});
+
+test("Linux restart recognizes a wrapped Manager only inside its systemd unit", async t => {
+  const group = "/system.slice/video-blog-manager.service";
+  let membership = "";
+  const execFile = (file, args, options, callback) => {
+    const unit = file === "/usr/bin/systemctl";
+    if (unit) assert.ok(args[1].split(",").includes("ControlGroup"));
+    callback(null, { stdout: unit ? `LoadState=loaded\nActiveState=active\nMainPID=1\nControlGroup=${group}\n` : "" });
+  };
+  const { run } = harness(temporaryRoot(t), {}, "linux", execFile, {
+    "node:fs/promises": { ...fs.promises, readFile: async (file, encoding) => {
+      if (file !== "/proc/self/cgroup") return fs.promises.readFile(file, encoding);
+      if (membership === null) throw new Error("procfs unavailable");
+      return membership;
+    } }
+  });
+  for (membership of [null, "0::/user.slice/session.scope", "0::" + group + "-other", "1:cpu:" + group]) {
+    await assert.rejects(run("requestManagerRestart()"), error => error.statusCode === 400);
+  }
+  membership = "4:cpu:/other\n1:name=systemd:" + group;
+  assert.equal((await run("managerSupervisor()")).canRestart, true);
+  membership = "0::" + group + "/workers";
+  assert.equal((await run("requestManagerRestart()")).state, "pending");
+  run("launchManagerRestart()");
 });
 
 test("restart excludes a CLI operation throughout preflight and unlocks on rejection", async t => {

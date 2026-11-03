@@ -331,7 +331,9 @@ sudo -u admin sudo -n -l /usr/bin/systemctl start video-blog-web-build.service
 
 **Service Manager** 面板显示 Manager 的 PID、运行时长、内存、事件循环 p99 延迟、状态接口响应时间，以及 `video-blog-manager.service` 的单元状态和 systemd 自动重启次数。磁盘上的 Manager 代码与运行中的副本不一致时（例如 Pull 之后），面板提示需要重启。单元名不同时，在仓库根目录 `.env` 设置 `MANAGER_SYSTEMD_UNIT`，并同步修改 sudoers 中的单元名。
 
-**Restart Manager** 执行 `sudo -n /usr/bin/systemctl --no-block restart <单元>`：systemd 先接收重启任务，再停止当前进程，因此请求方不会被中途结束。以下情况会拒绝重启：有任务正在执行；当前进程不是该单元的 MainPID（例如在终端手动启动）；sudoers 未授权；磁盘上的 Manager 代码无法加载。最后一项让失败的 Pull 不会停掉唯一的 Manager。其他服务不受影响。会话只保存在内存中，重启后页面会跳转到登录页，需要重新登录。单元未把输出写入 `logs/manager.*.log` 时，**Logs** 读取 `journalctl -u <单元>`。
+出现 **Restart needed** 时，可执行的 **Restart Manager** 按钮会高亮。按钮灰显时，面板会说明原因。Manager 必须由配置的 systemd 单元托管，直接运行 Node 和通过 npm 或 shell 启动子进程都支持。要核对归属，在服务器执行 `systemctl status <面板显示的 PID>`。如果该 PID 属于其他单元或终端会话，应从原启动位置重启。
+
+**Restart Manager** 执行 `sudo -n /usr/bin/systemctl --no-block restart <单元>`。systemd 先接收重启任务，再停止当前进程。有任务正在执行、无法确认进程归属、sudoers 未授权或磁盘上的 Manager 代码无法加载时，Manager 会拒绝重启。其他服务继续运行。会话只保存在内存中，重启后需要重新登录。单元未把输出写入 `logs/manager.*.log` 时，**Logs** 读取 `journalctl -u <单元>`。
 
 #### 通过 Manager 更新 Git 仓库
 

@@ -1124,17 +1124,15 @@ async function managerSupervisor() {
   if (systemd) {
     const supervisor = { kind: "systemd", unit: MANAGER_UNIT, canRestart: false };
     try {
-      const { stdout } = await execFileAsync("/usr/bin/systemctl", [
-        "show", "--property=LoadState,ActiveState,SubState,MainPID,NRestarts", MANAGER_UNIT
-      ], { timeout: 5000 });
-      const state = Object.fromEntries(stdout.trim().split("\n").map(line => line.split("=")));
+      const state = await readUnit(MANAGER_UNIT, "LoadState,ActiveState,SubState,MainPID,NRestarts,ControlGroup");
       supervisor.unitState = state.LoadState === "loaded" ? state.ActiveState : state.LoadState;
       supervisor.subState = state.SubState;
       supervisor.mainPid = Number(state.MainPID) || null;
       supervisor.restarts = Number(state.NRestarts) || 0;
-      // Restarting a unit this process does not belong to would stop someone else's Manager.
-      supervisor.canRestart = supervisor.mainPid === process.pid;
-      if (!supervisor.canRestart) supervisor.reason = "This Manager is not the main process of " + MANAGER_UNIT + ". Restart it where it was started.";
+      // npm or a shell can own MainPID while the actual Manager runs in the same unit.
+      supervisor.canRestart = supervisor.mainPid === process.pid
+        || (supervisor.mainPid !== null && await managerInUnitCgroup(state.ControlGroup));
+      if (!supervisor.canRestart) supervisor.reason = "Cannot confirm this Manager belongs to " + MANAGER_UNIT + ". Restart it where it was started.";
     } catch (error) {
       supervisor.unitState = "unknown";
       supervisor.reason = "Cannot read " + MANAGER_UNIT + ": " + error.message;
@@ -1147,6 +1145,16 @@ async function managerSupervisor() {
       reason: canRestart ? undefined : "deployment/windows/manager-service.ps1 is missing." };
   }
   return { kind: "foreground", canRestart: false, reason: "Restart Manager from the terminal that started it." };
+}
+
+async function managerInUnitCgroup(unitGroup) {
+  if (!unitGroup?.startsWith("/") || unitGroup === "/") return false;
+  // Only the unified (v2) or systemd (v1) hierarchy identifies the owning service.
+  const groups = await fsp.readFile("/proc/self/cgroup", "utf8").catch(() => "");
+  return groups.split("\n").some(line => {
+    const group = /^(?:0::|\d+:name=systemd:)(\/.*)$/.exec(line)?.[1];
+    return group === unitGroup || Boolean(group?.startsWith(unitGroup + "/"));
+  });
 }
 
 async function requestManagerRestart() {
@@ -2015,6 +2023,7 @@ function managerStyles() {
     .button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
     .button.warn { color: var(--warn); }
     .button.warn:hover:not(:disabled) { background: var(--warn-bg); border-color: var(--warn); }
+    .button.warn.restart-needed:not(:disabled) { background: var(--warn); border-color: var(--warn); color: var(--surface); }
     .button.danger { color: var(--bad); }
     .button.danger:hover:not(:disabled) { background: var(--bad-bg); border-color: var(--bad); }
     .button.active { background: var(--text); border-color: var(--text); color: var(--bg); }
@@ -2166,10 +2175,15 @@ function managerStyles() {
     .section-note { color: var(--muted); font-size: 12.5px; }
 
     /* Service cards */
-    .services { container-type: inline-size; }
-    .bay { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
-    /* Two equal columns keep four cards as a 2 × 2 block, never 3 + 1. */
-    @container (min-width: 640px) { .bay { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    /* Two equal columns once the bay is 640px wide keep four cards as a 2 × 2 block,
+       never 3 + 1. The bay sizes them from its own width, not a container query:
+       WebKit lays a query container out before styling newly inserted cards, and
+       that momentarily empty section clamped the page's scroll position. */
+    .bay {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, max(313px, calc(50% - 7px))), 1fr));
+      gap: 14px;
+    }
     .svc {
       --tone: var(--idle);
       display: grid;
@@ -2596,7 +2610,7 @@ function html(csrfToken = "") {
             <p class="notice" id="managerIssue" role="status" aria-live="polite" hidden></p>
             <dl class="facts" id="managerFacts" aria-label="Manager runtime"></dl>
             <div class="svc-ops">
-              <button class="button warn" type="button" data-manager="restart">Restart Manager</button>
+              <button class="button warn" type="button" data-manager="restart" aria-describedby="managerIssue" disabled>Restart Manager</button>
               <button class="button" type="button" data-log="manager" aria-label="Watch Service Manager output">Logs</button>
             </div>
             <details class="command-reference">
@@ -2898,7 +2912,10 @@ function html(csrfToken = "") {
         if (!reason && control.dataset.stack === "start-all" && state?.services?.every(item => item.running)) reason = "All services are running. Use Restart for unhealthy services.";
         if (!reason && ["stop-all", "restart-all"].includes(control.dataset.stack) && state?.services?.every(item => !item.running)) reason = "The stack is stopped. Use Start all.";
         if (!reason && control.dataset.repo) reason = repoBlockReason(control.dataset.repo);
-        if (!reason && control.dataset.manager) reason = managerBlockReason();
+        if (control.dataset.manager) {
+          reason ||= managerBlockReason();
+          if (state?.manager) renderManagerStatus(state.manager, control, reason);
+        }
         control.disabled = Boolean(reason);
         if (control.matches("[data-action], [data-stack], [data-web-mode], [data-repo], [data-manager]")) control.title = reason;
       });
@@ -3436,16 +3453,17 @@ function html(csrfToken = "") {
       await submitOperation(action === "pull-update" ? "/api/stack/pull-update" : "/api/repo/pull", label, { target: target.hash });
     }
 
-    function managerState(manager) {
+    function managerState(manager, blockReason) {
       if (managerRestartPending || manager.restart?.state === "pending") {
         return { cls: "warn", label: "Restarting", tone: "warn", issue: "Restart requested. The new Manager takes over in a few seconds." };
       }
       if (manager.restart?.state === "failed") return { cls: "off", label: "Restart failed", tone: "bad", issue: manager.restart.message };
       if (manager.changedCode?.length) {
         return { cls: "warn", label: "Restart needed", tone: "warn",
-          issue: "The Manager code on disk differs from the running copy (" + manager.changedCode.join(", ") + "). Restart Manager to load it." };
+          issue: "The Manager code on disk differs from the running copy (" + manager.changedCode.join(", ") + "). "
+            + (blockReason || "Restart Manager to load it.") };
       }
-      return { cls: "ok", label: "Running", tone: "", issue: manager.supervisor && !manager.supervisor.canRestart ? manager.supervisor.reason : "" };
+      return { cls: "ok", label: "Running", tone: "", issue: blockReason };
     }
 
     function supervisorLabel(supervisor) {
@@ -3456,13 +3474,17 @@ function html(csrfToken = "") {
       return supervisor.kind === "windows-process" ? "manager-service.ps1" : "Foreground process";
     }
 
-    function renderManager(manager) {
-      const status = managerState(manager);
+    function renderManagerStatus(manager, button, blockReason) {
+      const status = managerState(manager, blockReason);
+      button.classList.toggle("restart-needed", status.label === "Restart needed");
       managerBadge.className = "badge " + status.cls;
       managerBadge.lastElementChild.textContent = status.label;
       managerIssue.hidden = !status.issue;
       managerIssue.dataset.tone = status.tone;
       if (managerIssue.textContent !== (status.issue || "")) managerIssue.textContent = status.issue || "";
+    }
+
+    function renderManagerFacts(manager) {
       managerFacts.innerHTML = [
         fact("Address", manager.host + ":" + manager.port),
         fact("PID", manager.pid),
@@ -3495,7 +3517,7 @@ function html(csrfToken = "") {
         if (!response.ok || !data.ok) throw new Error(data.error || "Restart was not accepted.");
         managerRestartPending = { pid: data.restart.pid, startedAt: Date.now() };
         clearTimeout(logPollTimer);
-        if (state) renderManager(state.manager);
+        syncActionControls();
         setActionReadout("Manager is restarting. This page reconnects automatically; sign in again when the login page appears.");
         watchManagerRestart(managerRestartPending);
       } catch (error) {
@@ -3547,14 +3569,16 @@ function html(csrfToken = "") {
 
       renderTally(data);
       // Keep the dialog's original trigger mounted so native focus restoration works.
-      if (!confirmationPending) {
+      // Unchanged cards stay mounted too, so polling does not relayout them every 2 s.
+      const cardMarkup = data.services.map(serviceCard).join("");
+      if (!confirmationPending && renderedMarkup.get(cards) !== cardMarkup) {
         const focused = cards.contains(document.activeElement) ? document.activeElement : null;
         const focusKey = focused?.dataset.action ? '[data-id="' + focused.dataset.id + '"][data-action="' + focused.dataset.action + '"]'
           : focused?.dataset.webMode ? '[data-web-mode="' + focused.dataset.webMode + '"]'
           : focused?.dataset.log ? '[data-log="' + focused.dataset.log + '"]'
           : focused?.tagName === 'SUMMARY' ? '[data-card="' + focused.closest('[data-card]').dataset.card + '"] summary' : null;
         const openCommands = new Set([...cards.querySelectorAll('.command-reference[open]')].map(item => item.closest('[data-card]').dataset.card));
-        cards.innerHTML = data.services.map(serviceCard).join("");
+        setMarkup(cards, cardMarkup);
         cards.querySelectorAll('.command-reference').forEach(item => { item.open = openCommands.has(item.closest('[data-card]').dataset.card); });
         if (focusKey) cards.querySelector(focusKey)?.focus({ preventScroll: true });
       }
@@ -3568,7 +3592,7 @@ function html(csrfToken = "") {
       syncActionControls();
       updateLogControls();
       renderUploadTokens(data.uploadTokens);
-      renderManager(data.manager);
+      renderManagerFacts(data.manager);
       databaseMeta.innerHTML = [
         ledgerRow("Status", data.database.healthy ? "Healthy" : "Unavailable", data.database.healthy ? "good" : "bad"),
         ledgerRow("Path", data.database.path),

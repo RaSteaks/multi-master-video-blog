@@ -40,12 +40,13 @@ async function main() {
   try {
     vm.runInContext(`
       var calls = [], managerChanged = [], fixtureStatus = allStatus;
+      var supervisor = { kind: "windows-process", script: "deployment/windows/manager-service.ps1", canRestart: true };
       // The vm fixture has no require.cache; mark the file a real Manager loads.
       loadedCode.set("scripts/manager-dashboard.cjs", {});
       allStatus = async () => ({ ...await fixtureStatus(), operation: await operationJournal.read(),
         manager: { host: "127.0.0.1", port: 8070, pid: 4321, uptime: 3725, node: "v22-fixture", rss: 73400320,
           eventLoop: { p99Ms: 2.4, maxMs: 9 }, changedCode: managerChanged, restart: managerRestart, activeOperation,
-          supervisor: { kind: "windows-process", script: "deployment/windows/manager-service.ps1", canRestart: true } } });
+          supervisor } });
       handleAction = module.exports.handleAction;
       handleStackAction = module.exports.handleStackAction;
       stopProcessService = async service => { calls.push(service.id + ":stop"); return { message: "Stopped" }; };
@@ -126,12 +127,30 @@ async function main() {
     report.checks.push("A local edit to an incoming file blocks both pulls before any change");
 
     const managerPanel = page.locator("#managerPanel");
+    const restart = page.getByRole("button", { name: "Restart Manager", exact: true });
     assert.match(await managerPanel.innerText(), /Running[\s\S]*1h 2m[\s\S]*70\.0 MiB[\s\S]*2\.4 ms[\s\S]*manager-service\.ps1/);
-    vm.runInContext('managerChanged = ["scripts/manager-dashboard.cjs"]', fixture.context);
+    vm.runInContext(`
+      managerChanged = ["scripts/manager-dashboard.cjs"];
+      supervisor = { kind: "systemd", unit: "video-blog-manager.service", unitState: "active", canRestart: false,
+        reason: "Cannot confirm this Manager belongs to video-blog-manager.service. Restart it where it was started." };
+    `, fixture.context);
     await page.waitForFunction(() => document.querySelector("#managerBadge").textContent === "Restart needed");
     assert.match(await page.locator("#managerIssue").innerText(), /differs from the running copy \(scripts\/manager-dashboard\.cjs\)/);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.emulateMedia({ colorScheme: "dark" });
+    assert.equal(await restart.isDisabled(), true);
+    assert.match(await page.locator("#managerIssue").innerText(), /Restart it where it was started/);
+    await managerPanel.screenshot({ path: path.join(output, "manager-restart-blocked.png"), animations: "disabled" });
+    vm.runInContext('supervisor.canRestart = true; delete supervisor.reason; activeOperation = "api:restart"', fixture.context);
+    await page.getByText(/differs from the running copy.*Wait for the running operation/).waitFor();
+    assert.equal(await restart.isDisabled(), true);
+    vm.runInContext('activeOperation = null', fixture.context);
+    await page.waitForFunction(() => !document.querySelector('[data-manager="restart"]').disabled);
+    assert.match(await page.locator("#managerIssue").innerText(), /Restart Manager to load it/);
+    // The button transitions to its warning color after the operation unlocks.
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('[data-manager="restart"]')).backgroundColor
+      === getComputedStyle(document.querySelector("#managerBadge")).color);
+    report.checks.push("Changed Manager code highlights an available restart and shows the reason for a blocked restart");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.locator("#repoPanel").screenshot({ path: path.join(output, "repository-mobile-dark.png") });
     await managerPanel.screenshot({ path: path.join(output, "manager-mobile-dark.png") });
@@ -142,7 +161,7 @@ async function main() {
       requestManagerRestart = async () => ({ ...(managerRestart = { state: "pending", pid: 4321, requestedAt: new Date().toISOString() }) });
       launchManagerRestart = () => { managerAuth.hasSession = () => false; };
     `, fixture.context);
-    await page.getByRole("button", { name: "Restart Manager", exact: true }).click();
+    await restart.click();
     await dialog.waitFor();
     assert.match(await dialog.innerText(), /keep running.*checks that its code on disk loads.*sign in again/s);
     await page.locator("#actionDialogConfirm").click();
