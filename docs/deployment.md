@@ -115,9 +115,10 @@ npm run health
 
 Manager controls PostgreSQL, Directus CMS, Upload API and Frontend Web. Its page
 and CLI share the same lifecycle functions and cross-process operation lock.
-The Manager itself is separate: update its code with `npm run manager:restart`,
-then sign in again to obtain a new session and CSRF nonce. Do this after any active
-service operation finishes. These controls target the Windows deployment.
+The Manager itself is separate: its **Service Manager** panel monitors the Manager
+process and can restart it (see [Git updates and Manager restarts](#git-updates-and-manager-restarts));
+`npm run manager:restart` does the same from a terminal. Sign in again afterwards
+to obtain a new session and CSRF nonce. These controls target the Windows deployment.
 
 | Service | Start | Stop | Restart | Inspect |
 | --- | --- | --- | --- | --- |
@@ -151,7 +152,8 @@ PostgreSQL control may require an Administrator terminal/Manager process.
   It deliberately avoids `npm ci`, which removes the shared dependency tree.
   PostgreSQL and CMS are not restarted; CMS-only and root dependency updates
   still require a separate maintenance procedure. Registry access and write
-  permissions for the project are required. Manager does not pull Git changes.
+  permissions for the project are required. Update API + Web does not pull Git
+  changes; **Pull + Update API + Web** in the Source repository panel does.
   Every failure stops subsequent steps; install/build failure leaves both API
   and Web stopped. Fix the error, then retry Update API + Web. The persistent
   operation panel reports installation progress; **Dependencies** displays
@@ -169,6 +171,62 @@ PostgreSQL control may require an Administrator terminal/Manager process.
   reports that failure. `services:status` / `services:health` inspect the stack.
 - Single-service actions do not silently restart dependent services. Stop/restart
   confirmation explains the interruption; finish uploads/conversions first.
+
+### Git updates and Manager restarts
+
+The **Source repository** panel updates the checkout that Manager, CMS, API and
+Web run from. **Check for updates** runs `git fetch` and lists the incoming
+commits and which parts they touch (Manager, API, Web, dependencies, CMS,
+deployment files). Updates are fast-forward only, to the exact commit shown in
+the confirmation, even if upstream has moved since. Manager never resets,
+stashes, cleans or merges. Before changing anything it refuses local commits or
+a diverged branch, a merge or rebase in progress, local edits to files the
+update changes, and untracked files (including ignored files) that an incoming
+file would replace. A deleted upstream branch or a branch switch after preflight
+also stops the pull. Local edits to other tracked files (for example customized
+Compose or Nginx files) are kept.
+
+- **Pull** updates the checkout only. API and Web keep running the code they
+  loaded; Development Web may hot-reload changed files. The result lists the
+  follow-up steps, such as Update API + Web, Restart CMS or Restart Manager.
+- **Pull + Update API + Web** (`node scripts/service-control.cjs stack pull-update [COMMIT]`)
+  fetches and verifies the update while the site still serves, then stops Web
+  and API, so Windows releases files they hold open, and only then
+  fast-forwards. It continues exactly like Update API + Web. A failure before
+  the stop changes nothing; a failure after it leaves API and Web stopped, as
+  with Update API + Web.
+- This repository is public: a checkout cloned over HTTPS fetches anonymously
+  and needs no credentials. Credentials matter only for a private fork or an SSH
+  remote (GitHub requires a key over SSH even for public repositories). Git
+  cannot prompt in the hidden Manager process, so those credentials must work
+  non-interactively for the account that runs Manager: Git Credential Manager
+  with a stored credential, a token, or a read-only deploy key whose host is
+  already in `known_hosts`. OpenSSH runs with `BatchMode=yes` unless
+  `core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH` is set. Fetch stops after
+  120 seconds instead of waiting for a prompt.
+- An elevated (Administrator) Manager may see the checkout as owned by another
+  account. Git then reports *dubious ownership*; run the `safe.directory`
+  command it shows as that account. Set `MANAGER_GIT_PATH` if `git.exe` is not
+  on the Manager's `PATH`.
+- CLI: `node scripts/service-control.cjs repo status|fetch|pull [COMMIT]`. Output
+  goes to `logs/git.out.log` and `logs/git.err.log` (the **Git** log tab).
+  HTTP: `GET /api/repo`; `POST /api/repo/fetch`; `POST /api/repo/pull` and
+  `POST /api/stack/pull-update` require `{"target":"<full commit ID>"}` and
+  return 202 like other operations.
+
+The **Service Manager** panel shows the Manager's PID, uptime, memory, event-loop
+p99 delay, status response time and supervisor. When files Manager loaded have
+changed on disk, typically after a pull, it reports **Restart needed**.
+**Restart Manager** refuses while an operation runs (including CLI and startup
+scripts), and first loads the code on disk in a separate Node process, so a
+broken update cannot stop the only Manager. On Windows it then starts
+`deployment/windows/manager-service.ps1 restart` in a detached, hidden
+PowerShell that outlives the old process. That PowerShell keeps the old
+process's environment and elevation and writes `logs/manager.restart.log`. A
+Manager started in the foreground (for example `npm run manager` on macOS)
+cannot restart itself. Services keep running. Sessions are in memory, so the
+page returns to the login screen. Linux uses systemd instead; see
+[Linux deployment](linux-deployment.md).
 
 ### API upload-storage lock after a Windows restart
 

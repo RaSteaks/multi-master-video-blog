@@ -33,7 +33,7 @@ COPY --from=web-build --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=web-build --chown=node:node /app/apps/web/.next/static apps/web/.next/static
 COPY --from=web-build --chown=node:node /app/apps/web/public apps/web/public
 COPY --from=web-build --chown=node:node /app/apps/web/content/about.example.md apps/web/content/about.example.md
-COPY --chown=node:node config/resource-profile.cjs config/resource-profile.cjs
+COPY --chown=node:node config/resource-profile.cjs config/storage.cjs config/
 COPY --chown=node:node scripts/run-service.cjs scripts/directus-health.cjs scripts/
 USER node
 CMD ["node", "scripts/run-service.cjs", "web"]

@@ -14,7 +14,18 @@ x-runtime: &runtime
     - path: ./runtime.env
       required: false
 
+x-content-storage: &content-storage
+  STORAGE_LOCATIONS: ${STORAGE_LOCATIONS:-local}
+  STORAGE_OSS_DRIVER: "${STORAGE_OSS_DRIVER:-}"
+  STORAGE_OSS_BUCKET: "${STORAGE_OSS_BUCKET:-}"
+  STORAGE_OSS_REGION: "${STORAGE_OSS_REGION:-}"
+  STORAGE_OSS_ENDPOINT: "${STORAGE_OSS_ENDPOINT:-}"
+  STORAGE_OSS_ROOT: "${STORAGE_OSS_ROOT:-}"
+  STORAGE_OSS_KEY: "${STORAGE_OSS_KEY:-}"
+  STORAGE_OSS_SECRET: "${STORAGE_OSS_SECRET:-}"
+
 x-cms-environment: &cms-environment
+  <<: *content-storage
   RESOURCE_PROFILE: ${RESOURCE_PROFILE:-low-2gb}
   HOST: 0.0.0.0
   PORT: 8055
@@ -33,14 +44,6 @@ x-cms-environment: &cms-environment
   ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
   DIRECTUS_HEALTH_EMAIL: ${CMS_HEALTH_EMAIL:-}
   DIRECTUS_HEALTH_PASSWORD: ${CMS_HEALTH_PASSWORD:-}
-  STORAGE_LOCATIONS: ${STORAGE_LOCATIONS:-local}
-  STORAGE_OSS_DRIVER: "${STORAGE_OSS_DRIVER:-}"
-  STORAGE_OSS_BUCKET: "${STORAGE_OSS_BUCKET:-}"
-  STORAGE_OSS_REGION: "${STORAGE_OSS_REGION:-}"
-  STORAGE_OSS_ENDPOINT: "${STORAGE_OSS_ENDPOINT:-}"
-  STORAGE_OSS_ROOT: "${STORAGE_OSS_ROOT:-}"
-  STORAGE_OSS_KEY: "${STORAGE_OSS_KEY:-}"
-  STORAGE_OSS_SECRET: "${STORAGE_OSS_SECRET:-}"
   STORAGE_LOCAL_DRIVER: local
   STORAGE_LOCAL_ROOT: /directus/uploads
 
@@ -102,6 +105,7 @@ services:
     image: video-blog-api:${RELEASE_TAG:-local}
     build: { context: ../.., dockerfile: deployment/docker/Dockerfile, target: api }
     environment:
+      <<: *content-storage
       RESOURCE_PROFILE: ${RESOURCE_PROFILE:-low-2gb}
       DIRECTUS_URL: http://cms:8055
       DIRECTUS_EMAIL: ${SERVICE_EMAIL:?Set SERVICE_EMAIL}

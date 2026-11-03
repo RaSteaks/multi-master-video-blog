@@ -94,6 +94,15 @@ For Dolby Vision, use `mode=copy` so FFmpeg repackages the existing HEVC/Dolby V
 
 New-project HDR uploads without a supplied `sdrVideo` automatically generate a separate SDR MP4/HLS master. All HDR derivatives use adaptive `libplacebo`/Vulkan tone and gamut mapping; verified Dolby streams apply embedded RPU. Copy checks retain static metadata and full-stream RPU hashes. Paired uploads report `companionSdr` for the manual SDR; automatic conversion reports `sdrDerivative`. Later uploads use `projectId` to preserve existing project information and do not trigger automatic conversion. See `docs/upload-api.md` for pairing, authenticated project discovery, defaults and partial-failure recovery.
 
+Use the deployed `STORAGE_LOCATIONS=oss,local` and `STORAGE_OSS_*` values in the existing CMS
+environment (`apps/cms/directus/.env`, or `/etc/video-blog/cms.env` on systemd)
+to store article, album and video assets under `article/`, `album/`
+and `videos/`. Article Markdown and content/file metadata are mirrored to OSS
+through a durable outbox. Video processing stays local; verified video artifacts
+reach OSS before publication and successful jobs release local bytes. Existing
+asset/media URLs remain in use; existing local media is not automatically moved.
+See [unified OSS storage](../../docs/upload-api.md#unified-oss-content-storage).
+
 For `sourceKind=hls_package`, include a multivariant `master.m3u8` with `VIDEO-RANGE=SDR|PQ|HLG`. Every variant must share the same color contract.
 
 ## Article publishing

@@ -9,7 +9,8 @@ const { spawn } = require("node:child_process");
 const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { AsyncLocalStorage } = require("node:async_hooks");
-const { loadEnvironment, resolveResourceProfile } = require("../../../config/resource-profile.cjs");
+const { resolveResourceProfile } = require("../../../config/resource-profile.cjs");
+const { loadStorageEnvironment, contentStorageConfig } = require("../../../config/storage.cjs");
 const { mediaThreadArgs, downloadToFile, moveUploadFile } = require("./resource-io.cjs");
 const { configureFilmResources } = require("./film-scan-utils.cjs");
 const zlib = require("node:zlib");
@@ -58,6 +59,8 @@ const {
 const { createDirectusClient } = require("./directus-client.cjs");
 const { createTaskLimiter } = require("./task-limiter.cjs");
 const { createVideoUploadStore } = require("./video-upload-store.cjs");
+const { createVideoStorage } = require("./video-storage.cjs");
+const { createContentArchive } = require("./content-archive.cjs");
 const { createCachedProbe } = require("./cached-probe.cjs");
 const { createAssetAuthorizer } = require("./asset-access.cjs");
 const { createExternalProjects, EXTERNAL_PROJECT_FIELDS } = require("./external-projects.cjs");
@@ -100,6 +103,7 @@ const PORT = Number(env.PORT || 8060);
 const DIRECTUS_URL = stripTrailingSlash(env.DIRECTUS_URL || "http://127.0.0.1:8055");
 const DIRECTUS_EMAIL = env.DIRECTUS_EMAIL || "admin@example.com";
 const DIRECTUS_PASSWORD = env.DIRECTUS_PASSWORD || "change-this-local-password";
+const sharedStorageConfig = contentStorageConfig(env);
 // Keep CMS transport separate from routing so it can be exercised without starting services.
 const {
   directusLogin,
@@ -110,7 +114,13 @@ const {
 } = createDirectusClient({
   url: DIRECTUS_URL,
   email: DIRECTUS_EMAIL,
-  password: DIRECTUS_PASSWORD
+  password: DIRECTUS_PASSWORD,
+  fileStorage: sharedStorageConfig ? { article: "oss_article", album: "oss_album", video: "oss_video" } : undefined,
+  // Callbacks run after startup, once the archive below owns its durable outbox.
+  mutations: sharedStorageConfig ? {
+    before: mutation => contentArchive.before(mutation),
+    after: (mutation, data) => contentArchive.after(mutation, data)
+  } : undefined
 });
 const UPLOAD_API_TOKEN_PLACEHOLDER = "__REPLACE_WITH_RANDOM_UPLOAD_TOKEN__";
 const configuredUploadApiToken = String(env.UPLOAD_API_TOKEN || "").trim();
@@ -128,6 +138,12 @@ const ARTICLE_API_TOKEN =
 // separate authority. Placeholder values disable publication rather than inherit.
 const ARTICLE_USES_UPLOAD_TOKEN = !configuredArticleApiToken && Boolean(UPLOAD_API_TOKEN);
 const MEDIA_ROOT = path.resolve(ROOT, env.MEDIA_ROOT || "../../media");
+const VIDEO_UPLOAD_ROOT = path.resolve(env.VIDEO_UPLOAD_ROOT || path.join(MEDIA_ROOT, "..", ".private-media", "video-uploads"));
+const videoStorage = createVideoStorage({ mediaRoot: MEDIA_ROOT,
+  journalRoot: path.join(VIDEO_UPLOAD_ROOT, "..", "video-oss"), env });
+const contentArchive = createContentArchive({ config: sharedStorageConfig,
+  journalRoot: path.join(VIDEO_UPLOAD_ROOT, "..", "content-archive"),
+  request: async route => directusRequest(route, await directusLogin()) });
 const MAX_UPLOAD_BYTES = Number(env.MAX_UPLOAD_BYTES || 2 * 1024 * 1024 * 1024);
 const MAX_ARTICLE_UPLOAD_BYTES = positiveInteger(
   env.MAX_ARTICLE_UPLOAD_BYTES,
@@ -243,7 +259,7 @@ const COLOR_REQUIRED_FIELDS = [
 ];
 
 function loadEnv(filePath) {
-  return loadEnvironment(filePath);
+  return loadStorageEnvironment(filePath);
 }
 
 // Acquire before parsing uploads; waiting requests retain only bounded socket buffers.
@@ -2327,7 +2343,7 @@ async function quarantineStaleSdrMasters(token, metadata, records) {
   }
 }
 
-async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract, records) {
+async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract, records, onPublished = () => {}) {
   const token = await directusLogin();
   await quarantineStaleSdrMasters(token, metadata, records);
   const conversionIntent = metadata.masterType === "dolby_vision" ? AUTO_SDR_CONVERSION : "hdr_to_sdr";
@@ -2408,6 +2424,7 @@ async function createDolbySdrMaster(metadata, sourcePath, probe, sourceContract,
         verification: finalized.verification
       }
     );
+    onPublished(sdrRecords.publication);
     return {
       status: "ready",
       master: sdrRecords.master,
@@ -3796,6 +3813,7 @@ async function handleArticleCreate(req, res) {
       : "/items/posts";
     const mutationMethod = article.articleId ? "PATCH" : "POST";
     let savedPost;
+    let archivePending = false;
 
     try {
       const mutationResponse = await directusRequest(mutationPath, directusToken, {
@@ -3812,7 +3830,10 @@ async function handleArticleCreate(req, res) {
       }
       savedPost = mutationResponse.data;
     } catch (error) {
-      if (error.directusAmbiguous) {
+      if (error.committedRecord?.id) {
+        savedPost = error.committedRecord;
+        archivePending = true;
+      } else if (error.directusAmbiguous) {
         preserveUploadedFiles = true;
         const reconciledPost = await reconcilePostMutation(
           directusToken,
@@ -3823,6 +3844,12 @@ async function handleArticleCreate(req, res) {
           throw ambiguousPostMutationError(error);
         }
         savedPost = reconciledPost;
+        // A lost CMS response bypassed the successful-response archive hook.
+        try { await contentArchive.after({ collection: "posts", method: mutationMethod }, savedPost); }
+        catch (cause) {
+          archivePending = true;
+          console.error(`[content-archive] Could not queue reconciled article: ${cause.message}`);
+        }
       } else {
         throw await normalizePostMutationError(error, directusToken, article);
       }
@@ -3836,8 +3863,9 @@ async function handleArticleCreate(req, res) {
     );
     const savedSlug = savedPost.slug || article.slug;
 
-    sendJson(res, article.articleId ? 200 : 201, {
-      status: "ok",
+    sendJson(res, archivePending ? 202 : (article.articleId ? 200 : 201), {
+      status: archivePending ? "partial" : "ok",
+      ...(archivePending ? { archivePending: true } : {}),
       operation: article.articleId ? "updated" : "created",
       article: {
         id: savedPost.id || article.articleId,
@@ -4568,7 +4596,7 @@ async function handleAlbumPhotoUpload(req, res, albumId) {
         token,
         upload.sdr,
         upload.caption || upload.altText || upload.sdr.originalName,
-        { reconciliationTag: sdrUploadTag }
+        { reconciliationTag: sdrUploadTag, storageKind: "album" }
       );
       uploadedFileIds.push(sdrFileId);
 
@@ -4580,7 +4608,7 @@ async function handleAlbumPhotoUpload(req, res, albumId) {
           token,
           upload.hdr,
           `${upload.caption || upload.altText || upload.hdr.originalName} HDR`,
-          { reconciliationTag: hdrUploadTag }
+          { reconciliationTag: hdrUploadTag, storageKind: "album" }
         );
         uploadedFileIds.push(hdrFileId);
       }
@@ -4856,7 +4884,7 @@ async function handleAlbumPhotoHdrUpload(req, res, albumId, photoId) {
       token,
       hdrUpload,
       `${photo.caption || photo.alt_text || hdrUpload.originalName} HDR`,
-      { reconciliationTag }
+      { reconciliationTag, storageKind: "album" }
     );
 
     const renditionKind = hdrMetadata.transfer;
@@ -6973,7 +7001,8 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
           filename: `${prefix}.jpg`,
           mimeType: "image/jpeg"
         },
-        title
+        title,
+        { storageKind: "album" }
       );
       uploadedFileIds.push(sdrFileId);
       await saveFilmScanRollback(jobId, {
@@ -6989,7 +7018,8 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
             filename: `${prefix}-pq.avif`,
             mimeType: "image/avif"
           },
-          `${title} PQ`
+          `${title} PQ`,
+          { storageKind: "album" }
         );
         uploadedFileIds.push(pqFileId);
         await saveFilmScanRollback(jobId, {
@@ -7004,7 +7034,8 @@ async function handleFilmScanCommit(req, res, albumId, jobId) {
             filename: `${prefix}-hlg.avif`,
             mimeType: "image/avif"
           },
-          `${title} HLG`
+          `${title} HLG`,
+          { storageKind: "album" }
         );
         uploadedFileIds.push(hlgFileId);
         await saveFilmScanRollback(jobId, {
@@ -7647,11 +7678,14 @@ async function createOrUpdateDirectusRecords(
   sidecar = {},
   verificationResult = {}
 ) {
+  // Every rendition (primary, manual SDR and automatic SDR) reaches OSS before
+  // its CMS record can become playable. Keep local sources until derivatives finish.
+  const publication = await videoStorage.publish({ sourcePath, playlistPath, archiveDir: verificationResult.archiveDir });
   const token = await directusLogin();
   const existingProject = verificationResult.project || await findProjectBySlug(token, metadata.slug);
   // Adding a rendition must not replace project metadata or upload an unused cover.
   const coverImageId = verificationResult.project ? null
-    : await directusUploadFile(token, files.cover, `${metadata.title} cover`);
+    : await directusUploadFile(token, files.cover, `${metadata.title} cover`, { storageKind: "video" });
   const dovi = extractDolbyVisionMetadata(probe);
   const dolbyCompatibilityId = stringOrNull(dovi.compatibilityId);
   const dolbyProfileVersion = normalizeDolbyProfileVersion(
@@ -7785,7 +7819,7 @@ async function createOrUpdateDirectusRecords(
     });
   }
 
-  return { project, master };
+  return { project, master, publication };
 }
 
 async function findMastersByIdentity(token, projectId, metadata) {
@@ -7916,7 +7950,7 @@ async function inspectCompanionSdr(file, metadata) {
   return { file, metadata: sdrMetadata, probe, contract };
 }
 
-async function saveCompanionSdr(input, project) {
+async function saveCompanionSdr(input, project, onPublished = () => {}) {
   const { metadata, probe, contract } = input;
   const sourcePath = await moveSourceFile(input.file, metadata);
   const outputDir = await prepareOutputDir(metadata);
@@ -7926,6 +7960,7 @@ async function saveCompanionSdr(input, project) {
     project, sourceContract: contract, outputContract: finalized.outputContract,
     sourceProbe: probe, outputProbe: finalized.outputProbe, verification: finalized.verification
   });
+  onPublished(records.publication);
   return { status: "ready", master: records.master, hlsUrl: mediaUrlFromPath(finalized.playlistPath) };
 }
 
@@ -7990,6 +8025,8 @@ async function handleUploadNow(req, res, { parsedInput, background = false, chec
   let parsed = null;
   let releaseProcessingSlot;
   let uploadSourceFormat = null;
+  const publications = [];
+  const onPublished = publication => { if (publication) publications.push(publication); };
 
   try {
     if (!background) requireUploadAuth(req);
@@ -8082,6 +8119,7 @@ async function handleUploadNow(req, res, { parsedInput, background = false, chec
       dolbySidecar,
       {
         project: existingProject || undefined,
+        archiveDir: packageInfo?.packageDir,
         sourceHash: imf ? await hashImfPackage(packageInfo.files) : undefined,
         sourceContract,
         outputContract: finalized.outputContract,
@@ -8090,6 +8128,7 @@ async function handleUploadNow(req, res, { parsedInput, background = false, chec
         verification: finalized.verification
       }
     );
+    onPublished(records.publication);
 
     const response = {
       status: "ok",
@@ -8119,7 +8158,7 @@ async function handleUploadNow(req, res, { parsedInput, background = false, chec
     let companionSdr = null;
     if (companionInput) {
       try {
-        companionSdr = await saveCompanionSdr(companionInput, records.project);
+        companionSdr = await saveCompanionSdr(companionInput, records.project, onPublished);
       } catch (error) {
         // The HDR is already saved. Report partial success; never generate over a supplied SDR.
         companionSdr = { status: "failed", error: error.message.slice(0, 2000) };
@@ -8130,7 +8169,7 @@ async function handleUploadNow(req, res, { parsedInput, background = false, chec
       try {
         sdrDerivative = await createDolbySdrMaster(
           metadata, imfPlayback?.playbackPath || hlsInspection?.playlistPath || sourcePath,
-          imfPlayback?.probe || probe, imfPlayback?.contract || sourceContract, records
+          imfPlayback?.probe || probe, imfPlayback?.contract || sourceContract, records, onPublished
         );
         if (sdrDerivative.master.is_default) records.master.is_default = false;
       } catch (error) {
@@ -8146,6 +8185,20 @@ async function handleUploadNow(req, res, { parsedInput, background = false, chec
     response.sdrDerivative = sdrDerivative;
     response.masters.push(...(companionSdr?.status === "ready" ? [companionSdr.master] : []),
       ...(sdrDerivative?.status === "ready" ? [sdrDerivative.master] : []));
+    if (videoStorage.enabled) {
+      response.storage = "oss";
+      response.sourcesRetained = companionSdr?.status === "failed" || sdrDerivative?.status === "failed";
+      response.localCleanupPending = true;
+      // One atomic session write saves both the publication result and its cleanup work.
+      await checkpoint("stored", response, publications);
+      if (!background) {
+        try { response.localCleanupPending = await videoStorage.complete(publications); }
+        catch (error) {
+          response.localCleanupWarning = "Video was published. Local cleanup could not be confirmed; see the API log.";
+          console.error(`[video-oss] Could not queue local cleanup: ${error.message}`);
+        }
+      }
+    }
     if (!background) sendJson(res, 201, response);
     return response;
   } catch (error) {
@@ -8186,6 +8239,7 @@ async function handleHealth(res, detailed = false) {
       queue: mediaProcessingSlots.snapshot(),
       videoQueue: videoProcessingSlots.snapshot(),
       videoUploads: videoUploads.snapshot(),
+      contentArchive: await contentArchive.status(),
       filmQueue: { active: activeFilmScanJobId !== null, pending: filmScanQueue.length }
     },
     mediaRoot: MEDIA_ROOT,
@@ -8415,7 +8469,8 @@ async function handleRequest(req, res) {
 }
 
 const videoUploads = createVideoUploadStore({
-  root: path.resolve(env.VIDEO_UPLOAD_ROOT || path.join(MEDIA_ROOT, "..", ".private-media", "video-uploads")),
+  root: VIDEO_UPLOAD_ROOT,
+  completeStorage: videoStorage.enabled ? videoStorage.complete : undefined,
   mediaRoot: MEDIA_ROOT, maxFileBytes: MAX_UPLOAD_BYTES, maxCoverBytes: MAX_ARTICLE_IMAGE_BYTES,
   maxTotalBytes: positiveInteger(env.VIDEO_UPLOAD_MAX_BYTES, 8 * 1024 ** 3),
   quotaBytes: positiveInteger(env.VIDEO_UPLOAD_QUOTA_BYTES, 20 * 1024 ** 3),
@@ -8450,7 +8505,8 @@ async function verifyApiSchema() {
     "/items/analytics_items?fields=id,last_event_id&limit=1"
   ]) await directusRequest(route, token);
 }
-verifyApiSchema().then(() => prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT)).then(() => videoUploads.init()).then(() => {
+verifyApiSchema().then(() => prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT))
+  .then(() => videoStorage.init()).then(() => videoUploads.init()).then(() => contentArchive.init()).then(() => {
   server.listen(PORT, HOST, () => {
     console.log(`Upload API listening on http://${HOST}:${PORT}`);
     void recoverFilmScanQueue();
@@ -8464,9 +8520,11 @@ verifyApiSchema().then(() => prepareFilmScanStorage(MEDIA_ROOT, FILM_SCAN_ROOT))
 
 async function handleMedia(req, pathname, res) {
   res.setHeader("Cache-Control", "private, no-store");
+  const controller = new AbortController();
+  res.once("close", () => controller.abort());
   try {
     const filePath = await publicMediaPath(MEDIA_ROOT, FILM_SCAN_ROOT,
-      pathname.replace(/^\/media\//, ""));
+      pathname.replace(/^\/media\//, ""), { allowMissing: videoStorage.enabled });
 
     // Authorization precedes validators so unpublishing also revokes conditional/range reads.
     const relative = path.relative(await fsp.realpath(MEDIA_ROOT), filePath).split(path.sep).join("/");
@@ -8479,13 +8537,21 @@ async function handleMedia(req, pathname, res) {
         throw httpError(404, "Media file not found.");
       }
     } finally { release(); }
-    const stat = await fsp.stat(filePath);
-    if (!stat.isFile()) {
+    // Existing local videos keep working during rollout. Only a missing file
+    // falls back to OSS, after the same CMS publication/author checks above.
+    const stat = await fsp.stat(filePath).catch(error => {
+      if (videoStorage.enabled && error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (stat && !stat.isFile()) {
       throw httpError(404, "Media file not found.");
     }
-
-    const etag = fileEtag(stat);
-    const lastModified = stat.mtime.toUTCString();
+    const object = stat ? null : await videoStorage.stat(relative,
+      AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]));
+    const size = stat?.size ?? object.size;
+    const modified = stat?.mtime ?? object.modified;
+    const etag = stat ? fileEtag(stat) : object.etag;
+    const lastModified = modified.toUTCString();
     const responseHeaders = {
       "Content-Type": contentType(filePath),
       "Accept-Ranges": "bytes",
@@ -8496,7 +8562,7 @@ async function handleMedia(req, pathname, res) {
       "Last-Modified": lastModified
     };
 
-    if (requestIsFresh(req.headers, etag, stat.mtimeMs)) {
+    if (requestIsFresh(req.headers, etag, modified.getTime())) {
       res.writeHead(304, responseHeaders);
       res.end();
       return;
@@ -8505,38 +8571,43 @@ async function handleMedia(req, pathname, res) {
     const requestedRange = ifRangeMatches(
       req.headers["if-range"],
       etag,
-      stat.mtimeMs
+      modified.getTime()
     )
-      ? parseByteRange(req.headers.range, stat.size)
+      ? parseByteRange(req.headers.range, size)
       : null;
     if (requestedRange?.error) {
       res.writeHead(416, {
         ...responseHeaders,
-        "Content-Range": `bytes */${stat.size}`
+        "Content-Range": `bytes */${size}`
       });
       res.end();
       return;
     }
 
     const range = requestedRange || null;
-    res.writeHead(range ? 206 : 200, {
+    const bodyHeaders = {
       ...responseHeaders,
-      "Content-Length": range ? range.length : stat.size,
+      "Content-Length": range ? range.length : size,
       ...(range
-        ? { "Content-Range": `bytes ${range.start}-${range.end}/${stat.size}` }
+        ? { "Content-Range": `bytes ${range.start}-${range.end}/${size}` }
         : {})
-    });
+    };
     if (req.method === "HEAD") {
+      res.writeHead(range ? 206 : 200, bodyHeaders);
       res.end();
       return;
     }
 
-    const stream = fs.createReadStream(filePath, range
-      ? { start: range.start, end: range.end }
-      : undefined);
-    // Pipeline closes the file descriptor when the client cancels a download or range request.
+    const rangeOptions = range ? { start: range.start, end: range.end } : undefined;
+    const stream = stat ? fs.createReadStream(filePath, rangeOptions)
+      : await videoStorage.read(relative, range, controller.signal);
+    // Resolve the remote GET before committing success headers, so a failed
+    // upstream request can still return a proper retryable error response.
+    res.writeHead(range ? 206 : 200, bodyHeaders);
+    // Pipeline closes the local descriptor or remote stream when the client cancels.
     await pipeline(stream, res);
   } catch (error) {
+    if (res.headersSent || res.destroyed) { res.destroy(); return; }
     sendJson(res, error.statusCode || 404, {
       status: "error",
       // Filesystem errors can contain private absolute paths; never expose them here.

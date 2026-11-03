@@ -7,8 +7,8 @@ const { createDirectusClient } = require("../src/directus-client.cjs");
 
 // Exercise the exported client with real Response/FormData and disposable files;
 // only the external CMS transport is replaced, without changing global fetch.
-function client(fetch) {
-  return createDirectusClient({ url: "http://fixture.invalid/", email: "fixture@example.invalid", password: "fixture", fetch });
+function client(fetch, options = {}) {
+  return createDirectusClient({ url: "http://fixture.invalid/", email: "fixture@example.invalid", password: "fixture", fetch, ...options });
 }
 
 async function uploadFile(t) {
@@ -91,6 +91,42 @@ test("file-backed multipart content survives an authentication retry", async t =
   assert.equal(await api.directusUploadFile("expired", file, "Test", { reconciliationTag: "batch-tag" }), "file-id");
   assert.equal(attempts, 2);
   assert.equal(logins, 1);
+});
+
+test("shared content storage explicitly routes article, album and video images before multipart file bytes", async t => {
+  const { file } = await uploadFile(t);
+  for (const kind of ["article", "album", "video"]) {
+    const api = client(async (url, options) => {
+      assert.equal(options.body.get("storage"), `oss_${kind}`);
+      const keys = [...options.body.keys()];
+      assert.ok(keys.indexOf("storage") < keys.indexOf("file"));
+      return Response.json({ data: { id: "file-id", storage: `oss_${kind}` } });
+    }, { fileStorage: { article: "oss_article", album: "oss_album", video: "oss_video" } });
+    assert.equal(await api.directusUploadFile("token", file, "Fixture", { storageKind: kind }), "file-id");
+  }
+});
+
+test("content mutation hooks receive successful results and never archive a rejected CMS write", async () => {
+  const events = [];
+  const api = client(async (url, options) => options.method === "POST"
+    ? Response.json({ data: { id: 1, content: "saved" } }) : new Response("denied", { status: 403 }), {
+    mutations: { before: async event => event, after: async (event, row) => { events.push({ event, row }); } }
+  });
+  await api.directusRequest("/items/posts", "token", { method: "POST", body: { content: "saved" } });
+  await assert.rejects(api.directusRequest("/items/posts/1", "token", { method: "PATCH", body: {} }), { statusCode: 403 });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].row.content, "saved");
+});
+
+test("a CMS storage override cannot silently send a category upload back to local storage", async t => {
+  const { file } = await uploadFile(t);
+  const api = client(async (url, options) => {
+    if (options.method === "POST") return Response.json({ data: { id: "wrong-location", storage: "local" } });
+    assert.equal(new URL(url).searchParams.get("filter[storage][_eq]"), "oss_album");
+    return Response.json({ data: [] });
+  }, { fileStorage: { album: "oss_album" } });
+  await assert.rejects(api.directusUploadFile("token", file, "Fixture", { storageKind: "album", reconciliationTag: "tag" }),
+    error => error.statusCode === 502 && error.directusAmbiguous && /storage location/.test(error.message));
 });
 
 test("upload HTTP rejections retain their status for JSON, HTML, and truncated bodies", async t => {

@@ -70,7 +70,7 @@ async function prepareFilmScanStorage(mediaRoot, privateRoot) {
   if (!(await fs.readdir(legacy)).length) await fs.rmdir(legacy);
 }
 
-async function publicMediaPath(mediaRoot, privateRoot, requestPath) {
+async function publicMediaPath(mediaRoot, privateRoot, requestPath, { allowMissing = false } = {}) {
   const relative = decodeURIComponent(requestPath).replace(/\\/g, "/");
   // Reject Windows aliases (ADS/trailing dots) as well as encoded separators.
   const parts = relative.split("/");
@@ -78,7 +78,12 @@ async function publicMediaPath(mediaRoot, privateRoot, requestPath) {
       (parts[0]?.toLowerCase() === "film-scans" && /^[1-9]\d*$/.test(parts[1] || ""))) throw denied();
   const candidate = path.resolve(mediaRoot, relative);
   if (!inside(mediaRoot, candidate)) throw denied();
-  const [rootReal, fileReal] = await Promise.all([fs.realpath(mediaRoot), fs.realpath(candidate)]);
+  const rootReal = await fs.realpath(mediaRoot);
+  const fileReal = await fs.realpath(candidate).catch(error => {
+    if (!allowMissing || error.code !== "ENOENT") throw error;
+    // OSS uses the same canonical /media namespace even after local eviction.
+    return path.resolve(rootReal, path.relative(mediaRoot, candidate));
+  });
   // Resolve links/NTFS aliases before serving, so another public name cannot expose private files.
   const realParts = path.relative(rootReal, fileReal).split(path.sep);
   if (!inside(rootReal, fileReal) ||

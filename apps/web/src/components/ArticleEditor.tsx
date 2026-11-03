@@ -47,6 +47,7 @@ type ArticleResult = {
 
 type ArticleResponse = {
   status?: string;
+  archivePending?: boolean;
   article?: ArticleResult & {
     coverImage?: { id: string; url: string } | null;
   };
@@ -915,7 +916,7 @@ export function ArticleEditor() {
       const validSuccess =
         request.status >= 200 &&
         request.status < 300 &&
-        payload.status === "ok" &&
+        (payload.status === "ok" || (payload.status === "partial" && payload.archivePending === true)) &&
         responseArticle?.id !== undefined &&
         Boolean(responseArticle.slug);
 
@@ -976,6 +977,10 @@ export function ArticleEditor() {
         setSavedFingerprint(persistedFingerprint);
         setLastArticle(responseArticle);
         setAttemptedAction(null);
+        if (payload.archivePending) {
+          setMessage("文章已保存，OSS 归档正在等待重试，无需重新提交。");
+          return;
+        }
         setMessage(
           responseArticle.published
             ? "文章已上传并发布，Directus 已完成资源处理。"

@@ -22,8 +22,11 @@ function loadServer(root, ffmpeg, ffprobe) {
     // Shared storage/admission has its own focused suite; retain real media processing here.
     legacyUploadSlots: { acquire: async () => () => {} },
     videoUploads: { reserveLegacy: async () => () => {} },
+    videoStorage: require("../../src/video-storage.cjs").createVideoStorage({}),
     VIDEO_PROCESS_TIMEOUT_MS: 3600000, VIDEO_SDR_PROCESS_TIMEOUT_MS: 3600000,
     HDR_MASTER_TYPES: new Set(["hdr10", "hlg", "dolby_vision"]),
+    MASTER_TYPES: new Set(["sdr", "hdr10", "hlg", "dolby_vision", "custom"]),
+    SOURCE_KINDS: new Set(["embedded", "master_package", "hls_package"]),
     TRANSCODE_TYPES: new Set(["sdr", "custom"]),
     COLOR_REQUIRED_FIELDS: ["colorPrimaries", "colorTransfer", "matrixCoefficients", "colorRange", "pixelFormat", "bitDepth", "chromaLocation"]
   });

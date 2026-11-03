@@ -2,7 +2,7 @@ const { openAsBlob } = require("node:fs");
 const { createDirectusTokenCache } = require("./directus-auth.cjs");
 
 /** CMS transport and authentication, independent of HTTP handlers and local service startup. */
-function createDirectusClient({ url, email, password, fetch = globalThis.fetch }) {
+function createDirectusClient({ url, email, password, fetch = globalThis.fetch, fileStorage, mutations }) {
   const baseUrl = url.replace(/\/$/, "");
   const tokenCache = createDirectusTokenCache({
     login: async () => {
@@ -36,6 +36,8 @@ function createDirectusClient({ url, email, password, fetch = globalThis.fetch }
   async function directusRequest(pathname, token, options = {}) {
     const { directusAuthRetried = false, ...requestOptions } = options;
     const method = String(requestOptions.method || "GET").toUpperCase();
+    const mutation = mutations && !["GET", "HEAD", "OPTIONS"].includes(method)
+      ? await mutations.before({ pathname, method, body: requestOptions.body }) : null;
     let response;
     try {
       response = await fetch(`${baseUrl}${pathname}`, {
@@ -64,7 +66,20 @@ function createDirectusClient({ url, email, password, fetch = globalThis.fetch }
       });
     }
 
-    return readDirectusResponse(response, method, pathname);
+    const result = await readDirectusResponse(response, method, pathname);
+    if (mutation) {
+      try { await mutations.after(mutation, result?.data); }
+      catch (cause) {
+        // Preserve the committed response so callers can distinguish an outbox
+        // failure from a lost CMS response and keep any referenced uploads.
+        console.error(`[content-archive] Could not queue committed content: ${cause.message}`);
+        throw Object.assign(new Error("Content was saved, but its OSS archive could not be queued. Check server storage."), {
+          statusCode: 503, directusRequestSent: true, directusResponseStatus: response.status,
+          committedRecord: result?.data, directusAmbiguous: true, cause
+        });
+      }
+    }
+    return result;
   }
 
   async function directusUploadFile(token, file, title, options = {}) {
@@ -76,11 +91,13 @@ function createDirectusClient({ url, email, password, fetch = globalThis.fetch }
       type: file.mimeType || "application/octet-stream"
     });
     const reconciliationTag = String(options.reconciliationTag || "").trim();
+    const storage = fileStorage?.[options.storageKind || "article"];
 
     async function upload(accessToken, authRetried = false) {
       const form = new FormData();
       if (title) form.append("title", title);
       if (reconciliationTag) form.append("description", reconciliationTag);
+      if (storage) form.append("storage", storage);
       form.append("file", blob, file.filename);
 
       let response;
@@ -102,6 +119,11 @@ function createDirectusClient({ url, email, password, fetch = globalThis.fetch }
       }
 
       const data = await readDirectusResponse(response, "POST", "/files", "Directus file upload");
+      if (storage && data?.data?.storage !== storage) {
+        throw Object.assign(new Error(`Directus did not confirm storage location ${storage}; check the CMS storage configuration and file storage-field permissions.`), {
+          statusCode: 502, directusRequestSent: true, directusResponseStatus: response.status, directusAmbiguous: true
+        });
+      }
       if (typeof data?.data?.id !== "string" || !data.data.id.trim()) {
         throw Object.assign(new Error("Directus file upload response did not include a file id."), {
           statusCode: 502,
@@ -119,7 +141,7 @@ function createDirectusClient({ url, email, password, fetch = globalThis.fetch }
       // A lost success response may hide a committed file. Reconcile before rollback.
       if (error.directusAmbiguous && reconciliationTag) {
         try {
-          const fileId = await findDirectusFileByUploadTag(token, reconciliationTag);
+          const fileId = await findDirectusFileByUploadTag(token, reconciliationTag, storage);
           if (fileId) return fileId;
         } catch (reconciliationError) {
           error.reconciliationError = reconciliationError;
@@ -129,12 +151,16 @@ function createDirectusClient({ url, email, password, fetch = globalThis.fetch }
     }
   }
 
-  async function findDirectusFileByUploadTag(token, reconciliationTag) {
+  async function findDirectusFileByUploadTag(token, reconciliationTag, storage) {
     const params = new URLSearchParams({
       "filter[description][_eq]": reconciliationTag,
       fields: "id,description",
       limit: "2"
     });
+    if (storage) {
+      params.set("filter[storage][_eq]", storage);
+      params.set("fields", "id,description,storage");
+    }
     const response = await directusRequest(`/files?${params}`, token);
     const files = Array.isArray(response.data) ? response.data : [];
     if (files.length > 1) {

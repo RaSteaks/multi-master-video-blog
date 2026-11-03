@@ -162,6 +162,7 @@ async function fixture(t) {
     COLOR_REQUIRED_FIELDS: ["colorPrimaries", "colorTransfer", "matrixCoefficients", "colorRange", "pixelFormat", "bitDepth", "chromaLocation"],
     directusLogin: async () => "fixture-token",
     directusUploadFile: async () => null,
+    videoStorage: require("../src/video-storage.cjs").createVideoStorage({}),
     findProjectBySlug: async () => { throw new Error("Derivative must reuse the existing project"); },
     directusRequest: async (url, token, options) => {
       const parsed = new URL(url, "http://fixture.invalid");

@@ -9,6 +9,16 @@ async function main() {
     }
     return manager.withOperation("processes:" + action, () => manager.runStackActions(ids, action));
   }
+  if (id === "repo") {
+    // Without a commit ID, pull fast-forwards to the freshly fetched upstream.
+    if (action === "status") return manager.repoStatus();
+    if (action === "fetch") return manager.withOperation("repo:fetch", manager.handleRepoFetch);
+    if (action === "pull") {
+      const target = manager.parseRepoTarget(process.argv[4]);
+      return manager.withOperation("repo:pull", () => manager.handleRepoPull(target));
+    }
+    throw new Error("Expected repo status|fetch|pull [COMMIT].");
+  }
   if (id === "stack") {
     if (["status", "health"].includes(action)) {
       const status = await manager.allStatus();
@@ -17,7 +27,8 @@ async function main() {
       }
       return status;
     }
-    return manager.withOperation(action, () => manager.handleStackAction(action));
+    const options = action === "pull-update" ? { target: manager.parseRepoTarget(process.argv[4]) } : {};
+    return manager.withOperation(action, () => manager.handleStackAction(action, options));
   }
   const service = manager.serviceMap.get(id);
   if (!service) throw new Error("Unknown service: " + id);

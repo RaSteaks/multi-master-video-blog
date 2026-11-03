@@ -181,17 +181,20 @@ test("native update build forwards shared and web overrides to the actual launch
   const shared = path.join(dir, "resources.env"), web = path.join(dir, "web.env");
   await fs.writeFile(shared, "RESOURCE_PROFILE=low-2gb\nBUILD_HEAP_MIB=512\nBUILD_WORKERS=1\n");
   await fs.writeFile(web, "BUILD_HEAP_MIB=640\nBUILD_WORKERS=2\nAPI_INTERNAL_URL=http://api.fixture:9000\n");
+  const cms = path.join(dir, "cms.env");
+  await fs.writeFile(cms, "STORAGE_LOCATIONS=oss,local\nSTORAGE_OSS_SECRET=fixture-only\n");
   // A local Next CLI stand-in captures the child budget/environment without building the app.
-  await fs.writeFile(path.join(dir, "node_modules/next/dist/bin/next.js"), `console.log(JSON.stringify({argv:process.execArgv,workers:process.env.BUILD_WORKERS,url:process.env.API_INTERNAL_URL,profile:process.env.RESOURCE_PROFILE}));`);
+  await fs.writeFile(path.join(dir, "node_modules/next/dist/bin/next.js"), `console.log(JSON.stringify({argv:process.execArgv,workers:process.env.BUILD_WORKERS,url:process.env.API_INTERNAL_URL,profile:process.env.RESOURCE_PROFILE,hasOssSecret:"STORAGE_OSS_SECRET" in process.env}));`);
   const script = await fs.readFile(path.join(root, "deployment/linux/update-native.sh"), "utf8");
   const command = script.split("\n").find(line => line.includes('cd "$release"') && line.endsWith("scripts/run-service.cjs build)"));
   assert.ok(command);
   const args = command.split("/usr/bin/node ")[1].slice(0, -1).split(" ")
     .map(arg => arg.replace("/etc/video-blog/resources.env", shared).replace("/etc/video-blog/web.env", web));
   const { stdout } = await exec(process.execPath, args, { cwd: dir,
-    env: { PATH: process.env.PATH, CMS_RUNTIME_ONLY: "true" } });
+    env: { PATH: process.env.PATH, CMS_RUNTIME_ONLY: "true", CMS_ENV_FILE: cms } });
   const result = JSON.parse(stdout);
   assert.deepEqual(result.argv, ["--max-old-space-size=640"]);
+  assert.equal(result.hasOssSecret, false);
   assert.equal(result.workers, "2"); assert.equal(result.url, "http://api.fixture:9000"); assert.equal(result.profile, "low-2gb");
 });
 

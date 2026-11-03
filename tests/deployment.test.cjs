@@ -73,11 +73,19 @@ for (const profile of ["low-2gb", "low-4gb"]) {
       env: { ...process.env, DB_PASSWORD: "fixture", DIRECTUS_KEY: "fixture", DIRECTUS_SECRET: "fixture",
         ADMIN_EMAIL: "fixture@example.invalid", ADMIN_PASSWORD: "fixture", SERVICE_EMAIL: "fixture@example.invalid",
         SERVICE_PASSWORD: "fixture", UPLOAD_API_TOKEN: "fixture", ARTICLE_API_TOKEN: "fixture", REVALIDATE_SECRET: "fixture",
-        TLS_CERT_DIR: "/tmp/fixture-certs", RENDER_GID: "109", PUBLIC_URL: "https://example.invalid:8443" }
+        TLS_CERT_DIR: "/tmp/fixture-certs", RENDER_GID: "109", PUBLIC_URL: "https://example.invalid:8443",
+        STORAGE_LOCATIONS: "oss,local", STORAGE_OSS_DRIVER: "s3", STORAGE_OSS_BUCKET: "fixture-bucket", STORAGE_OSS_REGION: "cn-hangzhou",
+        STORAGE_OSS_ENDPOINT: "https://s3.oss-cn-hangzhou.aliyuncs.com", STORAGE_OSS_ROOT: "blog_all", STORAGE_OSS_KEY: "fixture-key", STORAGE_OSS_SECRET: "fixture-secret" }
     });
     const { services } = JSON.parse(stdout);
     for (const name of ["api", "web", "cms", "db"]) assert.equal(services[name].ports, undefined);
     for (const name of ["api", "web", "cms", "schema", "bootstrap"]) assert.equal(services[name].environment.RESOURCE_PROFILE, profile);
+    for (const name of ["api", "cms", "schema", "bootstrap"]) {
+      assert.equal(services[name].environment.STORAGE_LOCATIONS, "oss,local");
+      assert.equal(services[name].environment.STORAGE_OSS_BUCKET, "fixture-bucket");
+      assert.equal(services[name].environment.STORAGE_OSS_ROOT, "blog_all");
+      assert.equal(services[name].environment.STORAGE_OSS_KEY, "fixture-key");
+    }
     // Public traffic must pass through the API's private-path checks.
     assert.ok(!services.nginx.volumes.some(v => ["media", "private-media"].includes(v.source)));
     assert.equal(services.api.volumes.find(v => v.source === "private-media").target, "/app/.private-media");

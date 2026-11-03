@@ -25,6 +25,8 @@ function apiFixture(names, extra = {}) {
     // Isolate admission from the separately tested ownership/stream policies.
     assetSlots: { acquire: async () => () => {} }, assetBudget: { consume() {} },
     requestAddress: () => "fixture", TRUST_PROXY: false,
+    videoStorage: { enabled: false },
+    contentArchive: { status: async () => ({ enabled: false, pending: 0 }) },
     assetAccess: () => ({}), canReadMedia: async () => true, PUBLIC_MEDIA_FILES: new Set(), ...media, ...require("../apps/api/src/http-utils.cjs"), ...extra });
   context.authorizeAsset = async (id, access) => (extra.canReadAsset || canReadAsset)(id, access,
     route => context.directusRequest(route, "service-token"), context.PUBLIC_ASSET_IDS);

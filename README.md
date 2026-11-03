@@ -374,7 +374,7 @@ sudoedit /etc/video-blog/cms.env /etc/video-blog/api.env /etc/video-blog/web.env
 
 | 配置文件 | 需要填写或核对 |
 |----------|----------------|
-| `cms.env` | `PUBLIC_URL`（公开站点地址）、`KEY`、`SECRET`、数据库连接、管理员邮箱与密码 |
+| `cms.env` | `PUBLIC_URL`（公开站点地址）、`KEY`、`SECRET`、数据库连接、管理员邮箱与密码，以及文章/相簿/视频共用的 `STORAGE_LOCATIONS`、`STORAGE_OSS_*` |
 | `api.env` | CMS 服务账号、上传/文章 token、FFmpeg/FFprobe 路径；媒体根目录保持 `/var/lib/video-blog/media` |
 | `web.env` | 同一 CMS 服务账号、`REVALIDATE_SECRET` |
 | `resources.env` | `RESOURCE_PROFILE` 与机器内存档位一致 |

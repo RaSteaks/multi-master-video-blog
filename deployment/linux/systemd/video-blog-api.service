@@ -13,6 +13,7 @@ WorkingDirectory=/opt/video-blog/current
 Environment=NODE_ENV=production
 Environment=HOST=127.0.0.1
 Environment=PORT=8060
+Environment=CMS_ENV_FILE=/etc/video-blog/cms.env
 EnvironmentFile=/etc/video-blog/resources.env
 EnvironmentFile=/etc/video-blog/api.env
 ExecStart=/usr/bin/node /opt/video-blog/current/scripts/run-service.cjs api

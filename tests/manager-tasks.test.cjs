@@ -52,7 +52,7 @@ test("batch commands show their actual active service and phase", () => {
     assert.match(ui.content(), /当前正在重启全部服务/);
     assert.ok(ui.content().includes(name + " · 启动并检查健康状态"));
   }
-  for (const label of ["start-all", "stop-all", "refresh-app", "upload-tokens", "web-mode:production", "web-mode:development", "web:rebuild-restart"]) {
+  for (const label of ["start-all", "stop-all", "refresh-app", "upload-tokens", "web-mode:production", "web-mode:development", "web:rebuild-restart", "repo:fetch", "repo:pull", "pull-update"]) {
     const ui = taskHarness();
     ui.render(operation(label));
     assert.doesNotMatch(ui.content(), /undefined|当前没有/);
@@ -89,4 +89,17 @@ test("task phase content is escaped before rendering", () => {
   ui.render(operation("restart-all", "running", [{ serviceId: "<img src=x>", phase: "<script>", state: "running" }]));
   assert.doesNotMatch(ui.content(), /<img|<script/);
   assert.match(ui.content(), /&lt;img/);
+});
+
+test("Git updates name the repository phase in both task panels", () => {
+  const ui = taskHarness();
+  ui.render(operation("pull-update", "running", [
+    { serviceId: "repo", phase: "fetch", state: "succeeded" },
+    { serviceId: "web", phase: "stop", state: "succeeded" },
+    { serviceId: "repo", phase: "pull", state: "running" }
+  ]));
+  assert.match(ui.content(), /当前正在拉取仓库并更新 API 和 web/);
+  assert.match(ui.content(), /Git 仓库 · 快进到目标提交/);
+  assert.match(ui.nodes.get("operationSummary").textContent, /Git repository \/ Fast-forward/);
+  assert.match(html(), /data-log="repo"/);
 });

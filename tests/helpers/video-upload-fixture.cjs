@@ -6,19 +6,26 @@ const path = require("node:path");
 const { spawn, execFileSync } = require("node:child_process");
 const { Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
+const { startS3Fixture } = require("./s3-fixture.cjs");
 const root = path.resolve(__dirname, "../..");
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Real API/Next/FFmpeg with an in-memory CMS and private disposable media. */
-async function startFixture() {
-  const output = path.join(root, "test-results/video-upload");
+async function startFixture({ oss = false } = {}) {
+  const name = oss ? "video-upload-oss" : "video-upload";
+  const output = path.join(root, "test-results", name);
   await fsp.mkdir(output, { recursive: true });
+  await fsp.writeFile(path.join(output, "tsconfig.json"), JSON.stringify({
+    extends: "../../apps/web/tsconfig.json",
+    include: ["../../apps/web/src/**/*.ts", "../../apps/web/src/**/*.tsx", "../../apps/web/next-env.d.ts"]
+  }));
   const temp = await fsp.mkdtemp(path.join(os.tmpdir(), "video-upload-browser-"));
   const token = "isolated-video-upload-test";
   const collections = { video_projects: [], video_masters: [] };
   const stats = { patches: [], creates: 0, lostResponses: 0, rate: 0, loseNext: false };
   const children = [];
   const servers = [];
+  let cloud;
   const json = (res, data, status = 200) => {
     res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(data));
   };
@@ -55,7 +62,11 @@ async function startFixture() {
   };
   const start = (name, args, env) => {
     const log = fs.openSync(path.join(output, `${name}.log`), "w");
-    const child = spawn(process.execPath, args, { cwd: root, env: { ...process.env, ...env },
+    const childEnv = { ...process.env, ...env };
+    if (name === "fixture-api" && oss) {
+      for (const key of Object.keys(childEnv)) if (key === "CONTENT_STORAGE" || key.startsWith("STORAGE_") || key.startsWith("OSS_")) delete childEnv[key];
+    }
+    const child = spawn(process.execPath, args, { cwd: root, env: childEnv,
       stdio: ["ignore", log, log] });
     fs.closeSync(log); children.push(child); return child;
   };
@@ -74,16 +85,24 @@ async function startFixture() {
       if (child.exitCode === null) child.kill("SIGKILL");
     }
     for (const server of servers) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    await cloud?.close();
     await fsp.rm(temp, { recursive: true, force: true });
   }
   try {
+    if (oss) cloud = await startS3Fixture();
     await listen(cms, 18055);
     const apiEnv = { HOST: "127.0.0.1", PORT: "18060", DIRECTUS_URL: "http://127.0.0.1:18055",
       DIRECTUS_EMAIL: "fixture@example.invalid", DIRECTUS_PASSWORD: "fixture-only", UPLOAD_API_TOKEN: token,
       MEDIA_ROOT: path.join(temp, "media"), FILM_SCAN_ROOT: path.join(temp, "private/film"),
       VIDEO_UPLOAD_ROOT: path.join(temp, "private/video"), RESOURCE_PROFILE: "low-2gb",
+      ...(oss ? { CMS_ENV_FILE: path.join(temp, "cms.env") } : { STORAGE_LOCATIONS: "local", VIDEO_STORAGE: "local" }),
       FFMPEG_PATH: process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg",
       FFPROBE_PATH: process.env.FFPROBE_PATH || "/opt/homebrew/bin/ffprobe" };
+    if (cloud) {
+      const storage = { STORAGE_LOCATIONS: "oss,local", STORAGE_OSS_DRIVER: "s3", STORAGE_OSS_BUCKET: "fixture-bucket", STORAGE_OSS_REGION: "cn-hangzhou", STORAGE_OSS_ROOT: "blog_all",
+        STORAGE_OSS_ENDPOINT: cloud.endpoint, STORAGE_OSS_KEY: "fixture-key", STORAGE_OSS_SECRET: "fixture-secret" };
+      await fsp.writeFile(apiEnv.CMS_ENV_FILE, Object.entries(storage).map(([key, value]) => `${key}=${value}`).join("\n"), { mode: 0o600 });
+    }
     start("fixture-api", ["apps/api/src/server.cjs"], apiEnv);
     await ready("http://127.0.0.1:18060/health");
     const proxy = http.createServer((req, res) => {
@@ -110,6 +129,8 @@ async function startFixture() {
     await listen(proxy, 18061);
     start("fixture-web", ["node_modules/next/dist/bin/next", "dev", "-H", "127.0.0.1", "-p", "13000", "apps/web"],
       { API_INTERNAL_URL: "http://127.0.0.1:18061", DIRECTUS_URL: "http://127.0.0.1:18055",
+        NEXT_DIST_DIR: `../../test-results/${name}/next`,
+        NEXT_TSCONFIG_PATH: `../../test-results/${name}/tsconfig.json`,
         NEXT_PUBLIC_DIRECTUS_URL: "http://127.0.0.1:18055", DIRECTUS_EMAIL: "", DIRECTUS_PASSWORD: "",
         CMS_RUNTIME_ONLY: "true", RESOURCE_PROFILE: "low-2gb" });
     await ready("http://127.0.0.1:13000/upload");
@@ -119,7 +140,7 @@ async function startFixture() {
       "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
       "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
       "-chroma_sample_location", "left", video]);
-    return { output, temp, token, video, stats, collections, close, url: "http://127.0.0.1:13000/upload" };
+    return { output, temp, token, video, stats, collections, cloud, close, url: "http://127.0.0.1:13000/upload" };
   } catch (error) { await close(); throw error; }
 }
 

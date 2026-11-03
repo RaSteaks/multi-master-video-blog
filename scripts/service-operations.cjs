@@ -55,12 +55,18 @@ function createOperationJournal(root) {
       await save();
     },
     async read(id) {
-      let item;
-      try { item = JSON.parse(await fs.readFile(filename, "utf8")); }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
-      if (id && item?.id !== id) item = history.get(id);
-      const output = snapshot(item);
+      const load = async () => {
+        let item;
+        try { item = JSON.parse(await fs.readFile(filename, "utf8")); }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+        return snapshot(id && item?.id !== id ? history.get(id) : item);
+      };
+      const output = await load();
       if (output?.state === "running" && !await lockfile.check(lockPath, { realpath: false, stale: 120000 })) {
+        // The operation may have recorded its result and released the lock
+        // between the read above and the lock check.
+        const latest = await load();
+        if (latest?.id === output.id && latest.state !== "running") return latest;
         // A crashed controller cannot leave an eternal spinner or trigger an
         // automatic retry of a command whose effects may already have happened.
         output.state = "interrupted";

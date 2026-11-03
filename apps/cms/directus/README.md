@@ -19,6 +19,17 @@ npm run dev:cms
 
 Create a local `.env` from `.env.example` before bootstrapping Directus, then set the PostgreSQL password for `DB_PASSWORD`. Keep the real `.env`, database files, uploads, secrets, and production credentials out of Git.
 
+## Shared article, album and video storage
+
+Keep `STORAGE_LOCATIONS=oss,local` and configure `STORAGE_OSS_*` once in this application's `.env`.
+The API imports only storage fields from the same file; native systemd uses
+`/etc/video-blog/cms.env` through the API unit's `CMS_ENV_FILE` pointer. The repo
+launchers derive Directus category adapters and video settings automatically.
+`STORAGE_OSS_ROOT=blog_all` uses `album/`, `article/` and `videos/`, including uploaded
+assets and article/content snapshots. Restart CMS and API after changing storage.
+See [unified OSS storage](../../../docs/upload-api.md#unified-oss-content-storage)
+for the directory layout, existing-file compatibility and required permissions.
+
 ## Repair a deployed Insights aggregation
 
 `Cannot query field "undefined" on type "video_projects_aggregated"` can occur

@@ -20,7 +20,8 @@ const apiSource = fs.readFileSync(path.join(__dirname, "../apps/api/src/server.c
 
 // Execute production handlers with disposable files and controlled network effects.
 function apiFixture(names, extra = {}) {
-  const context = vm.createContext({ Buffer, URL, URLSearchParams, AbortSignal, pipeline,
+  const context = vm.createContext({ Buffer, URL, URLSearchParams, AbortSignal, AbortController, pipeline,
+    videoStorage: { enabled: false },
     fs, fsp, path, ...require("../apps/api/src/http-utils.cjs"),
     ...require("../apps/api/src/media-security.cjs"), ...extra });
   vm.runInContext(names.map(name => {

@@ -12,7 +12,6 @@ function loginHtml({ basePath, nonce, styles }) {
     .login-app { min-height: 100svh; display: grid; place-items: center; padding: 32px 20px; }
     .login-shell { width: min(420px, 100%); min-width: 0; }
     .login-brand { margin-bottom: 28px; }
-    .login-brand h1 { margin-top: 8px; }
     .login-card { padding: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
     .login-card h2 { font-size: 20px; margin-bottom: 6px; }
     .login-copy, .login-footer { color: var(--muted); font-size: 13px; }
@@ -33,10 +32,11 @@ function loginHtml({ basePath, nonce, styles }) {
 <body>
   <main class="login-app">
     <div class="login-shell">
-      <header class="login-brand"><p class="eyebrow">MMVB · Local stack</p><h1>Service Manager</h1></header>
+      <header class="login-brand"><h1>Service Manager</h1></header>
       <section class="login-card" aria-labelledby="loginTitle">
         <h2 id="loginTitle">登录管理控制台</h2>
         <p class="login-copy">查看服务状态、执行操作和跟踪当前任务。</p>
+        <p class="login-copy" id="loginNotice" role="status" hidden></p>
         <form id="loginForm" class="login-form" method="post" novalidate>
           <div class="login-field">
             <label for="username">账号</label>
@@ -67,6 +67,12 @@ function loginHtml({ basePath, nonce, styles }) {
     const message = document.getElementById("loginMessage");
     const showPassword = document.getElementById("showPassword");
     let pending = false;
+    if (new URLSearchParams(location.search).get("restarted") === "1") {
+      // Sessions do not survive a restart; explain the extra sign-in.
+      const notice = document.getElementById("loginNotice");
+      notice.textContent = "Manager 已重启，请重新登录。";
+      notice.hidden = false;
+    }
     showPassword.addEventListener("click", () => {
       const reveal = password.type === "password";
       password.type = reveal ? "text" : "password";

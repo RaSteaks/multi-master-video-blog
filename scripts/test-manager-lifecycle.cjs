@@ -8,7 +8,9 @@ const sourcePath = path.join(__dirname, "manager-dashboard.cjs");
 const source = fs.readFileSync(sourcePath, "utf8");
 function harness(root = path.resolve(__dirname, ".."), env = {}, platform = "win32", execFile) {
   const requireModule = createRequire(sourcePath);
-  const context = vm.createContext({ require: id => id === "node:child_process" && execFile ? { execFile } : requireModule(id), module: { exports: {} }, __dirname: path.join(root, "scripts"),
+  // execFile alone, or a { execFile, spawn } stand-in for the whole module.
+  const childProcess = typeof execFile === "function" ? { execFile } : execFile;
+  const context = vm.createContext({ require: id => id === "node:child_process" && childProcess ? childProcess : requireModule(id), module: { exports: {} }, __dirname: path.join(root, "scripts"),
     process: { env: { ...process.env, ...env }, pid: process.pid, platform }, console, Buffer, URL, AbortSignal, fetch, setTimeout, clearTimeout });
   vm.runInContext(source, context);
   return { context, run: (code) => vm.runInContext(code, context) };
@@ -476,4 +478,178 @@ test("Linux reports unit state separately from application health and controls o
     }
   }
   await assert.rejects(run('handleStackAction("refresh-app")'), /deployment workflow/);
+});
+
+test("Windows pull + update verifies before stopping, updates only after both stop, then installs and starts", async () => {
+  const { run } = harness();
+  const target = "b".repeat(40);
+  run('currentWebMode="production"; var calls=[]; handleAction=async(id,action)=>{calls.push(id+":"+action);return {message:"ok"}}; installAppDependencies=async()=>calls.push("install"); buildWeb=async()=>calls.push("build");'
+    + 'repoUpdater.prepare=async target=>{calls.push("verify:"+target);return {upToDate:false,count:2,from:"a".repeat(40),to:target,impact:{manager:true,api:true,cms:true}}};'
+    + 'repoUpdater.fastForward=async plan=>{calls.push("pull:"+plan.to);return {message:"pulled"}};');
+  const result = await run(`handleStackAction("pull-update", { target: "${target}" })`);
+  assert.equal(run('calls.join(",")'), `verify:${target},web:stop,api:stop,pull:${target},install,build,api:start,web:start`);
+  assert.match(result.message, /^Pulled 2 commits to bbbbbbb and updated API \+ Web\. Restart Directus CMS.*Restart Manager/);
+  assert.doesNotMatch(result.message, /Run Update API \+ Web/);
+
+  // A refused verification and an empty update both fail while the site still serves.
+  run('calls=[]; repoUpdater.prepare=async()=>{calls.push("verify");throw Object.assign(new Error("Local changes to x would be overwritten"),{statusCode:409})};');
+  await assert.rejects(run(`handleStackAction("pull-update", { target: "${target}" })`), error => /would be overwritten/.test(error.message) && error.results.length === 1);
+  run('repoUpdater.prepare=async()=>({upToDate:true,message:"main already contains bbbbbbb."});');
+  await assert.rejects(run(`handleStackAction("pull-update", { target: "${target}" })`), /Nothing to pull; use Update API \+ Web/);
+  assert.equal(run('calls.join(",")'), 'verify');
+
+  // A failed checkout update leaves API and Web stopped instead of starting a partial tree.
+  run('calls=[]; repoUpdater.prepare=async target=>({upToDate:false,count:1,from:"a".repeat(40),to:target,impact:{}}); repoUpdater.fastForward=async()=>{calls.push("pull");throw new Error("unable to unlink")};');
+  await assert.rejects(run(`handleStackAction("pull-update", { target: "${target}" })`), /unable to unlink/);
+  assert.equal(run('calls.join(",")'), 'web:stop,api:stop,pull');
+});
+
+test("HTTP pull endpoints accept only the reviewed full commit ID", async t => {
+  const { run } = harness(temporaryRoot(t), { MANAGER_AUTH_PASSWORD: "fixture-only" });
+  run('isAuthenticated=()=>true; requireManagerMutation=()=>{}; var pulled=[]; handleRepoPull=async target=>{pulled.push("repo:"+target);return {message:"ok"}}; handleStackAction=async(action,options)=>{pulled.push(action+":"+options.target);return {message:"ok"}};');
+  const server = run('module.exports.server');
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const post = (url, body) => fetch(base + url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const settle = async response => {
+    const { operation } = await response.json();
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const latest = (await (await fetch(base + '/api/operations/' + operation.id)).json()).operation;
+      if (latest.state !== 'running') return latest;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  };
+  for (const body of [{}, { target: 'main' }, { target: '--upload-pack=touch /tmp/x' }, { target: 'a'.repeat(39) }]) {
+    assert.equal((await post('/api/repo/pull', body)).status, 400);
+    assert.equal((await post('/api/stack/pull-update', body)).status, 400);
+  }
+  const target = 'c'.repeat(40);
+  let response = await post('/api/repo/pull', { target });
+  assert.equal(response.status, 202);
+  assert.equal((await settle(response)).state, 'succeeded');
+  response = await post('/api/stack/pull-update', { target });
+  assert.equal(response.status, 202);
+  await settle(response);
+  assert.equal(run('pulled.join(",")'), `repo:${target},pull-update:${target}`);
+});
+
+test("Manager restart refuses during work, for foreground processes and when the code on disk cannot load", async t => {
+  const root = temporaryRoot(t);
+  fs.mkdirSync(path.join(root, 'deployment/windows'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'deployment/windows/manager-service.ps1'), '');
+  let loadError = null;
+  const spawned = [];
+  const childProcess = {
+    execFile: (file, args, options, callback) => loadError
+      ? callback(Object.assign(new Error('exit 1'), { stderr: loadError }), '', loadError)
+      : callback(null, { stdout: '' }),
+    spawn: (file, args, options) => { spawned.push({ file, args, options }); return {
+      once(event, listener) { if (event === "spawn") setImmediate(listener); }, unref() {}
+    }; }
+  };
+  const foreground = harness(root, {}, 'darwin', childProcess);
+  await assert.rejects(foreground.run('requestManagerRestart()'), error => error.statusCode === 400 && /terminal that started it/.test(error.message));
+
+  const { run } = harness(root, {}, 'win32', childProcess);
+  run('activeOperation = "web:restart"');
+  await assert.rejects(run('requestManagerRestart()'), error => error.statusCode === 409);
+  run('activeOperation = null');
+  loadError = "scripts/manager-dashboard.cjs:12\nSyntaxError: Unexpected token '}'";
+  await assert.rejects(run('requestManagerRestart()'), error => error.statusCode === 409 && /does not load.*\n[\s\S]*SyntaxError/.test(error.message));
+  assert.equal(run('managerRestart'), null);
+  assert.equal(spawned.length, 0);
+
+  loadError = null;
+  const restart = await run('requestManagerRestart()');
+  assert.equal(restart.state, 'pending');
+  const operationPath = path.join(root, "logs", "service-operation");
+  await assert.rejects(require("proper-lockfile").lock(operationPath, { realpath: false }), { code: "ELOCKED" });
+  await assert.rejects(run('withOperation("web:start", async () => {})'), error => error.statusCode === 409 && /restarting/.test(error.message));
+  run('launchManagerRestart()');
+  assert.equal(spawned[0].file, 'powershell.exe');
+  assert.deepEqual([...spawned[0].args], ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'deployment/windows/manager-service.ps1'), 'restart', '-Port', run('String(PORT)')]);
+  assert.equal(spawned[0].options.detached, true);
+  assert.equal(spawned[0].options.windowsHide, true);
+  assert.ok(fs.existsSync(path.join(root, 'logs/manager.restart.log')));
+});
+
+test("Linux restart requires owning the unit and the exact sudoers grant, then queues a non-blocking restart", async t => {
+  const calls = [];
+  let mainPid = 1;
+  let sudoAllowed = true;
+  const execFile = (file, args, options, callback) => {
+    calls.push([file, ...args]);
+    if (file === '/usr/bin/sudo' && args[1] === '-l' && !sudoAllowed) return callback(Object.assign(new Error('not allowed'), { code: 1 }));
+    callback(null, { stdout: `LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=${mainPid}\nNRestarts=2\n` });
+  };
+  const { run } = harness(temporaryRoot(t), {}, 'linux', execFile);
+  await assert.rejects(run('requestManagerRestart()'), error => error.statusCode === 400 && /not the main process of video-blog-manager\.service/.test(error.message));
+  mainPid = process.pid;
+  sudoAllowed = false;
+  await assert.rejects(run('requestManagerRestart()'), error => error.statusCode === 403 && /manager\.sudoers/.test(error.message));
+  assert.equal(run('managerRestart'), null);
+  sudoAllowed = true;
+  assert.equal((await run('requestManagerRestart()')).state, 'pending');
+  const command = ['/usr/bin/systemctl', '--no-block', 'restart', 'video-blog-manager.service'];
+  assert.deepEqual(calls.at(-1), ['/usr/bin/sudo', '-n', '-l', ...command]);
+  run('launchManagerRestart()');
+  assert.deepEqual(calls.at(-1), ['/usr/bin/sudo', '-n', ...command]);
+  const supervisor = await run('managerSupervisor()');
+  assert.equal(supervisor.canRestart, true);
+  assert.equal(supervisor.restarts, 2);
+
+  // A unit without log redirection reports through the journal instead.
+  const logs = await run('readServiceLogs("manager")');
+  assert.deepEqual(calls.at(-1).slice(0, 3), ['/usr/bin/journalctl', '--unit', 'video-blog-manager.service']);
+  assert.equal(logs.files.stdout, 'journalctl -u video-blog-manager.service');
+});
+
+test("restart excludes a CLI operation throughout preflight and unlocks on rejection", async t => {
+  const root = temporaryRoot(t), operationPath = path.join(root, "logs", "service-operation");
+  const manager = harness(root);
+  let enter, resume;
+  manager.context.started = new Promise(resolve => { enter = resolve; });
+  manager.context.enter = enter;
+  manager.context.preflight = new Promise(resolve => { resume = resolve; });
+  manager.run('verifyManagerRestart = async () => { enter(); await preflight; throw new Error("rejected"); }');
+  const restart = manager.run("requestManagerRestart()");
+  await manager.context.started;
+  const lockfile = require("proper-lockfile");
+  await assert.rejects(lockfile.lock(operationPath, { realpath: false }), { code: "ELOCKED" });
+  resume();
+  await assert.rejects(restart, /rejected/);
+  const release = await lockfile.lock(operationPath, { realpath: false });
+  try { await assert.rejects(manager.run("requestManagerRestart()"), { statusCode: 409 }); }
+  finally { await release(); }
+});
+
+test("restart polling restores controls at the deadline when every status request fails", async () => {
+  const script = require("./manager-dashboard.cjs").html().match(/<script>([\s\S]*?)<\/script>/)[1];
+  const watcher = script.match(/    async function watchManagerRestart\(pending\) \{[\s\S]*?\n    \}/)[0];
+  const messages = [], busy = [];
+  const context = vm.createContext({ managerRestartPending: { pid: 1, startedAt: Date.now() - 91000 },
+    setTimeout: callback => callback(), fetch: async () => { throw new Error("offline"); },
+    apiPath: value => value, AbortSignal, setSyncState() {}, setBusy: value => busy.push(value),
+    setActionReadout: text => messages.push(text), scheduleLogPoll() {}, logPollIntervalMs: 1000 });
+  await vm.runInContext(watcher + "\nwatchManagerRestart(managerRestartPending)", context);
+  assert.equal(context.managerRestartPending, null);
+  assert.deepEqual(busy, [false]);
+  assert.match(messages[0], /not confirmed after 90 s/);
+});
+
+test("Manager reports its own code that changed on disk since it loaded", async t => {
+  const root = temporaryRoot(t);
+  const file = path.join(root, 'scripts/manager-extra.cjs');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, 'module.exports = 1;\n');
+  const { run, context } = harness(root);
+  context.require.cache = { [file]: {}, [path.join(root, 'node_modules/pkg/index.js')]: {}, [path.join(path.dirname(root), 'outside.cjs')]: {} };
+  run('snapshotLoadedCode()');
+  assert.equal(run('[...loadedCode.keys()].join(",")'), 'scripts/manager-extra.cjs');
+  assert.equal(await run('loadedCodeChanges().then(JSON.stringify)'), '[]');
+  fs.writeFileSync(file, 'module.exports = 22;\n');
+  assert.equal(await run('loadedCodeChanges().then(JSON.stringify)'), '["scripts/manager-extra.cjs"]');
+  fs.writeFileSync(file, 'module.exports = 1;\n');
+  assert.equal(await run('loadedCodeChanges().then(JSON.stringify)'), '[]');
 });

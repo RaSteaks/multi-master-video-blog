@@ -114,6 +114,142 @@ Provide an installed `playwright` package (or `PLAYWRIGHT_MODULE`), an optional
 another machine. Reports, screenshots and the browser trace are retained under
 `test-results/video-upload`; no personal browser profile or Chrome is used.
 
+## Unified OSS content storage
+
+One configuration controls article, album and video storage. Keep the database
+for Directus editing, relations and queries; OSS receives uploaded assets,
+article Markdown and complete content snapshots with file references. Video
+reception, FFmpeg processing and verification stay on the API server.
+
+For local/native development, edit the existing `apps/cms/directus/.env` using
+its `.env.example` template. Linux systemd uses the existing
+`/etc/video-blog/cms.env`; the API unit points `CMS_ENV_FILE` at this file. The API
+imports only storage fields, preserving its own port and service credentials.
+Docker reads the same variables once from its existing Compose `.env`. Replace the bucket and credentials; the internal endpoint requires
+access to the matching OSS regional network:
+
+```dotenv
+STORAGE_LOCATIONS=oss,local
+STORAGE_OSS_DRIVER=s3
+STORAGE_OSS_BUCKET=example-bucket
+STORAGE_OSS_REGION=cn-hangzhou
+STORAGE_OSS_ENDPOINT=https://s3.oss-cn-hangzhou-internal.aliyuncs.com
+STORAGE_OSS_ROOT=blog_all
+STORAGE_OSS_KEY=
+STORAGE_OSS_SECRET=
+```
+
+The launchers derive Directus category adapters and the API's video/content settings
+from these existing fields. OSS is enabled when `oss` is the first storage location. No separate article/album/video credentials or roots need to be maintained.
+The category layout is:
+
+```text
+blog_all/
+  album/
+    assets/<file-id>.<extension>
+    <album-id>/<revision>/metadata.json
+    <album-id>/latest.json
+  article/
+    assets/<file-id>.<extension>
+    <post-id>/<revision>/content.md
+    <post-id>/<revision>/metadata.json
+    <post-id>/latest.json
+  videos/
+    assets/<cover-file-id>.<extension>
+    <video-slug>/source/...
+    <video-slug>/source-package/...
+    <video-slug>/sdr/...
+    <video-slug>/hdr10/...
+    <video-slug>/metadata/<revision>/metadata.json
+    <video-slug>/metadata/latest.json
+```
+
+HLG and Dolby Vision retain their existing rendition directory names as applicable.
+The API explicitly routes article images to `oss_article`, album/HDR/film-published
+images to `oss_album`, and video covers to `oss_video`. Directus resolves file IDs
+through these adapters, preserving `/api/assets/<id>` links and transforms.
+The API verifies the returned storage location; its CMS service account must be
+allowed to create/read the `directus_files.storage` field.
+Manual CMS file-library uploads retain the existing first `oss` location and flat
+root. The API appends its category adapters at runtime and explicitly selects them;
+the deployed `oss,local` order and the original `oss`/`local` file records keep
+their meaning. No second `OSS_*` credential set or new enable flag is required.
+
+After successful API mutations to articles, albums/photos/renditions and video
+projects/masters, a private outbox queues the owning content snapshot. Photo
+batches are coalesced. Snapshots include the article Markdown or album photo/order
+records or video masters, plus Directus file metadata and OSS object keys. Immutable
+revision objects precede the `latest.json` pointer. A failed snapshot keeps its
+claimed job for the next retry. An edit arriving during the upload creates a
+separate pending job. If Directus saves an article while the outbox cannot
+be written, the API returns HTTP 202 with the saved article ID,
+`status: "partial"` and `archivePending: true`. The editor keeps the saved ID.
+The API retries the queue write when storage recovers. Existing
+text and metadata are queued at API startup too. Database editing and page reads
+continue to work while a mirror is pending. The authenticated detailed health
+response exposes `resources.contentArchive` with the pending job count.
+The outbox lives beside the receive spool at `.private-media/content-archive` by
+default. Edits to existing records made outside the API are included on the next
+API startup; CMS-only deletions are not automatically reconciled into tombstones.
+
+The video API streams bounded multipart uploads (two 8 MiB parts at a time) and
+supplies Content-MD5 on each PUT/part so OSS validates transferred bytes. Each
+file's size and SHA-256 metadata are confirmed through HEAD before CMS publication.
+Segments precede playlists. Conflicting immutable objects are never overwritten.
+The original source/package, HLS tree including verification reports, and successful
+manual/automatic SDR renditions are uploaded. Original `/media/...` URLs retain
+CMS publication/author checks, Range, HEAD and conditional requests. Keep the
+bucket private; playback still passes through the API.
+
+After requested derivative work finishes, the API persists a private cleanup
+receipt beside the receive spool (`.private-media/video-oss` by default). A
+resumable session also saves the receipt contents in its completion checkpoint,
+so a restart can finish the handoff without republishing. Cleanup rechecks the
+complete remote publication and each local file's size and SHA-256 before
+deletion. A changed or restored local file is retained and reported in the API
+log. Failed cleanup retries every minute and after restart. Failed
+transfers or uncertain CMS publication retain local files. Fully successful jobs
+also release receive-spool bytes while retaining results, offsets and checksums
+until the normal task TTL; partial-success jobs retain their source spool.
+Processing still needs temporary space for originals, HLS and SDR output. Keep
+reception quotas and processing concurrency appropriate for the server.
+
+For uploads, reads, verification and snapshot publication, scope `oss:PutObject`,
+`oss:GetObject` and `oss:AbortMultipartUpload` to the shared `blog_all/*` prefix.
+The API does not require `oss:DeleteObject` for archival or local cleanup. Explicit
+Directus file deletion and image rollback additionally need object-list and delete
+permissions for its asset locations. Credentials without those permissions can
+retain OSS objects for later cleanup. See [OSS multipart permissions](https://www.alibabacloud.com/help/en/oss/user-guide/multipart-upload)
+and [Content-MD5 validation](https://www.alibabacloud.com/help/en/oss/user-guide/data-verification/).
+
+Deploy the updated launchers/API and the API unit with
+`CMS_ENV_FILE=/etc/video-blog/cms.env`, run daemon-reload when updating the unit,
+then restart CMS and API. Keep the existing CMS environment file readable by the
+API service account (the native deployment uses root:video-blog and mode 0640). Docker recreates both services using the
+existing Compose file/profile arguments. No database schema or frontend URL
+migration is required. Existing local media binaries are not bulk-migrated or
+deleted; old flat OSS records remain readable. Keep OSS enabled for reading
+evicted assets. Existing configuration backups already include the CMS environment file; no
+additional storage environment file is required.
+
+Focused verification from the repository root:
+
+```sh
+node --test tests/storage-config.test.cjs apps/api/test/content-archive.test.cjs apps/api/test/directus-client.test.cjs
+node --test apps/api/test/video-storage.test.cjs
+npm run test:video-upload
+npm run test:content-storage
+```
+
+The integration suite uses a real API/FFmpeg pipeline and a disposable CMS/S3 wire
+fixture with fake credentials, uploading article images/Markdown, album photos
+and video artifacts into the category layout. Its report and service logs are
+saved under `test-results/content-storage`. No real bucket is contacted.
+`VIDEO_TEST_OSS=true node tests/video-upload-browser.cjs` additionally checks
+browser pause/reload/resume and video source eviction with headless WebKit;
+screenshots, trace and logs are saved under `test-results/video-upload-oss`.
+Both fixture families use isolated Next caches and require localhost listeners.
+
 ## Requirements
 
 The project uses npm-provided `ffmpeg-static` and `ffprobe-static` by default. For production, you can install FFmpeg yourself and set absolute paths in `apps/api/.env`:

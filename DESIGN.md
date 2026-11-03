@@ -268,6 +268,17 @@ corners and inset preview chips use 4px corners.
   during operations, retain keyboard focus across polling, and show actual named
   phases and terminal failures rather than estimated percentages. The command
   and recovery contract is documented in `docs/deployment.md`.
+  From 1200px a two-column console keeps stack health, the 2 × 2 service cards
+  and live output in the main column. A 380px rail holds the current task, then
+  the source repository and the Manager itself. The current-task card is the
+  only sticky element. It merges the live phase, the latest command feedback
+  and the latest operation's steps, which fold once that operation succeeds.
+  Rail items span every row, so a tall task card never pushes the services
+  down. Narrower layouts use one column in the same priority order, which is
+  also the DOM and focus order; from 900px the repository and Manager panels
+  pair up. Settings (credentials, configuration backup, database facts) form a
+  separate band after the console. The rail shows the three newest incoming
+  commits; checkout details and commands stay in disclosures.
   Application updates show dependency installation as a named journal phase and
   reuse the existing log viewer for Dependencies. Confirmation explains the
   stop/install/build/start order and failure recovery; percentages are not guessed.

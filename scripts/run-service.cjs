@@ -17,7 +17,9 @@ if (["web", "build"].includes(service) && [".env", ".env.local", ".env.productio
   const nextEntry = require.resolve("next/dist/bin/next", { paths: [cwd, root] });
   require("node:module").createRequire(nextEntry)("@next/env").loadEnvConfig(cwd, false);
 }
-const env = loadEnvironment(path.join(cwd, ".env"));
+// The Next build and Web server do not need CMS object-storage credentials.
+const readEnvironment = ["web", "build"].includes(service) ? loadEnvironment : require("../config/storage.cjs").loadStorageEnvironment;
+const env = readEnvironment(path.join(cwd, ".env"));
 const settings = resolveResourceProfile(env);
 const heap = settings.heap[["bootstrap", "schema"].includes(service) ? "cms" : service];
 if (settings.enabled) {

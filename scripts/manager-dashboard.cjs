@@ -8,6 +8,7 @@ const crypto = require("node:crypto");
 const { createManagerAuth } = require("./manager-auth.cjs");
 const { loginHtml } = require("./manager-login.cjs");
 const { createOperationJournal } = require("./service-operations.cjs");
+const { createRepoUpdater, COMMIT_ID } = require("./manager-repo.cjs");
 const {
   runPowerShell: executePowerShell,
   stopProcessesCommand
@@ -36,7 +37,14 @@ const MANAGER_AUTH_ENABLED = MANAGER_AUTH_PASSWORD.length > 0;
 const MANAGER_LOGIN_CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const managerAuth = createManagerAuth({ username: MANAGER_AUTH_USERNAME, password: MANAGER_AUTH_PASSWORD, basePath: MANAGER_BASE_PATH });
 const systemd = process.platform === "linux";
-const execFileAsync = require("node:util").promisify(require("node:child_process").execFile);
+const childProcess = require("node:child_process");
+const execFileAsync = require("node:util").promisify(childProcess.execFile);
+const MANAGER_UNIT = managerEnv("MANAGER_SYSTEMD_UNIT", "video-blog-manager.service");
+// --no-block: systemd queues the restart and stops this process (and the client) afterwards.
+const MANAGER_RESTART_COMMAND = ["/usr/bin/systemctl", "--no-block", "restart", MANAGER_UNIT];
+const WINDOWS_MANAGER_SCRIPT = path.join(ROOT, "deployment", "windows", "manager-service.ps1");
+// update-native.sh names each release directory <UTC timestamp>-<12-character commit>.
+const RELEASE_LINK = managerEnv("MANAGER_RELEASE_LINK", "/opt/video-blog/current");
 const POSTGRES_SERVICE_NAME =
   managerEnv("POSTGRES_SERVICE_NAME", "postgresql-x64-17");
 const WEB_MODE_ENV_KEY = "MANAGER_WEB_MODE";
@@ -107,12 +115,45 @@ if (systemd) {
       throw new Error("Invalid systemd service name: " + service.serviceName);
     }
   }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.@-]*\.service$/.test(MANAGER_UNIT)) {
+    throw new Error("Invalid systemd service name: " + MANAGER_UNIT);
+  }
 }
 
 const serviceMap = new Map(services.map((service) => [service.id, service]));
 const operationJournal = createOperationJournal(ROOT);
+// Manager runs the code it loaded at startup; a Git update changes only the files on disk.
+const loadedCode = new Map();
+const repoUpdater = createRepoUpdater({
+  root: ROOT, execFile: childProcess.execFile, env: process.env, platform: process.platform,
+  gitPath: managerEnv("MANAGER_GIT_PATH", "git"), loadedFiles: () => loadedCode.keys()
+});
+const REPO_STEP = { id: "repo" };
+let repoStatusCache = null;
+let managerRestart = null;
+let releaseManagerRestartLock;
+let eventLoopMonitor = null;
+let eventLoopWindowStartedAt = Date.now();
 let activeOperation = null;
+async function lockServiceOperations() {
+  await fsp.mkdir(path.join(ROOT, "logs"), { recursive: true });
+  try {
+    return await require("proper-lockfile").lock(path.join(ROOT, "logs", "service-operation"), {
+      realpath: false, retries: 0, stale: 120000, update: 10000
+    });
+  } catch (error) {
+    if (error.code === "ELOCKED") {
+      error.statusCode = 409;
+      error.message = "Another service operation is running in Manager or a startup script. Retry after it finishes.";
+    }
+    throw error;
+  }
+}
+
 async function withOperation(label, operation, onStarted) {
+  if (managerRestart?.state === "pending") {
+    throw Object.assign(new Error("Manager is restarting. Sign in again after it returns."), { statusCode: 409 });
+  }
   if (activeOperation) {
     const error = new Error("Another operation is running: " + activeOperation);
     error.statusCode = 409;
@@ -121,18 +162,7 @@ async function withOperation(label, operation, onStarted) {
   activeOperation = label;
   let release;
   try {
-    await fsp.mkdir(path.join(ROOT, "logs"), { recursive: true });
-    try {
-      release = await require("proper-lockfile").lock(path.join(ROOT, "logs", "service-operation"), {
-        realpath: false, retries: 0, stale: 120000, update: 10000
-      });
-    } catch (error) {
-      if (error.code === "ELOCKED") {
-        error.statusCode = 409;
-        error.message = "Another service operation is running in Manager or a startup script. Retry after it finishes.";
-      }
-      throw error;
-    }
+    release = await lockServiceOperations();
     // A CLI invocation may have changed the persisted mode since Manager started.
     currentWebMode = coerceWebMode(process.env[WEB_MODE_ENV_KEY] || loadEnvFile(path.join(ROOT, ".env"))[WEB_MODE_ENV_KEY] || managerEnv("WEB_MODE", "development"));
     const accepted = await operationJournal.begin(label);
@@ -972,19 +1002,174 @@ function managerStatus() {
     uptime: Math.round(process.uptime()),
     node: process.version,
     platform: process.platform,
-    activeOperation
+    activeOperation,
+    restart: managerRestart
   };
+}
+
+async function managerRuntime() {
+  const [supervisor, changedCode] = await Promise.all([managerSupervisor(), loadedCodeChanges()]);
+  const memory = process.memoryUsage();
+  return { supervisor, changedCode, rss: memory.rss, heapUsed: memory.heapUsed, eventLoop: readEventLoopDelay() };
+}
+
+function snapshotLoadedCode() {
+  for (const file of Object.keys(require.cache || {})) {
+    const name = path.relative(ROOT, file);
+    if (!name || name.startsWith("..") || path.isAbsolute(name) || name.split(path.sep).includes("node_modules")) continue;
+    try {
+      const stat = fs.statSync(file);
+      const seen = { size: stat.size, mtimeMs: stat.mtimeMs, hash: crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") };
+      loadedCode.set(name.split(path.sep).join("/"), { file, hash: seen.hash, seen });
+    } catch {}
+  }
+}
+
+async function loadedCodeChanges() {
+  const changed = [];
+  await Promise.all([...loadedCode].map(async ([name, entry]) => {
+    try {
+      const stat = await fsp.stat(entry.file);
+      if (stat.size !== entry.seen.size || stat.mtimeMs !== entry.seen.mtimeMs) {
+        // Hash only after a stat change, so polling stays cheap.
+        entry.seen = { size: stat.size, mtimeMs: stat.mtimeMs, hash: crypto.createHash("sha256").update(await fsp.readFile(entry.file)).digest("hex") };
+      }
+      if (entry.seen.hash !== entry.hash) changed.push(name);
+    } catch { changed.push(name); }
+  }));
+  return changed.sort();
+}
+
+function readEventLoopDelay() {
+  if (!eventLoopMonitor) return null;
+  const delay = { p99Ms: Math.round(eventLoopMonitor.percentile(99) / 1e5) / 10, maxMs: Math.round(eventLoopMonitor.max / 1e5) / 10 };
+  if (Date.now() - eventLoopWindowStartedAt > 60000) {
+    eventLoopMonitor.reset();
+    eventLoopWindowStartedAt = Date.now();
+  }
+  return delay;
+}
+
+async function managerSupervisor() {
+  if (systemd) {
+    const supervisor = { kind: "systemd", unit: MANAGER_UNIT, canRestart: false };
+    try {
+      const { stdout } = await execFileAsync("/usr/bin/systemctl", [
+        "show", "--property=LoadState,ActiveState,SubState,MainPID,NRestarts", MANAGER_UNIT
+      ], { timeout: 5000 });
+      const state = Object.fromEntries(stdout.trim().split("\n").map(line => line.split("=")));
+      supervisor.unitState = state.LoadState === "loaded" ? state.ActiveState : state.LoadState;
+      supervisor.subState = state.SubState;
+      supervisor.mainPid = Number(state.MainPID) || null;
+      supervisor.restarts = Number(state.NRestarts) || 0;
+      // Restarting a unit this process does not belong to would stop someone else's Manager.
+      supervisor.canRestart = supervisor.mainPid === process.pid;
+      if (!supervisor.canRestart) supervisor.reason = "This Manager is not the main process of " + MANAGER_UNIT + ". Restart it where it was started.";
+    } catch (error) {
+      supervisor.unitState = "unknown";
+      supervisor.reason = "Cannot read " + MANAGER_UNIT + ": " + error.message;
+    }
+    return supervisor;
+  }
+  if (process.platform === "win32") {
+    const canRestart = fs.existsSync(WINDOWS_MANAGER_SCRIPT);
+    return { kind: "windows-process", script: "deployment/windows/manager-service.ps1", canRestart,
+      reason: canRestart ? undefined : "deployment/windows/manager-service.ps1 is missing." };
+  }
+  return { kind: "foreground", canRestart: false, reason: "Restart Manager from the terminal that started it." };
+}
+
+async function requestManagerRestart() {
+  if (activeOperation || managerRestart?.state === "pending") {
+    throw Object.assign(new Error("Wait for the running operation to finish before restarting Manager."), { statusCode: 409 });
+  }
+  const release = await lockServiceOperations();
+  try {
+    await verifyManagerRestart();
+    managerRestart = { state: "pending", pid: process.pid, requestedAt: new Date().toISOString() };
+    // Keep CLI and dashboard operations out until the supervisor accepts the handoff.
+    releaseManagerRestartLock = release;
+    return { ...managerRestart };
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
+async function verifyManagerRestart() {
+  const supervisor = await managerSupervisor();
+  if (!supervisor.canRestart) throw Object.assign(new Error(supervisor.reason), { statusCode: 400 });
+  // A pull can bring Manager code that no longer loads. Refuse while this process
+  // can still report it, instead of stopping the only Manager.
+  try {
+    await execFileAsync(process.execPath, ["-e", "require(process.argv[1])", path.join(ROOT, "scripts", "manager-dashboard.cjs")],
+      { cwd: ROOT, timeout: 30000, windowsHide: true });
+  } catch (error) {
+    throw Object.assign(new Error("The Manager code on disk does not load, so Manager was not restarted: "
+      + String(error.stderr || error.message).trim().split(/\r?\n/).slice(-6).join("\n")), { statusCode: 409 });
+  }
+  if (systemd) {
+    try {
+      // sudo -l checks the exact sudoers grant without running the restart.
+      await execFileAsync("/usr/bin/sudo", ["-n", "-l", ...MANAGER_RESTART_COMMAND], { timeout: 5000 });
+    } catch {
+      throw Object.assign(new Error("sudo does not allow '" + MANAGER_RESTART_COMMAND.join(" ") + "' for this account. Install the updated deployment/linux/manager.sudoers."), { statusCode: 403 });
+    }
+  }
+}
+
+function launchManagerRestart() {
+  const attempt = managerRestart;
+  const release = releaseManagerRestartLock;
+  releaseManagerRestartLock = null;
+  let released = false;
+  const handoff = () => {
+    if (released) return;
+    released = true;
+    release().catch(error => console.error("Could not release Manager restart lock:", error.message));
+  };
+  const fail = error => {
+    handoff();
+    if (managerRestart !== attempt) return;
+    managerRestart = { ...managerRestart, state: "failed", message: "Manager restart failed: " + cleanPowerShellError(error) };
+  };
+  try {
+    if (systemd) {
+      execFileAsync("/usr/bin/sudo", ["-n", ...MANAGER_RESTART_COMMAND], { timeout: 15000 }).then(handoff, fail);
+    } else {
+      const logFile = path.join(ROOT, "logs", "manager.restart.log");
+      fs.mkdirSync(path.dirname(logFile), { recursive: true });
+      const output = fs.openSync(logFile, "w");
+      try {
+        // The detached PowerShell outlives this process: it stops Manager, waits for
+        // the port to close and starts the successor, exactly like npm run manager:restart.
+        const child = childProcess.spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", WINDOWS_MANAGER_SCRIPT,
+          "restart", "-Port", String(PORT)], { cwd: ROOT, detached: true, windowsHide: true, stdio: ["ignore", output, output] });
+        child.once("error", fail);
+        child.once("spawn", handoff);
+        child.unref();
+      } finally {
+        fs.closeSync(output);
+      }
+    }
+  } catch (error) {
+    fail(error);
+  }
+  setTimeout(() => {
+    if (managerRestart === attempt) fail(new Error("Manager is still running after 60 s. Check logs/manager.restart.log or the Manager unit journal."));
+  }, 60000).unref();
 }
 
 async function allStatus() {
   const database = await getDatabaseStatus();
-  const serviceStatuses = await Promise.all(
-    services.map((service) => getServiceStatus(service, database))
-  );
+  const [serviceStatuses, runtime] = await Promise.all([
+    Promise.all(services.map((service) => getServiceStatus(service, database))),
+    managerRuntime()
+  ]);
 
   return {
     updatedAt: new Date().toISOString(),
-    manager: managerStatus(),
+    manager: { ...managerStatus(), ...runtime },
     services: serviceStatuses,
     database,
     uploadTokens: uploadTokenStatus(),
@@ -1143,31 +1328,48 @@ async function handleUploadTokenChange(payload) {
   };
 }
 
-async function handleStackAction(action) {
-  if (action === "refresh-app") {
+async function handleStackAction(action, options = {}) {
+  if (action === "refresh-app" || action === "pull-update") {
     if (systemd) throw new Error("Use the systemd unit and deployment workflow to change the Web build or mode.");
+    const pull = action === "pull-update";
+    let plan;
     // Release loaded files before npm changes either workspace. Build before
     // starting API so an install/build failure cannot start a partial rollout.
     const results = [];
     const steps = [
+      // Fetch and verify the reviewed commit while API and Web are still serving.
+      ...(pull ? [["repo", "fetch", async () => {
+        plan = await serviceStep(REPO_STEP, "fetch", () => repoUpdater.prepare(options.target));
+        if (plan.upToDate) throw Object.assign(new Error(plan.message + " Nothing to pull; use Update API + Web instead."), { statusCode: 409 });
+        return plan;
+      }]] : []),
       ["web", "stop", () => handleAction("web", "stop")],
       ["api", "stop", () => handleAction("api", "stop")],
+      // Windows cannot replace files a running process holds open, so update only after both stop.
+      ...(pull ? [["repo", "pull", () => serviceStep(REPO_STEP, "pull", () => repoUpdater.fastForward(plan))]] : []),
       ["app-dependencies", "install", () => serviceStep({ id: "app-dependencies" }, "install", installAppDependencies)],
       ...(currentWebMode === "production" ? [["web", "build", () => serviceStep(serviceMap.get("web"), "build", buildWeb)]] : []),
       ["api", "start", () => handleAction("api", "start")],
       ["web", "start", () => handleAction("web", "start")]
     ];
-    for (const [id, operation, task] of steps) {
-      try {
-        const result = await task();
-        results.push({ serviceId: id, action: operation, ok: true, message: result?.message || "Completed." });
-      } catch (error) {
-        results.push({ serviceId: id, action: operation, ok: false, message: cleanPowerShellError(error) });
-        error.results = results;
-        throw error;
+    try {
+      for (const [id, operation, task] of steps) {
+        try {
+          const result = await task();
+          results.push({ serviceId: id, action: operation, ok: true, message: result?.message || "Completed." });
+        } catch (error) {
+          results.push({ serviceId: id, action: operation, ok: false, message: cleanPowerShellError(error) });
+          error.results = results;
+          throw error;
+        }
       }
+    } finally {
+      if (pull) repoStatusCache = null;
     }
-    return { ok: true, message: "API + Web updated. PostgreSQL and CMS were not restarted.", results };
+    if (!pull) return { ok: true, message: "API + Web updated. PostgreSQL and CMS were not restarted.", results };
+    const followUp = repoNextSteps({ ...plan.impact, api: false, web: false, dependencies: false }, plan.to);
+    return { ok: true, message: "Pulled " + plan.count + " commit" + (plan.count === 1 ? "" : "s") + " to " + plan.to.slice(0, 7)
+      + " and updated API + Web." + (followUp ? " " + followUp : ""), results };
   }
   if (action === "start-all") {
     return runStackActions(["postgres", "cms", "api", "web"], "start");
@@ -1239,11 +1441,78 @@ async function runStackActions(serviceIds, action) {
   };
 }
 
+function parseRepoTarget(value, required = false) {
+  if (!required && (value === undefined || value === null || value === "")) return undefined;
+  if (typeof value !== "string" || !COMMIT_ID.test(value)) {
+    throw Object.assign(new Error("Pull target must be the full commit ID shown by Check for updates."), { statusCode: 400 });
+  }
+  return value;
+}
+
+function repoStatus() {
+  if (!repoStatusCache || Date.now() - repoStatusCache.at > 3000) {
+    repoStatusCache = { at: Date.now(), promise: readRepoStatus() };
+  }
+  return repoStatusCache.promise;
+}
+
+async function readRepoStatus() {
+  const repo = { ...await repoUpdater.status(), mode: systemd ? "systemd" : "windows" };
+  if (systemd && repo.available) {
+    // Linux services run a release built from this checkout, not the checkout itself.
+    const release = await fsp.realpath(RELEASE_LINK).catch(() => null);
+    repo.release = release && { path: release, revision: path.basename(release).match(/-([0-9a-f]{12})$/)?.[1] || null };
+    repo.deployCommand = deployCommand(repo.head.hash);
+  }
+  return repo;
+}
+
+function shellQuote(value) {
+  return /^[A-Za-z0-9_./:@%+=-]+$/.test(value) ? value : "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+function deployCommand(revision) {
+  return "sudo bash " + shellQuote(path.join(ROOT, "deployment", "linux", "update-native.sh")) + " " + shellQuote(ROOT) + " " + revision;
+}
+
+function repoNextSteps(impact, revision) {
+  const steps = [];
+  if (systemd) {
+    if (impact.api || impact.web || impact.cms || impact.dependencies) steps.push("Deploy it to the services with " + deployCommand(revision) + ".");
+  } else {
+    if (impact.api || impact.web || impact.dependencies) steps.push("Run Update API + Web to load the API and Web changes.");
+    if (impact.cms) steps.push("Restart Directus CMS to load its changes.");
+  }
+  if (impact.manager) steps.push("Restart Manager to load its updated controller.");
+  if (impact.deployment) steps.push("Deployment files changed; review them before the next deployment.");
+  return steps.join(" ");
+}
+
+async function handleRepoFetch() {
+  try {
+    return await serviceStep(REPO_STEP, "fetch", () => repoUpdater.fetch());
+  } finally {
+    repoStatusCache = null;
+  }
+}
+
+async function handleRepoPull(target) {
+  try {
+    const plan = await serviceStep(REPO_STEP, "fetch", () => repoUpdater.prepare(target));
+    if (plan.upToDate) return { message: plan.message };
+    const result = await serviceStep(REPO_STEP, "pull", () => repoUpdater.fastForward(plan));
+    return { message: result.message + " " + (repoNextSteps(plan.impact, plan.to) || "No service restart is needed for these files.") };
+  } finally {
+    repoStatusCache = null;
+  }
+}
+
 async function readServiceLogs(serviceId) {
   const service = serviceId === "manager"
     ? { id: "manager", name: "Service Manager", logName: "manager" }
     : serviceId === "web-build" ? { id: "web-build", name: "Web build", logName: "web.build" }
     : serviceId === "app-dependencies" ? { id: "app-dependencies", name: "API + Web dependencies", logName: "app.dependencies" }
+    : serviceId === "repo" ? { id: "repo", name: "Git repository", logName: "git" }
     : serviceMap.get(serviceId);
   if (!service?.logName) {
     const error = new Error(`No logs configured for service: ${serviceId}`);
@@ -1254,6 +1523,9 @@ async function readServiceLogs(serviceId) {
   const logDir = path.join(ROOT, "logs");
   const stdoutPath = path.join(logDir, `${service.logName}.out.log`);
   const stderrPath = path.join(logDir, `${service.logName}.err.log`);
+  if (serviceId === "manager" && systemd && !fs.existsSync(stdoutPath) && !fs.existsSync(stderrPath)) {
+    return readManagerJournal();
+  }
 
   return {
     serviceId,
@@ -1265,6 +1537,22 @@ async function readServiceLogs(serviceId) {
       stdout: path.relative(ROOT, stdoutPath),
       stderr: path.relative(ROOT, stderrPath)
     }
+  };
+}
+
+async function readManagerJournal() {
+  // A systemd unit without file redirection logs to the journal. The Manager
+  // account can read entries of its own processes without extra groups.
+  const source = "journalctl -u " + MANAGER_UNIT;
+  const output = await execFileAsync("/usr/bin/journalctl", ["--unit", MANAGER_UNIT, "--lines", "200", "--no-pager", "--output", "short-iso"],
+    { timeout: 5000, maxBuffer: 2 * 1024 * 1024 }).catch(error => ({ stdout: "", stderr: error.stderr || error.message }));
+  return {
+    serviceId: "manager",
+    serviceName: "Service Manager",
+    updatedAt: new Date().toISOString(),
+    stdout: String(output.stdout || "").slice(-7000),
+    stderr: String(output.stderr || "").slice(-7000),
+    files: { stdout: source, stderr: source }
   };
 }
 
@@ -1352,6 +1640,37 @@ const server = http.createServer({ maxHeaderSize: 16384, headersTimeout: 10000, 
       return;
     }
 
+    if (req.method === "GET" && pathname === "/api/repo") {
+      sendJson(res, 200, { ok: true, repo: await repoStatus() });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/repo/fetch") {
+      const operation = await beginManagedOperation("repo:fetch", handleRepoFetch);
+      sendJson(res, 202, { ok: true, operation });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/repo/pull") {
+      // The page sends the commit the operator reviewed; a newer upstream is never pulled unseen.
+      const target = parseRepoTarget((await readJsonBody(req)).target, true);
+      const operation = await beginManagedOperation("repo:pull", () => handleRepoPull(target));
+      sendJson(res, 202, { ok: true, operation });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/manager/restart") {
+      const restart = await requestManagerRestart();
+      // A lost connection during preflight must not strand the admitted restart and its lock.
+      const handoff = () => setTimeout(launchManagerRestart, 300);
+      if (res.destroyed) handoff();
+      else {
+        res.once("close", handoff);
+        sendJson(res, 202, { ok: true, restart });
+      }
+      return;
+    }
+
     const operationMatch = pathname.match(/^\/api\/operations\/([a-f0-9-]{36})$/);
     if (req.method === "GET" && operationMatch) {
       const operation = await operationJournal.read(operationMatch[1]);
@@ -1367,10 +1686,11 @@ const server = http.createServer({ maxHeaderSize: 16384, headersTimeout: 10000, 
 
     const stackMatch = pathname.match(/^\/api\/stack\/([^/]+)$/);
     if (req.method === "POST" && stackMatch) {
-      if (!["start-all", "stop-all", "restart-all", "refresh-app"].includes(stackMatch[1])) {
+      if (!["start-all", "stop-all", "restart-all", "refresh-app", "pull-update"].includes(stackMatch[1])) {
         sendJson(res, 400, { ok: false, error: "Unsupported stack action." }); return;
       }
-      const operation = await beginManagedOperation(stackMatch[1], () => handleStackAction(stackMatch[1]));
+      const options = stackMatch[1] === "pull-update" ? { target: parseRepoTarget((await readJsonBody(req)).target, true) } : {};
+      const operation = await beginManagedOperation(stackMatch[1], () => handleStackAction(stackMatch[1], options));
       sendJson(res, 202, { ok: true, operation });
       return;
     }
@@ -1440,6 +1760,8 @@ server.on("error", (error) => {
 });
 
 if (require.main === module) server.listen(PORT, HOST, () => {
+  eventLoopMonitor = require("node:perf_hooks").monitorEventLoopDelay({ resolution: 20 });
+  eventLoopMonitor.enable();
   console.log(`Service Manager listening on http://${HOST}:${PORT}`);
   if (MANAGER_BASE_PATH) {
     console.log(`Service Manager base path: ${MANAGER_BASE_PATH}`);
@@ -1452,8 +1774,11 @@ if (require.main === module) server.listen(PORT, HOST, () => {
 module.exports = {
   server, html, withOperation, handleAction, handleStackAction,
   handleWebModeChange, getServiceStatus, getDatabaseStatus, runStackActions,
-  waitForProcessHealth, serviceMap, cleanPowerShellError, managerStatus, allStatus, beginManagedOperation
+  waitForProcessHealth, serviceMap, cleanPowerShellError, managerStatus, allStatus, beginManagedOperation,
+  repoStatus, handleRepoFetch, handleRepoPull, parseRepoTarget
 };
+// Every top-level require has run; this is the code the running Manager executes.
+snapshotLoadedCode();
 
 // Login and dashboard share one palette, typography and control stylesheet.
 function managerStyles() {
@@ -1514,7 +1839,9 @@ function managerStyles() {
         --idle: #9aa4b4;
         --idle-bg: #1d232c;
         --idle-line: #303847;
-        --shadow: none;
+        /* Transparent, not none: service cards append their status stripe to this
+           list, and "none" in a shadow list voids the whole declaration. */
+        --shadow: 0 0 #0000;
       }
     }
 
@@ -1529,6 +1856,7 @@ function managerStyles() {
     }
     h1, h2, h3, p, dl, dd { margin: 0; }
     code, .mono { font-family: var(--mono); }
+    ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
     code {
       padding: 1px 5px;
       border-radius: 4px;
@@ -1560,7 +1888,7 @@ function managerStyles() {
     @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
 
     .app {
-      width: min(1120px, 100%);
+      width: min(1480px, 100%);
       margin: 0 auto;
       padding: 24px 20px 40px;
       display: grid;
@@ -1571,7 +1899,6 @@ function managerStyles() {
     /* Top bar */
     .topbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
     .brand { flex: 1 1 auto; min-width: 0; }
-    .eyebrow { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
     h1 { font-size: 24px; line-height: 1.2; font-weight: 700; letter-spacing: -.01em; }
     .sync {
       display: inline-flex;
@@ -1690,33 +2017,79 @@ function managerStyles() {
     .stack-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; padding-top: 14px; border-top: 1px solid var(--tone-line); align-items: center; }
     .stack-actions .label { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; margin-right: 4px; }
 
-    .action-readout {
-      padding: 10px 14px;
-      border: 1px solid var(--line);
-      border-left: 3px solid var(--accent);
-      border-radius: var(--radius-sm);
-      background: var(--surface);
-      overflow-wrap: anywhere;
-    }
-    .action-readout:empty { display: none; }
-    .action-readout.error { border-color: var(--bad-line); border-left-color: var(--bad); background: var(--bad-bg); color: var(--bad); }
+    /* Current task: the live phase, the latest command feedback and the steps of
+       the latest operation share one surface instead of three stacked blocks. */
+    .activity { display: grid; gap: 10px; align-content: start; padding: 16px; }
+    .activity h2 { font-size: 15px; }
+    .activity p { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    #currentTasks ul { list-style: none; padding: 0; margin: 0; }
+    #currentTasks li { overflow-wrap: anywhere; }
+    #currentTasks li strong { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; font-size: 14px; }
+    #currentTasks li strong::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+    #currentTasks li p { padding-left: 16px; }
+    .activity .task-warning { color: var(--warn); }
+    .activity .task-warning:empty { display: none; }
+    .activity .action-readout { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); }
+    .activity .action-readout:empty { display: none; }
+    .activity .action-readout.error { border-color: var(--bad-line); background: var(--bad-bg); color: var(--bad); }
     /* Named phases describe real work; a build has no meaningful percentage. */
-    .operation-panel { padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
-    .operation-panel[hidden] { display: none; }
-    .operation-panel h2 { font-size: 15px; margin-bottom: 6px; }
-    .operation-panel p, .service-help { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-    .operation-steps { display: grid; gap: 7px; padding-left: 22px; margin-top: 12px; }
+    .operation-detail { display: grid; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .operation-detail[hidden] { display: none; }
+    .operation-detail h3 { font-size: 14px; }
+    .operation-log summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+    .operation-steps { display: grid; gap: 7px; margin: 10px 0 0; padding-left: 22px; }
     .operation-steps li { font-size: 13px; overflow-wrap: anywhere; }
     .operation-steps li[data-state="failed"] { color: var(--bad); }
     .operation-steps li[data-state="running"] { color: var(--accent); font-weight: 700; }
-    /* Current tasks reuse the operation surface; the journal serializes commands. */
-    .current-tasks { min-height: 110px; }
-    .current-tasks ul { list-style: none; padding: 0; margin: 10px 0 0; }
-    .current-tasks li { border-left: 3px solid var(--accent); padding-left: 12px; overflow-wrap: anywhere; }
-    .current-tasks strong { display: block; font-size: 14px; margin-bottom: 4px; }
-    .current-tasks .task-warning { color: var(--warn); margin-top: 8px; }
+    .operation-logs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .service-help { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
     .command-reference summary { cursor: pointer; font-size: 13px; color: var(--muted); }
     .command-reference code { display: block; padding: 4px 0; font-size: 12px; overflow-wrap: anywhere; }
+    .command-reference[open] > summary { margin-bottom: 8px; }
+    .command-reference .ledger, .command-reference .service-help { margin-bottom: 8px; }
+
+    /* Console: health, services and output lead the left column. The rail keeps
+       the current task, incoming updates and the controller beside them. */
+    .console { display: grid; gap: 20px; }
+    .console > * { min-width: 0; }
+    .side { display: grid; gap: 14px; align-content: start; min-width: 0; }
+    .side .svc-ops .button { flex: 1 1 auto; }
+    /* Without the rail, the repository and Manager panels pair up rather than stretch. */
+    @media (min-width: 900px) and (max-width: 1199px) {
+      .side { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+    }
+    @media (min-width: 1200px) {
+      .console {
+        grid-template-columns: minmax(0, 1fr) 380px;
+        grid-template-rows: auto auto 1fr;
+        grid-template-areas: "overview ." "services ." "logs .";
+        align-items: start;
+      }
+      .overview { grid-area: overview; }
+      .services { grid-area: services; }
+      .log-panel { grid-area: logs; }
+      /* Rail items span every row, so a tall task card never stretches the overview
+         row. The rest of the rail starts below the card, whose height the page
+         script publishes. */
+      .activity, .side { grid-column: 2; grid-row: 1 / -1; }
+      .side { margin-top: calc(var(--activity-height, 0px) + 14px); }
+    }
+    @media (min-width: 1200px) and (min-height: 640px) {
+      /* Only the task card stays in view; the panels below it scroll with the page. */
+      .activity { position: sticky; top: 16px; z-index: 2; box-shadow: 0 6px 18px -10px rgba(20, 24, 33, .35); }
+    }
+
+    /* Settings change rarely, so they follow the console after a wider break. */
+    .settings { margin-top: 12px; }
+    .settings-grid { display: grid; gap: 14px; align-items: start; }
+    @media (min-width: 900px) {
+      .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .settings-grid > :first-child { grid-row: span 2; }
+    }
+    @media (min-width: 1200px) {
+      .settings-grid { grid-template-columns: minmax(0, 5fr) minmax(0, 4fr) minmax(0, 3fr); }
+      .settings-grid > :first-child { grid-row: auto; }
+    }
 
     /* Sections */
     .section-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
@@ -1724,7 +2097,10 @@ function managerStyles() {
     .section-note { color: var(--muted); font-size: 12.5px; }
 
     /* Service cards */
-    .bay { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); gap: 14px; }
+    .services { container-type: inline-size; }
+    .bay { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+    /* Two equal columns keep four cards as a 2 × 2 block, never 3 + 1. */
+    @container (min-width: 640px) { .bay { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     .svc {
       --tone: var(--idle);
       display: grid;
@@ -1793,7 +2169,22 @@ function managerStyles() {
     .panel-head h3 { font-size: 14px; font-weight: 700; }
     .panel-head .path-chip { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
     .panel-body { padding: 16px; }
-    .bench { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 14px; align-items: start; }
+    .panel-head .badge { margin-left: auto; }
+
+    /* Repository and Manager maintenance */
+    .maint-body { display: grid; gap: 14px; }
+    .notice { padding: 8px 10px; border: 1px solid var(--idle-line); border-radius: var(--radius-sm); background: var(--idle-bg); font-size: 13px; overflow-wrap: anywhere; white-space: pre-line; }
+    .notice[data-tone="ok"] { border-color: var(--ok-line); background: var(--ok-bg); }
+    .notice[data-tone="warn"] { border-color: var(--warn-line); background: var(--warn-bg); }
+    .notice[data-tone="bad"] { border-color: var(--bad-line); background: var(--bad-bg); }
+    .notice[hidden] { display: none; }
+    .commits { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+    .commits li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 10px; font-size: 13px; }
+    .commits code { align-self: start; }
+    .commits span { overflow-wrap: anywhere; }
+    .commits small { grid-column: 2; color: var(--muted); font-size: 12px; }
+    .impact { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; color: var(--muted); font-size: 12.5px; }
+    .impact b { padding: 1px 9px; border: 1px solid var(--warn-line); border-radius: 999px; background: var(--warn-bg); color: var(--warn); font-size: 12px; }
 
     /* Live output */
     .log-panel { overflow: hidden; }
@@ -1905,11 +2296,28 @@ function managerStyles() {
     .share { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-weight: 400 !important; }
     .form-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
     .form-foot p { flex: 1 1 260px; color: var(--muted); font-size: 12.5px; }
-
-    .foot { color: var(--muted); font-size: 12.5px; }
-    .foot-meta { display: flex; flex-wrap: wrap; gap: 4px 20px; }
-    .foot-meta div { display: flex; gap: 6px; }
-    .foot-meta dd { font-family: var(--mono); color: var(--text); }
+    .backup { display: grid; gap: 14px; }
+    .backup .cred-desc { margin-bottom: 0; }
+    .backup .field label { display: block; margin-bottom: 6px; }
+    .backup .cred-input { width: 100%; }
+    .backup-step { display: grid; justify-items: start; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .backup-step .field { justify-self: stretch; }
+    .backup-step .field-help { margin-top: 0; }
+    #backupResult { overflow-wrap: anywhere; }
+    #backupResult:empty { display: none; }
+    input[type="file"] { max-width: 100%; color: var(--muted); font: 13px var(--font); }
+    input[type="file"]::file-selector-button {
+      margin-right: 10px;
+      min-height: 34px;
+      padding: 0 13px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text);
+      font: 600 13px/1 var(--font);
+      cursor: pointer;
+    }
+    input[type="file"]::file-selector-button:hover { background: var(--surface-2); border-color: var(--muted); }
 
     /* Dialog + toast */
     .action-dialog { width: min(420px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 24px 60px rgba(0, 0, 0, .3); }
@@ -1938,7 +2346,6 @@ function managerStyles() {
     .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
     @media (max-width: 900px) {
-      .bench { grid-template-columns: minmax(0, 1fr); }
       .overview { grid-template-columns: minmax(0, 1fr); }
       .counts { flex-wrap: wrap; }
     }
@@ -1990,7 +2397,6 @@ function html(csrfToken = "") {
   <main id="managerApp" class="app" aria-busy="false">
     <header class="topbar">
       <div class="brand">
-        <p class="eyebrow">MMVB · Local stack</p>
         <h1>Service Manager</h1>
       </div>
       <div class="sync" id="syncState" data-state="connecting" role="status" aria-live="polite">
@@ -2001,157 +2407,228 @@ function html(csrfToken = "") {
       <button class="button" type="button" id="logoutButton" lang="zh-CN">退出登录</button>
     </header>
 
-    <section class="overview" id="overview" data-tone="pending" aria-labelledby="overviewTitle">
-      <div class="overview-main">
-        <span class="overview-icon" id="overviewIcon" aria-hidden="true"></span>
-        <div class="overview-text">
-          <h2 id="overviewTitle">Checking services...</h2>
-          <p id="overviewDetail">Reading the current state of the local stack.</p>
-        </div>
-      </div>
-      <dl class="counts" id="summary" aria-label="Stack status overview">
-        <div class="count" id="sumRunning"><dt>Running</dt><dd class="record-value">—</dd></div>
-        <div class="count" id="sumHealthy"><dt>Healthy</dt><dd class="record-value">—</dd></div>
-        <div class="count" id="sumStopped"><dt>Stopped</dt><dd class="record-value">—</dd></div>
-      </dl>
-      <div class="tally" id="tally" aria-label="Service status — select to jump to its card"></div>
-      <div class="stack-actions" role="group" aria-label="Full stack controls">
-        <span class="label">Whole stack</span>
-        <button class="button primary" type="button" data-stack="start-all">Start all</button>
-        <button class="button warn" type="button" data-stack="restart-all">Restart all</button>
-        <button class="button danger" type="button" data-stack="stop-all">Stop all</button>
-        ${systemd ? "" : '<button class="button" type="button" data-stack="refresh-app">Update API + Web</button>'}
-      </div>
-      <p class="service-help">Start: PostgreSQL → CMS → API → Web. Stop: reverse order. ${systemd ? "Units are managed by systemd." : "Restart reuses the current Web build. Update API + Web stops both services, installs their dependencies, then builds Web in Production and starts both services."}</p>
-    </section>
-
-    <p class="action-readout" id="actionReadout" role="status" aria-live="polite"></p>
-    <section class="operation-panel current-tasks" aria-labelledby="currentTasksTitle" lang="zh-CN">
-      <h2 id="currentTasksTitle">当前任务</h2>
-      <div id="currentTasks" role="status" aria-live="polite" aria-atomic="true"><p>正在读取任务状态…</p></div>
-      <p id="taskConnectionStatus" class="task-warning" role="status" aria-live="polite"></p>
-    </section>
-    <section class="operation-panel" id="operationPanel" aria-labelledby="operationTitle" hidden>
-      <h2 id="operationTitle">Service operation</h2>
-      <p id="operationSummary" role="status" aria-live="polite"></p>
-      <ol class="operation-steps" id="operationSteps"></ol>
-      <button class="button" type="button" data-log="app-dependencies">View dependency install log</button>
-      <button class="button" type="button" data-log="web-build">View Web build log</button>
-    </section>
-
-    <section aria-labelledby="servicesTitle">
-      <div class="section-head">
-        <h2 id="servicesTitle">Services</h2>
-        <span class="section-note">Checked every 2 s</span>
-      </div>
-      <div class="bay" id="cards" aria-label="Managed services"></div>
-    </section>
-
-    <section class="panel log-panel" id="outputMonitor" aria-label="Live output monitor">
-      <header class="log-head">
-        <h3>Live output</h3>
-        <span class="live-state" id="liveLogState"><span class="live-state-dot" aria-hidden="true"></span><span id="liveLogStateText">Idle</span></span>
-        <div class="chan-tabs" role="group" aria-label="Live output source">
-          <button class="chan-tab" type="button" data-log="web" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Web</button>
-          <button class="chan-tab" type="button" data-log="app-dependencies" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Dependencies</button>
-          <button class="chan-tab" type="button" data-log="web-build" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Build</button>
-          <button class="chan-tab" type="button" data-log="api" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>API</button>
-          <button class="chan-tab" type="button" data-log="cms" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>CMS</button>
-          <button class="chan-tab" type="button" data-log="manager" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Manager</button>
-        </div>
-        <div class="rec-controls">
-          <div class="rate-switch" role="group" aria-label="Live output refresh interval">
-            <button class="button active" type="button" data-log-interval="3000" aria-pressed="true">3s</button>
-            <button class="button" type="button" data-log-interval="10000" aria-pressed="false">10s</button>
+    <div class="console">
+      <section class="overview" id="overview" data-tone="pending" aria-labelledby="overviewTitle">
+        <div class="overview-main">
+          <span class="overview-icon" id="overviewIcon" aria-hidden="true"></span>
+          <div class="overview-text">
+            <h2 id="overviewTitle">Checking services...</h2>
+            <p id="overviewDetail">Reading the current state of the local stack.</p>
           </div>
-          <button class="button" type="button" id="toggleLogPolling" aria-pressed="false">Pause</button>
         </div>
-      </header>
-      <div class="log" id="log" role="region" aria-label="Live service output" aria-live="off" tabindex="0">
-        <div class="log-empty"><p>Loading Web output</p><p class="log-empty-sub">Connecting to the live output buffer...</p></div>
-      </div>
-      <footer class="log-foot">
-        <span class="follow-pill on" id="followPill" title="Auto-scrolling to newest output">Follow</span>
-        <p class="output-meta" id="liveLogMeta" role="status" aria-live="polite">Waiting for a log source.</p>
-        <p class="log-paths" id="logPaths"></p>
-      </footer>
-    </section>
+        <dl class="counts" id="summary" aria-label="Stack status overview">
+          <div class="count" id="sumRunning"><dt>Running</dt><dd class="record-value">—</dd></div>
+          <div class="count" id="sumHealthy"><dt>Healthy</dt><dd class="record-value">—</dd></div>
+          <div class="count" id="sumStopped"><dt>Stopped</dt><dd class="record-value">—</dd></div>
+        </dl>
+        <div class="tally" id="tally" aria-label="Service status — select to jump to its card"></div>
+        <div class="stack-actions" role="group" aria-label="Full stack controls">
+          <span class="label">Whole stack</span>
+          <button class="button primary" type="button" data-stack="start-all">Start all</button>
+          <button class="button warn" type="button" data-stack="restart-all">Restart all</button>
+          <button class="button danger" type="button" data-stack="stop-all">Stop all</button>
+          ${systemd ? "" : '<button class="button" type="button" data-stack="refresh-app">Update API + Web</button>'}
+        </div>
+        <p class="service-help">Start: PostgreSQL → CMS → API → Web. Stop: reverse order. ${systemd ? "Units are managed by systemd." : "Restart reuses the current Web build. Update API + Web stops both services, installs their dependencies, then builds Web in Production and starts both services."}</p>
+      </section>
 
-    <div class="bench">
-      <section class="panel" aria-label="Publishing credentials">
-        <header class="panel-head">
-          <h3>Publishing credentials</h3>
-          <span class="path-chip" id="tokenPath">apps/api/.env</span>
-        </header>
-        <div class="panel-body">
-          <p class="cred-desc">Existing values stay hidden. Each save restarts the Upload API so changes take effect immediately.</p>
-          <form class="token-form" id="tokenForm" novalidate>
-            <div class="cred-grid">
-              <div class="field">
-                <div class="field-top">
-                  <label for="uploadToken">Video &amp; albums</label>
-                  <span class="cred-state" id="uploadTokenStatus">Checking...</span>
-                </div>
-                <div class="input-row">
-                  <input class="cred-input" id="uploadToken" name="uploadToken" type="password" autocomplete="new-password" spellcheck="false" minlength="24" maxlength="256" placeholder="Leave blank to keep current" aria-describedby="uploadTokenHelp" />
-                  <button class="button" type="button" data-token-generate="uploadToken">Generate</button>
-                  <button class="button" type="button" data-token-toggle="uploadToken" aria-label="Show video and album token">Show</button>
-                </div>
-                <p class="field-help" id="uploadTokenHelp"><code>UPLOAD_API_TOKEN</code> protects video uploads, albums, photos, and film-scan jobs.</p>
-              </div>
-
-              <div class="field">
-                <div class="field-top">
-                  <label for="articleToken">Articles</label>
-                  <span class="cred-state" id="articleTokenStatus">Checking...</span>
-                </div>
-                <div class="input-row">
-                  <input class="cred-input" id="articleToken" name="articleToken" type="password" autocomplete="new-password" spellcheck="false" minlength="24" maxlength="256" placeholder="Leave blank to keep current" aria-describedby="articleTokenHelp" />
-                  <button class="button" type="button" data-token-generate="articleToken">Generate</button>
-                  <button class="button" type="button" data-token-toggle="articleToken" aria-label="Show article token">Show</button>
-                </div>
-                <label class="share" for="articleUsesUploadToken">
-                  <input id="articleUsesUploadToken" name="articleUsesUploadToken" type="checkbox" />
-                  Use the video &amp; album token for articles
-                </label>
-                <p class="field-help" id="articleTokenHelp"><code>ARTICLE_API_TOKEN</code> protects the article editor and can intentionally share the primary token.</p>
-              </div>
+      <section class="panel activity current-tasks" id="activity" aria-labelledby="currentTasksTitle">
+        <h2 id="currentTasksTitle" lang="zh-CN">当前任务</h2>
+        <div id="currentTasks" role="status" aria-live="polite" aria-atomic="true" lang="zh-CN"><p>正在读取任务状态…</p></div>
+        <p id="taskConnectionStatus" class="task-warning" role="status" aria-live="polite" lang="zh-CN"></p>
+        <p class="action-readout" id="actionReadout" role="status" aria-live="polite"></p>
+        <div class="operation-detail" id="operationPanel" hidden>
+          <h3 id="operationTitle">Service operation</h3>
+          <p id="operationSummary" role="status" aria-live="polite"></p>
+          <details class="operation-log" id="operationDetails" open>
+            <summary>Steps and logs</summary>
+            <ol class="operation-steps" id="operationSteps"></ol>
+            <div class="operation-logs">
+              <button class="button" type="button" data-log="app-dependencies">View dependency install log</button>
+              <button class="button" type="button" data-log="web-build">View Web build log</button>
+              <button class="button" type="button" data-log="repo">View Git log</button>
             </div>
-            <div class="form-foot">
-              <p>Token text is never returned to this page. The short code beside each status is a one-way fingerprint of the active credential.</p>
-              <button class="button primary" type="submit" id="saveTokensButton">Save tokens &amp; restart API</button>
-            </div>
-          </form>
+          </details>
         </div>
       </section>
 
-      <aside class="panel" aria-label="Database">
-        <header class="panel-head">
-          <h3>Database</h3>
-          <span class="path-chip">PostgreSQL</span>
-        </header>
-        <div class="panel-body">
-          <dl class="ledger" id="databaseMeta"></dl>
+      <section class="services" aria-labelledby="servicesTitle">
+        <div class="section-head">
+          <h2 id="servicesTitle">Services</h2>
+          <span class="section-note">Checked every 2 s</span>
         </div>
-      </aside>
+        <div class="bay" id="cards" aria-label="Managed services"></div>
+      </section>
+
+      <section class="panel log-panel" id="outputMonitor" aria-label="Live output monitor">
+        <header class="log-head">
+          <h3>Live output</h3>
+          <span class="live-state" id="liveLogState"><span class="live-state-dot" aria-hidden="true"></span><span id="liveLogStateText">Idle</span></span>
+          <div class="chan-tabs" role="group" aria-label="Live output source">
+            <button class="chan-tab" type="button" data-log="web" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Web</button>
+            <button class="chan-tab" type="button" data-log="app-dependencies" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Dependencies</button>
+            <button class="chan-tab" type="button" data-log="web-build" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Build</button>
+            <button class="chan-tab" type="button" data-log="api" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>API</button>
+            <button class="chan-tab" type="button" data-log="cms" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>CMS</button>
+            <button class="chan-tab" type="button" data-log="repo" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Git</button>
+            <button class="chan-tab" type="button" data-log="manager" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Manager</button>
+          </div>
+          <div class="rec-controls">
+            <div class="rate-switch" role="group" aria-label="Live output refresh interval">
+              <button class="button active" type="button" data-log-interval="3000" aria-pressed="true">3s</button>
+              <button class="button" type="button" data-log-interval="10000" aria-pressed="false">10s</button>
+            </div>
+            <button class="button" type="button" id="toggleLogPolling" aria-pressed="false">Pause</button>
+          </div>
+        </header>
+        <div class="log" id="log" role="region" aria-label="Live service output" aria-live="off" tabindex="0">
+          <div class="log-empty"><p>Loading Web output</p><p class="log-empty-sub">Connecting to the live output buffer...</p></div>
+        </div>
+        <footer class="log-foot">
+          <span class="follow-pill on" id="followPill" title="Auto-scrolling to newest output">Follow</span>
+          <p class="output-meta" id="liveLogMeta" role="status" aria-live="polite">Waiting for a log source.</p>
+          <p class="log-paths" id="logPaths"></p>
+        </footer>
+      </section>
+
+      <div class="side">
+        <section class="panel" id="repoPanel" aria-labelledby="repoTitle">
+          <header class="panel-head">
+            <h3 id="repoTitle">Source repository</h3>
+            <span class="path-chip" id="repoChip">Git</span>
+          </header>
+          <div class="panel-body maint-body">
+            <p class="notice" id="repoNotice" role="status" aria-live="polite">Reading Git status...</p>
+            <dl class="ledger" id="repoMeta"></dl>
+            <div id="repoIncoming"></div>
+            <div class="svc-ops">
+              <button class="button" type="button" data-repo="fetch">Check for updates</button>
+              <button class="button primary" type="button" data-repo="pull">Pull</button>
+              ${systemd ? "" : '<button class="button" type="button" data-repo="pull-update">Pull + Update API + Web</button>'}
+              <button class="button" type="button" data-log="repo" aria-label="Watch Git output">Git log</button>
+            </div>
+            <details class="command-reference">
+              <summary>Checkout, how updates work and commands</summary>
+              <dl class="ledger" id="repoLocation"></dl>
+              <p class="service-help">${systemd
+                ? "Services run a release that deployment/linux/update-native.sh builds from this checkout. Pull fast-forwards only to the commit you reviewed and keeps unrelated local edits; then deploy that revision with the release script (root)."
+                : "API, CMS and Web run from this checkout. Pull fast-forwards only to the commit you reviewed and keeps unrelated local edits. Pull + Update API + Web verifies the update while the site still serves, stops Web and API so Windows releases their files, then pulls, installs dependencies, builds Production Web and starts both."}</p>
+              <code>node scripts/service-control.cjs repo status</code><code>node scripts/service-control.cjs repo fetch</code><code>node scripts/service-control.cjs repo pull [COMMIT]</code>${systemd ? '<code id="repoDeployCommand"></code>' : "<code>node scripts/service-control.cjs stack pull-update [COMMIT]</code>"}
+            </details>
+          </div>
+        </section>
+
+        <section class="panel" id="managerPanel" aria-labelledby="managerTitle">
+          <header class="panel-head">
+            <h3 id="managerTitle">Service Manager</h3>
+            <span class="badge" id="managerBadge"><i aria-hidden="true"></i><span>Checking</span></span>
+          </header>
+          <div class="panel-body maint-body">
+            <p class="notice" id="managerIssue" role="status" aria-live="polite" hidden></p>
+            <dl class="facts" id="managerFacts" aria-label="Manager runtime"></dl>
+            <div class="svc-ops">
+              <button class="button warn" type="button" data-manager="restart">Restart Manager</button>
+              <button class="button" type="button" data-log="manager" aria-label="Watch Service Manager output">Logs</button>
+            </div>
+            <details class="command-reference">
+              <summary>How restart works and commands</summary>
+              <p class="service-help">Restart reloads the Manager's code and settings; PostgreSQL, CMS, API and Web keep running. ${systemd
+                ? "It asks systemd to restart " + MANAGER_UNIT + " through the sudoers entry."
+                : "It uses deployment/windows/manager-service.ps1, like npm run manager:restart."} Sessions live in memory, so sign in again afterwards.</p>
+              ${systemd
+                ? "<code>sudo systemctl restart " + MANAGER_UNIT + "</code><code>systemctl status " + MANAGER_UNIT + "</code><code>journalctl -u " + MANAGER_UNIT + " -f</code>"
+                : "<code>npm run manager:restart</code><code>npm run manager:status</code>"}
+            </details>
+          </div>
+        </section>
+      </div>
     </div>
 
-    <footer class="foot">
-      <dl class="foot-meta" id="managerMeta" aria-label="Manager runtime"></dl>
-    </footer>
-    <section class="panel" aria-label="Configuration backup">
-      <header class="panel-head"><h3>Configuration backup</h3></header>
-      <div class="panel-body">
-        <p>Transfer encrypted configuration between servers, including .env credentials. Use the same backup password on both servers.</p>
-        <p>Includes available application and deployment environment files, project Compose, Nginx, systemd and database tuning files. Back up live host service definitions, certificates, database records and media separately.</p>
-        <label for="backupPassword">Backup password (12–256 characters)</label>
-        <input class="cred-input" id="backupPassword" type="password" autocomplete="new-password" maxlength="256">
-        <button class="button" id="backupExport" type="button">Export configuration</button>
-        <p>Import replaces matching configuration files. Review server addresses and paths before restarting services.</p>
-        <label for="backupFile">Backup file</label>
-        <input id="backupFile" type="file" accept=".json,application/json">
-        <button class="button" id="backupImport" type="button">Import configuration</button>
-        <p id="backupResult" role="status"></p>
+    <section class="settings" aria-labelledby="settingsTitle">
+      <div class="section-head">
+        <h2 id="settingsTitle">Settings</h2>
+      </div>
+      <div class="settings-grid">
+        <section class="panel" aria-label="Publishing credentials">
+          <header class="panel-head">
+            <h3>Publishing credentials</h3>
+            <span class="path-chip" id="tokenPath">apps/api/.env</span>
+          </header>
+          <div class="panel-body">
+            <p class="cred-desc">Existing values stay hidden. Each save restarts the Upload API so changes take effect immediately.</p>
+            <form class="token-form" id="tokenForm" novalidate>
+              <div class="cred-grid">
+                <div class="field">
+                  <div class="field-top">
+                    <label for="uploadToken">Video &amp; albums</label>
+                    <span class="cred-state" id="uploadTokenStatus">Checking...</span>
+                  </div>
+                  <div class="input-row">
+                    <input class="cred-input" id="uploadToken" name="uploadToken" type="password" autocomplete="new-password" spellcheck="false" minlength="24" maxlength="256" placeholder="Leave blank to keep current" aria-describedby="uploadTokenHelp" />
+                    <button class="button" type="button" data-token-generate="uploadToken">Generate</button>
+                    <button class="button" type="button" data-token-toggle="uploadToken" aria-label="Show video and album token">Show</button>
+                  </div>
+                  <p class="field-help" id="uploadTokenHelp"><code>UPLOAD_API_TOKEN</code> protects video uploads, albums, photos, and film-scan jobs.</p>
+                </div>
+
+                <div class="field">
+                  <div class="field-top">
+                    <label for="articleToken">Articles</label>
+                    <span class="cred-state" id="articleTokenStatus">Checking...</span>
+                  </div>
+                  <div class="input-row">
+                    <input class="cred-input" id="articleToken" name="articleToken" type="password" autocomplete="new-password" spellcheck="false" minlength="24" maxlength="256" placeholder="Leave blank to keep current" aria-describedby="articleTokenHelp" />
+                    <button class="button" type="button" data-token-generate="articleToken">Generate</button>
+                    <button class="button" type="button" data-token-toggle="articleToken" aria-label="Show article token">Show</button>
+                  </div>
+                  <label class="share" for="articleUsesUploadToken">
+                    <input id="articleUsesUploadToken" name="articleUsesUploadToken" type="checkbox" />
+                    Use the video &amp; album token for articles
+                  </label>
+                  <p class="field-help" id="articleTokenHelp"><code>ARTICLE_API_TOKEN</code> protects the article editor and can intentionally share the primary token.</p>
+                </div>
+              </div>
+              <div class="form-foot">
+                <p>Token text is never returned to this page. The short code beside each status is a one-way fingerprint of the active credential.</p>
+                <button class="button primary" type="submit" id="saveTokensButton">Save tokens &amp; restart API</button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel" aria-label="Configuration backup">
+          <header class="panel-head"><h3>Configuration backup</h3></header>
+          <div class="panel-body backup">
+            <p class="cred-desc">Transfer encrypted configuration between servers, including .env credentials. Use the same backup password on both servers.</p>
+            <div class="field">
+              <label for="backupPassword">Backup password (12–256 characters)</label>
+              <input class="cred-input" id="backupPassword" type="password" autocomplete="new-password" maxlength="256">
+            </div>
+            <div class="backup-step">
+              <button class="button" id="backupExport" type="button">Export configuration</button>
+              <p class="field-help">Includes available application and deployment environment files, project Compose, Nginx, systemd and database tuning files. Back up live host service definitions, certificates, database records and media separately.</p>
+            </div>
+            <div class="backup-step">
+              <div class="field">
+                <label for="backupFile">Backup file</label>
+                <input id="backupFile" type="file" accept=".json,application/json">
+              </div>
+              <button class="button" id="backupImport" type="button">Import configuration</button>
+              <p class="field-help">Import replaces matching configuration files. Review server addresses and paths before restarting services.</p>
+            </div>
+            <p id="backupResult" role="status"></p>
+          </div>
+        </section>
+
+        <aside class="panel" aria-label="Database">
+          <header class="panel-head">
+            <h3>Database</h3>
+            <span class="path-chip">PostgreSQL</span>
+          </header>
+          <div class="panel-body">
+            <dl class="ledger" id="databaseMeta"></dl>
+          </div>
+        </aside>
       </div>
     </section>
   </main>
@@ -2187,7 +2664,7 @@ function html(csrfToken = "") {
           if (action === "import") {
             const file = backupFile.files[0];
             if (!file || file.size > 2097152) throw new Error("Select a configuration backup under 2 MiB.");
-            if (!confirm("Replace this server's matching configuration files using this backup?")) return;
+            if (!await confirmAction("Replace this server's matching configuration files using this backup?", "Import backup")) return;
             payload.archive = JSON.parse(await file.text());
           }
           const response = await managerFetch(apiPath("/api/config/" + action), {
@@ -2219,7 +2696,11 @@ function html(csrfToken = "") {
       "app-dependencies": "API + Web dependencies",
       api: "Upload API",
       cms: "Directus CMS",
+      repo: "Git repository",
       manager: "Service Manager"
+    });
+    const IMPACT_LABELS = Object.freeze({
+      manager: "Manager restart", api: "API", web: "Web", dependencies: "Dependencies", cms: "CMS", deployment: "Deployment files"
     });
     const ERROR_PATTERN = /error|fail|exception|fatal|unhandled|refused|traceback|panic|cannot find/i;
     const WARN_PATTERN = /warn|deprecat|retry|slow|pending/i;
@@ -2246,8 +2727,15 @@ function html(csrfToken = "") {
     const managerApp = document.getElementById("managerApp");
     const tally = document.getElementById("tally");
     const cards = document.getElementById("cards");
-    const managerMeta = document.getElementById("managerMeta");
     const databaseMeta = document.getElementById("databaseMeta");
+    const repoNoticeLine = document.getElementById("repoNotice");
+    const repoChip = document.getElementById("repoChip");
+    const repoMeta = document.getElementById("repoMeta");
+    const repoLocation = document.getElementById("repoLocation");
+    const repoIncoming = document.getElementById("repoIncoming");
+    const managerBadge = document.getElementById("managerBadge");
+    const managerIssue = document.getElementById("managerIssue");
+    const managerFacts = document.getElementById("managerFacts");
     const outputMonitor = document.getElementById("outputMonitor");
     const syncState = document.getElementById("syncState");
     const syncText = document.getElementById("syncText");
@@ -2297,6 +2785,12 @@ function html(csrfToken = "") {
     let lastLogSignature = null;
     let lastLogError = null;
     let lastLogUpdatedAt = null;
+    let repo = null;
+    let repoError = "";
+    let repoLoading = null;
+    let lastOperationKey = "";
+    let lastStatusLatencyMs = null;
+    let managerRestartPending = null;
 
     function esc(value) {
       return String(value ?? "N/A")
@@ -2319,7 +2813,7 @@ function html(csrfToken = "") {
     }
 
     function syncActionControls() {
-      document.querySelectorAll("[data-action], [data-stack], [data-web-mode], #tokenForm button, #tokenForm input").forEach(control => {
+      document.querySelectorAll("[data-action], [data-stack], [data-web-mode], [data-repo], [data-manager], #tokenForm button, #tokenForm input").forEach(control => {
         let reason = busy ? "A service operation is running." : !statusAvailable ? "Refresh service status before running a command." : "";
         const service = state?.services?.find(item => item.id === control.dataset.id);
         if (!reason && service) {
@@ -2330,18 +2824,22 @@ function html(csrfToken = "") {
         if (!reason && control.dataset.webMode && control.dataset.webMode === state?.services?.find(item => item.id === "web")?.mode) reason = "This mode is already selected.";
         if (!reason && control.dataset.stack === "start-all" && state?.services?.every(item => item.running)) reason = "All services are running. Use Restart for unhealthy services.";
         if (!reason && ["stop-all", "restart-all"].includes(control.dataset.stack) && state?.services?.every(item => !item.running)) reason = "The stack is stopped. Use Start all.";
+        if (!reason && control.dataset.repo) reason = repoBlockReason(control.dataset.repo);
+        if (!reason && control.dataset.manager) reason = managerBlockReason();
         control.disabled = Boolean(reason);
-        if (control.matches("[data-action], [data-stack], [data-web-mode]")) control.title = reason;
+        if (control.matches("[data-action], [data-stack], [data-web-mode], [data-repo], [data-manager]")) control.title = reason;
       });
     }
 
     function renderCurrentTasks(operation) {
       // Use accepted journal records for all four services, including CLI commands
       // and reloads. Completed/interrupted records stay in the detail panel only.
-      const names = { postgres: "PostgreSQL", cms: "CMS", api: "API", web: "web", "app-dependencies": "API 与 Web 依赖" };
+      const names = { postgres: "PostgreSQL", cms: "CMS", api: "API", web: "web", "app-dependencies": "API 与 Web 依赖", repo: "Git 仓库" };
       const actions = { start: "启动", stop: "停止", restart: "重启", "rebuild-restart": "构建并重启" };
-      const labels = { "start-all": "启动全部服务", "stop-all": "停止全部服务", "restart-all": "重启全部服务", "refresh-app": "更新 API 和 web", "upload-tokens": "保存令牌并重启 API" };
-      const phases = { install: "安装依赖", start: "启动并检查健康状态", stop: "停止并等待退出", build: "构建生产版本", "recovery-stop": "停止服务以恢复", "recovery-build": "重新构建原模式", "recovery-start": "恢复原模式" };
+      const labels = { "start-all": "启动全部服务", "stop-all": "停止全部服务", "restart-all": "重启全部服务", "refresh-app": "更新 API 和 web", "upload-tokens": "保存令牌并重启 API",
+        "repo:fetch": "检查仓库更新", "repo:pull": "拉取仓库更新", "pull-update": "拉取仓库并更新 API 和 web" };
+      const phases = { install: "安装依赖", start: "启动并检查健康状态", stop: "停止并等待退出", build: "构建生产版本", "recovery-stop": "停止服务以恢复", "recovery-build": "重新构建原模式", "recovery-start": "恢复原模式",
+        fetch: "获取并检查远程提交", pull: "快进到目标提交" };
       let markup = '<p>当前没有正在执行的任务</p>';
       if (operation?.state === "running") {
         const [service, action] = operation.label.split(":");
@@ -2373,9 +2871,11 @@ function html(csrfToken = "") {
         finishedOperations.add(operation.id);
         if (finishedOperations.size > 24) finishedOperations.delete(finishedOperations.values().next().value);
       }
-      const names = { postgres: "PostgreSQL", cms: "Directus CMS", api: "Upload API", web: "Frontend Web", "app-dependencies": "API + Web dependencies" };
-      const phases = { install: "Install dependencies", start: "Start and verify", stop: "Stop and wait", build: "Build production Web", "recovery-stop": "Stop for recovery", "recovery-build": "Rebuild previous mode", "recovery-start": "Restore previous mode" };
-      const labels = { "start-all": "Start all services", "stop-all": "Stop all services", "restart-all": "Restart all services", "refresh-app": "Update API + Web", "upload-tokens": "Save tokens and restart API" };
+      const names = { postgres: "PostgreSQL", cms: "Directus CMS", api: "Upload API", web: "Frontend Web", "app-dependencies": "API + Web dependencies", repo: "Git repository" };
+      const phases = { install: "Install dependencies", start: "Start and verify", stop: "Stop and wait", build: "Build production Web", "recovery-stop": "Stop for recovery", "recovery-build": "Rebuild previous mode", "recovery-start": "Restore previous mode",
+        fetch: "Fetch and check", pull: "Fast-forward" };
+      const labels = { "start-all": "Start all services", "stop-all": "Stop all services", "restart-all": "Restart all services", "refresh-app": "Update API + Web", "upload-tokens": "Save tokens and restart API",
+        "repo:fetch": "Check for updates", "repo:pull": "Pull repository updates", "pull-update": "Pull + Update API + Web" };
       const parts = operation.label.split(":");
       const label = labels[operation.label] || (parts[0] === "web-mode" ? "Switch Web to " + parts[1] : (names[parts[0]] || parts[0]) + (parts[1] ? " · " + parts[1] : ""));
       const panel = document.getElementById("operationPanel");
@@ -2388,6 +2888,8 @@ function html(csrfToken = "") {
         document.getElementById("operationSummary").textContent = operation.state === "running"
           ? "In progress · " + (phase ? names[phase.serviceId] + " / " + (phases[phase.phase] || phase.phase) : "Preparing") + ". You can leave this page; the operation continues."
           : (operation.state === "succeeded" ? "Completed · " : "Needs attention · ") + operation.message;
+        // Finished work folds to its summary; running or failed work keeps its steps open.
+        document.getElementById("operationDetails").open = operation.state !== "succeeded";
         document.getElementById("operationSteps").innerHTML = operation.steps.map(step =>
           '<li data-state="' + esc(step.state) + '"><strong>' + esc((names[step.serviceId] || step.serviceId) + " · " + (phases[step.phase] || step.phase)) + '</strong> — '
           + esc(step.state === "running" ? "In progress" : step.state === "succeeded" ? "Completed" : "Failed")
@@ -2441,13 +2943,13 @@ function html(csrfToken = "") {
       }
     }
 
-    async function submitOperation(url, label) {
+    async function submitOperation(url, label, body = {}) {
       if (busy || !statusAvailable) return;
       submittingOperation = true;
       setBusy(true);
       setActionReadout(label + " · requesting operation...");
       try {
-        const response = await managerFetch(apiPath(url), { method: "POST", headers: MUTATION_HEADERS, signal: AbortSignal.timeout(15000) });
+        const response = await managerFetch(apiPath(url), { method: "POST", headers: MUTATION_HEADERS, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || "Command was not accepted.");
         // An older POST acknowledgement must not replace a newer operation
@@ -2609,10 +3111,6 @@ function html(csrfToken = "") {
         + '</article>';
     }
 
-    function footField(label, value) {
-      return '<div><dt>' + esc(label) + '</dt><dd>' + esc(value) + '</dd></div>';
-    }
-
     function ledgerRow(label, value, tone) {
       return '<dt>' + esc(label) + '</dt><dd' + (tone ? ' class="' + tone + '"' : '') + '>' + esc(value) + '</dd>';
     }
@@ -2714,6 +3212,249 @@ function html(csrfToken = "") {
       renderOverview(data);
     }
 
+    function plural(count, word) {
+      return count + " " + word + (count === 1 ? "" : "s");
+    }
+
+    function formatTime(value) {
+      return value ? new Date(value).toLocaleString() : "Never";
+    }
+
+    function formatDuration(seconds) {
+      const total = Math.max(0, Math.round(Number(seconds) || 0));
+      const days = Math.floor(total / 86400), hours = Math.floor(total % 86400 / 3600), minutes = Math.floor(total % 3600 / 60);
+      return days ? days + "d " + hours + "h" : hours ? hours + "h " + minutes + "m" : minutes ? minutes + "m " + total % 60 + "s" : total + "s";
+    }
+
+    function commitLabel(commit) {
+      return commit ? commit.short + " · " + commit.subject : "N/A";
+    }
+
+    async function loadRepo() {
+      if (repoLoading) return repoLoading;
+      repoLoading = (async () => {
+        try {
+          const response = await managerFetch(apiPath("/api/repo"), { cache: "no-store", signal: AbortSignal.timeout(30000) });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Git status request failed.");
+          repo = data.repo;
+          repoError = "";
+        } catch (error) {
+          repoError = error.message;
+        } finally {
+          repoLoading = null;
+          renderRepo();
+          syncActionControls();
+        }
+      })();
+      return repoLoading;
+    }
+
+    function repoNotice() {
+      if (repoError) return ["bad", "Git status unavailable: " + repoError];
+      if (!repo) return ["", "Reading Git status..."];
+      if (!repo.available) return ["bad", repo.error];
+      if (!repo.branch) return ["warn", "HEAD is detached. Check out the deployment branch in a terminal to enable updates."];
+      if (!repo.upstream) return ["warn", repo.branch + " has no upstream branch. Run git branch --set-upstream-to=origin/" + repo.branch + " once in a terminal."];
+      if (repo.inProgress) return ["warn", "A merge, rebase, cherry-pick or revert is in progress. Finish or abort it in a terminal."];
+      if (repo.ahead && repo.behind) return ["bad", repo.branch + " has diverged: " + plural(repo.ahead, "local commit") + " and " + plural(repo.behind, "upstream commit") + ". Manager only fast-forwards; reconcile the branch in a terminal."];
+      if (repo.conflicts.length) return ["bad", "Local changes to " + repo.conflicts.join(", ") + " conflict with the update. Commit, stash or discard them in a terminal; Manager never discards local work."];
+      if (repo.behind) return ["warn", plural(repo.behind, "new commit") + " on " + repo.upstream + "." + (repo.localChanges ? " " + plural(repo.localChanges, "local modification") + " will be kept." : "")];
+      if (repo.ahead) return ["ok", repo.branch + " is " + plural(repo.ahead, "commit") + " ahead of " + repo.upstream + "; there is nothing to pull."];
+      return ["ok", repo.branch + " matches " + repo.upstream + " as of the last check (" + formatTime(repo.lastFetchedAt) + ")."];
+    }
+
+    function renderRepo() {
+      const [tone, text] = repoNotice();
+      repoNoticeLine.dataset.tone = tone;
+      if (repoNoticeLine.textContent !== text) repoNoticeLine.textContent = text;
+      const pull = document.querySelector('[data-repo="pull"]');
+      pull.textContent = repo?.behind ? "Pull " + plural(repo.behind, "commit") : "Pull";
+      const deploy = document.getElementById("repoDeployCommand");
+      if (deploy) deploy.textContent = repo?.deployCommand || "";
+      if (!repo?.available) {
+        repoChip.textContent = "Git";
+        setMarkup(repoMeta, "");
+        setMarkup(repoLocation, "");
+        setMarkup(repoIncoming, "");
+        return;
+      }
+      repoChip.textContent = (repo.branch || "detached HEAD") + (repo.upstream ? " → " + repo.upstream : "");
+      const rows = [
+        ledgerRow("Current", commitLabel(repo.head)),
+        ledgerRow("Upstream", commitLabel(repo.upstreamHead)),
+        ledgerRow("Last checked", formatTime(repo.lastFetchedAt))
+      ];
+      if (repo.localChanges) {
+        rows.push(ledgerRow("Local changes", plural(repo.localChanges, "file") + ": " + repo.localFiles.join(", ")
+          + (repo.localChanges > repo.localFiles.length ? ", …" : ""), repo.conflicts.length ? "bad" : ""));
+      }
+      if (repo.mode === "systemd") {
+        const release = repo.release;
+        const matches = release?.revision && repo.head.hash.startsWith(release.revision);
+        rows.push(ledgerRow("Deployed release", release
+          ? (release.revision || release.path) + (release.revision ? (matches ? " · matches this checkout" : " · differs from this checkout") : "")
+          : "Not found", release && release.revision && !matches ? "bad" : ""));
+      }
+      setMarkup(repoMeta, rows.join(""));
+      setMarkup(repoLocation, ledgerRow("Checkout", repo.root) + ledgerRow("Remote", repo.remote || "N/A"));
+      // The rail shows the newest three; the rest stay one disclosure away.
+      const impact = Object.keys(IMPACT_LABELS).filter(key => repo.impact?.[key]);
+      const more = repo.incoming.slice(3);
+      const unlisted = repo.behind - repo.incoming.length;
+      setMarkup(repoIncoming, repo.incoming.length
+        ? '<ul class="commits" aria-label="Incoming commits">' + repo.incoming.slice(0, 3).map(commitItem).join("") + '</ul>'
+          + (more.length ? '<details class="command-reference more-commits"><summary>' + esc("Show " + plural(more.length, "more commit")) + '</summary>'
+            + '<ul class="commits">' + more.map(commitItem).join("") + '</ul></details>' : "")
+          + (unlisted > 0 ? '<p class="service-help">' + esc(plural(unlisted, "older commit") + " not listed") + '</p>' : "")
+          + '<p class="impact">' + (impact.length ? "Affects " + impact.map(key => '<b>' + esc(IMPACT_LABELS[key]) + '</b>').join("") : "No service code changes") + '</p>'
+        : "");
+    }
+
+    const renderedMarkup = new Map();
+    function setMarkup(element, markup) {
+      // Rewriting unchanged markup on every poll would close open disclosures.
+      if (renderedMarkup.get(element) === markup) return;
+      renderedMarkup.set(element, markup);
+      element.innerHTML = markup;
+    }
+
+    function commitItem(commit) {
+      return '<li><code>' + esc(commit.short) + '</code><span>' + esc(commit.subject) + '</span><small>'
+        + esc(commit.author + " · " + formatTime(commit.date)) + '</small></li>';
+    }
+
+    function repoBlockReason(action) {
+      if (!repo) return repoError || "Reading Git status.";
+      if (!repo.available) return repo.error;
+      if (!repo.branch || !repo.upstream) return "Requires a checked-out branch with an upstream.";
+      if (action === "fetch") return "";
+      if (repo.inProgress) return "Finish the merge or rebase in a terminal first.";
+      if (repo.ahead && repo.behind) return "The branch has diverged; Manager only fast-forwards.";
+      if (repo.conflicts.length) return "Local changes conflict with the incoming commits.";
+      if (!repo.behind) return "Nothing to pull. Use Check for updates first.";
+      return "";
+    }
+
+    async function runRepoAction(action) {
+      if (busy || !statusAvailable || !repo || repoBlockReason(action)) return;
+      if (action === "fetch") {
+        await submitOperation("/api/repo/fetch", "Check for updates");
+        return;
+      }
+      const target = repo.upstreamHead;
+      const label = action === "pull-update" ? "Pull + Update API + Web" : "Pull";
+      let message = "Fast-forward " + repo.branch + " from " + repo.head.short + " to " + target.short + " (" + plural(repo.behind, "commit") + " from " + repo.upstream + ")?";
+      if (action === "pull-update") {
+        const production = state?.services?.find(item => item.id === "web")?.mode === "production";
+        message += " The update is verified first. Then Web and API stop, the checkout updates, API and Web dependencies install"
+          + (production ? ", Production Web rebuilds" : "") + " and both start. A failure after stopping leaves API and Web stopped.";
+      } else if (repo.mode === "systemd") {
+        message += " Running services stay on the deployed release; deploy the new revision with the release script afterwards.";
+      } else {
+        message += " API and Web keep running the code they loaded, and Development Web may reload changed files. Pull + Update API + Web applies API and Web changes in one step.";
+      }
+      if (repo.localChanges) message += " " + plural(repo.localChanges, "local modification") + " will be kept.";
+      if (repo.impact?.manager) message += " Manager files change: restart Manager afterwards.";
+      if (!await confirmAction(message, label)) return;
+      await submitOperation(action === "pull-update" ? "/api/stack/pull-update" : "/api/repo/pull", label, { target: target.hash });
+    }
+
+    function managerState(manager) {
+      if (managerRestartPending || manager.restart?.state === "pending") {
+        return { cls: "warn", label: "Restarting", tone: "warn", issue: "Restart requested. The new Manager takes over in a few seconds." };
+      }
+      if (manager.restart?.state === "failed") return { cls: "off", label: "Restart failed", tone: "bad", issue: manager.restart.message };
+      if (manager.changedCode?.length) {
+        return { cls: "warn", label: "Restart needed", tone: "warn",
+          issue: "The Manager code on disk differs from the running copy (" + manager.changedCode.join(", ") + "). Restart Manager to load it." };
+      }
+      return { cls: "ok", label: "Running", tone: "", issue: manager.supervisor && !manager.supervisor.canRestart ? manager.supervisor.reason : "" };
+    }
+
+    function supervisorLabel(supervisor) {
+      if (!supervisor) return "N/A";
+      if (supervisor.kind === "systemd") {
+        return supervisor.unit + " · " + (supervisor.unitState || "unknown") + (supervisor.restarts ? " · " + plural(supervisor.restarts, "automatic restart") : "");
+      }
+      return supervisor.kind === "windows-process" ? "manager-service.ps1" : "Foreground process";
+    }
+
+    function renderManager(manager) {
+      const status = managerState(manager);
+      managerBadge.className = "badge " + status.cls;
+      managerBadge.lastElementChild.textContent = status.label;
+      managerIssue.hidden = !status.issue;
+      managerIssue.dataset.tone = status.tone;
+      if (managerIssue.textContent !== (status.issue || "")) managerIssue.textContent = status.issue || "";
+      managerFacts.innerHTML = [
+        fact("Address", manager.host + ":" + manager.port),
+        fact("PID", manager.pid),
+        fact("Uptime", formatDuration(manager.uptime)),
+        fact("Memory", manager.rss ? (manager.rss / 1048576).toFixed(1) + " MiB" : "N/A"),
+        fact("Event loop p99", manager.eventLoop ? manager.eventLoop.p99Ms + " ms" : "N/A"),
+        fact("Status response", lastStatusLatencyMs != null ? lastStatusLatencyMs + " ms" : "N/A"),
+        fact("Node", manager.node),
+        fact("Supervisor", supervisorLabel(manager.supervisor))
+      ].join("");
+    }
+
+    function managerBlockReason() {
+      const manager = state?.manager;
+      if (!manager) return "Refresh status before restarting Manager.";
+      if (managerRestartPending || manager.restart?.state === "pending") return "Manager is restarting.";
+      if (manager.activeOperation) return "Wait for the running operation to finish.";
+      if (!manager.supervisor?.canRestart) return manager.supervisor?.reason || "This Manager process cannot restart itself.";
+      return "";
+    }
+
+    async function restartManager() {
+      if (busy || !statusAvailable || managerBlockReason()) return;
+      if (!await confirmAction("Restart Service Manager? PostgreSQL, CMS, API and Web keep running. Manager first checks that its code on disk loads. This page reconnects when the new Manager is ready; sign in again because sessions are kept in memory.", "Restart Manager")) return;
+      setBusy(true);
+      setActionReadout("Restart Manager · checking the new code and requesting restart...");
+      try {
+        const response = await managerFetch(apiPath("/api/manager/restart"), { method: "POST", headers: MUTATION_HEADERS, body: "{}", signal: AbortSignal.timeout(45000) });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || "Restart was not accepted.");
+        managerRestartPending = { pid: data.restart.pid, startedAt: Date.now() };
+        clearTimeout(logPollTimer);
+        if (state) renderManager(state.manager);
+        setActionReadout("Manager is restarting. This page reconnects automatically; sign in again when the login page appears.");
+        watchManagerRestart(managerRestartPending);
+      } catch (error) {
+        setBusy(false);
+        setActionReadout("Manager was not restarted: " + error.message, "error");
+        await refresh(true);
+      }
+    }
+
+    async function watchManagerRestart(pending) {
+      while (managerRestartPending === pending) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        let response;
+        try {
+          response = await fetch(apiPath("/api/status"), { cache: "no-store", signal: AbortSignal.timeout(4000) });
+        } catch {
+          // The old process has exited; wait for its successor to listen.
+          setSyncState("offline", "Manager restarting...");
+        }
+        // Sessions are in memory: the successor answers with 401 once it serves.
+        if (response?.status === 401) { location.replace(API_BASE + "/login?restarted=1"); return; }
+        const data = await response?.json().catch(() => null);
+        if (data?.manager?.pid && data.manager.pid !== pending.pid) { location.reload(); return; }
+        const failed = data?.manager?.restart?.state === "failed";
+        if (failed || Date.now() - pending.startedAt > 90000) {
+          managerRestartPending = null;
+          setBusy(false);
+          setActionReadout(failed ? data.manager.restart.message : "Manager restart was not confirmed after 90 s. Check the Manager log before retrying.", "error");
+          if (data?.manager) render(data);
+          scheduleLogPoll(logPollIntervalMs);
+          return;
+        }
+      }
+    }
+
     let lastSyncAt = null;
     function setSyncState(stateName, text) {
       syncState.dataset.state = stateName;
@@ -2742,15 +3483,16 @@ function html(csrfToken = "") {
         if (focusKey) cards.querySelector(focusKey)?.focus({ preventScroll: true });
       }
       renderOperation(data.operation);
+      // A finished pull or fetch changes the checkout; reread it once per transition.
+      const operationKey = data.operation ? data.operation.id + ":" + data.operation.state : "";
+      if (operationKey !== lastOperationKey) {
+        lastOperationKey = operationKey;
+        loadRepo();
+      }
       syncActionControls();
       updateLogControls();
       renderUploadTokens(data.uploadTokens);
-      managerMeta.innerHTML = [
-        footField("Manager", data.manager.host + ":" + data.manager.port),
-        footField("PID", data.manager.pid),
-        footField("Uptime", data.manager.uptime + "s"),
-        footField("Node", data.manager.node)
-      ].join("");
+      renderManager(data.manager);
       databaseMeta.innerHTML = [
         ledgerRow("Status", data.database.healthy ? "Healthy" : "Unavailable", data.database.healthy ? "good" : "bad"),
         ledgerRow("Path", data.database.path),
@@ -2764,6 +3506,8 @@ function html(csrfToken = "") {
 
     function refresh(silent = false) {
       if (refreshPromise) return refreshPromise;
+      // watchManagerRestart owns status requests until the successor answers.
+      if (managerRestartPending) return Promise.resolve();
       if (!silent) {
         statusRefreshing = true;
         updateLogControls();
@@ -2771,9 +3515,11 @@ function html(csrfToken = "") {
       const generation = statusGeneration;
       refreshPromise = (async () => {
         try {
+          const started = performance.now();
           const response = await managerFetch(apiPath("/api/status"), { cache: "no-store", signal: AbortSignal.timeout(15000) });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || "Status request failed");
+          lastStatusLatencyMs = Math.round(performance.now() - started);
           if (generation === statusGeneration) render(data);
         } catch (error) {
           if (generation === statusGeneration) {
@@ -3119,6 +3865,7 @@ function html(csrfToken = "") {
       if (
         !activeLogService ||
         !logPollingEnabled ||
+        managerRestartPending ||
         document.visibilityState !== "visible"
       ) return;
       logPollTimer = setTimeout(async () => {
@@ -3183,6 +3930,17 @@ function html(csrfToken = "") {
         return;
       }
 
+      const repoButton = event.target.closest("[data-repo]");
+      if (repoButton) {
+        runRepoAction(repoButton.dataset.repo);
+        return;
+      }
+
+      if (event.target.closest("[data-manager]")) {
+        restartManager();
+        return;
+      }
+
       const jumpButton = event.target.closest("[data-jump]");
       if (jumpButton) {
         jumpToService(jumpButton.dataset.jump);
@@ -3236,6 +3994,7 @@ function html(csrfToken = "") {
       operationPollFailures = 0;
       if (trackedOperationId) pollOperation();
       refresh();
+      loadRepo();
     });
     document.getElementById("logoutButton").addEventListener("click", async (event) => {
       const button = event.currentTarget;
@@ -3250,6 +4009,12 @@ function html(csrfToken = "") {
       }
     });
     log.addEventListener("scroll", updateFollowPill, { passive: true });
+    // In the two-column console the rest of the rail sits under the task card,
+    // so its sticky offset follows that card's height.
+    const activityCard = document.getElementById("activity");
+    new ResizeObserver(() => {
+      activityCard.parentElement.style.setProperty("--activity-height", activityCard.offsetHeight + "px");
+    }).observe(activityCard);
     // Do not advertise usable mutation controls before the first status response.
     syncActionControls();
     syncArticleTokenInput();
@@ -3259,6 +4024,7 @@ function html(csrfToken = "") {
       history.replaceState(null, "", API_BASE || "/");
     }
     refresh();
+    loadRepo();
     selectLogSource(activeLogService).catch((error) => {
       lastLogError = "refresh failed: " + error.message;
       updateLogControls();
@@ -3268,6 +4034,10 @@ function html(csrfToken = "") {
         refresh(true);
       }
     }, AUTO_REFRESH_INTERVAL_MS);
+    // Git status spawns several processes; it does not need the 2 s service cadence.
+    setInterval(() => {
+      if (document.visibilityState === "visible" && !managerRestartPending) loadRepo();
+    }, 30000);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
         refresh(true);

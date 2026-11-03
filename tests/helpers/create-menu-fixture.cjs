@@ -4,14 +4,16 @@ const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHash } = require("node:crypto");
+const { startS3Fixture } = require("./s3-fixture.cjs");
+const { createOssObjects } = require("../../apps/api/src/object-storage.cjs");
 const busboy = require("busboy");
 const sharp = require("sharp");
 const root = path.resolve(__dirname, "../..");
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Real Next rewrites/API with a disposable CMS, ports and media tree. */
-async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 18062, webPort = 13002, production = false } = {}) {
+async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 18062, webPort = 13002, production = false, oss = false } = {}) {
   const output = path.join(root, "test-results", name);
   const cmsUrl = `http://127.0.0.1:${cmsPort}`;
   const apiUrl = `http://127.0.0.1:${apiPort}`;
@@ -28,13 +30,14 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
   const failedReads = new Map();
   const collections = {
     albums: [{ id: 1, title: "验收相簿", slug: "fixture-album", description: "隔离测试数据", published: true, photos: [] }],
-    album_photos: [], video_projects: [], video_masters: [], external_projects: [], files: [], film_scan_jobs: [], film_scan_sources: [], film_scan_frames: [],
+    album_photos: [], album_photo_renditions: [], video_projects: [], video_masters: [], external_projects: [], files: [], film_scan_jobs: [], film_scan_sources: [], film_scan_frames: [],
     posts: [{ id: 1, title: "验收文章", slug: "fixture-post", published: true,
       content: "## 第一节\n\n" + "阅读段落。\n\n".repeat(80) + "## 第二节\n\n结束。" }],
   };
   const children = [];
   const fileBytes = new Map();
   const servers = [];
+  let cloud, cloudWriter;
   const json = (res, data, status = 200) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(data)); };
   const cms = http.createServer(async (req, res) => {
     try {
@@ -48,7 +51,14 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
         await new Promise((resolve, reject) => { parser.on("close", resolve); parser.on("error", reject); req.pipe(parser); });
         const dimensions = await sharp(bytes).metadata();
         const file = { ...fields, id: randomUUID(), filename_download: info.filename, type: info.mimeType,
-          width: dimensions.width, height: dimensions.height };
+          width: dimensions.width, height: dimensions.height, filesize: bytes.length, storage: fields.storage || "local" };
+        file.filename_disk = `${file.id}${path.extname(info.filename)}`;
+        if (cloud) {
+          const prefix = { oss_article: "article", oss_album: "album", oss_video: "videos" }[file.storage];
+          if (!prefix) throw new Error("Unified uploads must select a category storage location.");
+          await cloudWriter.write({ key: `blog_all/${prefix}/assets/${file.filename_disk}`, bytes,
+            sha256: createHash("sha256").update(bytes).digest("hex"), contentType: file.type });
+        }
         collections.files.push(file); fileBytes.set(file.id, bytes); return json(res, { data: file });
       }
       if (url.pathname.startsWith("/assets/")) {
@@ -148,7 +158,12 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
   }
   function start(name, args, env) {
     const log = fs.openSync(path.join(output, `${name}.log`), "a");
-    const child = spawn(process.execPath, args, { cwd: root, env: { ...process.env, ...env }, stdio: ["ignore", log, log] });
+    const childEnv = { ...process.env, ...env };
+    if (name === "api" && oss) {
+      // Exercise the CMS file as the only storage source, without inheriting a real bucket.
+      for (const key of Object.keys(childEnv)) if (key === "CONTENT_STORAGE" || key.startsWith("STORAGE_") || key.startsWith("OSS_")) delete childEnv[key];
+    }
+    const child = spawn(process.execPath, args, { cwd: root, env: childEnv, stdio: ["ignore", log, log] });
     fs.closeSync(log); children.push(child); return child;
   }
   async function ready(url) {
@@ -167,13 +182,16 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
   async function close() {
     for (const child of children.toReversed()) await stop(child);
     for (const server of servers) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    cloudWriter?.close();
+    await cloud?.close();
     await fsp.rm(temp, { recursive: true, force: true });
   }
   let api;
   const apiEnv = { HOST: "127.0.0.1", PORT: String(apiPort), DIRECTUS_URL: cmsUrl,
     DIRECTUS_EMAIL: "fixture@example.invalid", DIRECTUS_PASSWORD: "fixture-only", UPLOAD_API_TOKEN: token,
     ARTICLE_API_TOKEN: "", TRUST_PROXY: "true", MEDIA_ROOT: path.join(temp, "media"),
-    FILM_SCAN_ROOT: path.join(temp, "film"), VIDEO_UPLOAD_ROOT: path.join(temp, "video"), RESOURCE_PROFILE: "low-2gb" };
+    FILM_SCAN_ROOT: path.join(temp, "film"), VIDEO_UPLOAD_ROOT: path.join(temp, "video"), RESOURCE_PROFILE: "low-2gb",
+    ...(oss ? { CMS_ENV_FILE: path.join(temp, "cms.env") } : { STORAGE_LOCATIONS: "local", VIDEO_STORAGE: "local" }) };
   const envFile = path.join(temp, "album-test.env");
   await fsp.writeFile(envFile, Object.entries({ ...apiEnv, API_URL: apiUrl, WEB_URL: webUrl })
     .map(([key, value]) => `${key}=${value}`).join("\n"), { mode: 0o600 });
@@ -184,6 +202,14 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
     await ready(`${apiUrl}/health`);
   }
   try {
+    if (oss) {
+      cloud = await startS3Fixture();
+      const storage = { STORAGE_LOCATIONS: "oss,local", STORAGE_OSS_DRIVER: "s3", STORAGE_OSS_BUCKET: "fixture-bucket", STORAGE_OSS_REGION: "cn-hangzhou", STORAGE_OSS_ENDPOINT: cloud.endpoint,
+        STORAGE_OSS_ROOT: "blog_all", STORAGE_OSS_KEY: "fixture-key", STORAGE_OSS_SECRET: "fixture-secret" };
+      await fsp.writeFile(apiEnv.CMS_ENV_FILE, Object.entries(storage).map(([key, value]) => `${key}=${value}`).join("\n"), { mode: 0o600 });
+      cloudWriter = createOssObjects({ bucket: "fixture-bucket", region: "cn-hangzhou", endpoint: cloud.endpoint,
+        key: "fixture-key", secret: "fixture-secret" });
+    }
     await listen(cms, cmsPort);
     await restartApi();
     const webEnv = {
@@ -206,7 +232,7 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
     await ready(`${webUrl}/write`);
     await ready(`${webUrl}/albums/fixture-album`);
     for (const route of ["/", "/studio", "/project", "/posts", "/videos"]) await ready(`${webUrl}${route}`);
-    return { output, temp, token, collections, unavailableCollections, unmigratedCollections, failedReads, close, restartApi, envFile, url: webUrl, apiUrl, cmsUrl };
+    return { output, temp, token, collections, cloud, unavailableCollections, unmigratedCollections, failedReads, close, restartApi, envFile, url: webUrl, apiUrl, cmsUrl };
   } catch (error) { await close(); throw error; }
 }
 

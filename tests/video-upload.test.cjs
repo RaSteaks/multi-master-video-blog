@@ -121,6 +121,103 @@ test("queued jobs survive restart; repeated completion does not repeat publishin
   assert.equal(f.store.status(id).result.project.id, 9);
 });
 
+test("completed OSS jobs release staged bytes and reservations while preserving restartable results", async t => {
+  const f = await fixture(t, { canProcess: () => true, quotaBytes: 10, maxSessions: 1,
+    processUpload: async () => ({ status: "ok", storage: "oss", project: { id: 7 } }) });
+  const id = crypto.randomUUID();
+  await f.store.create(id, manifest()); await receive(f.store, id);
+  await f.store.complete(id); await f.store.drain();
+  assert.equal(f.store.status(id).state, "completed");
+  await assert.rejects(fs.access(path.join(f.config.root, id, "0.bin")), { code: "ENOENT" });
+  assert.equal(f.store.receipts(id, 0).chunks.length, 3);
+  await f.restart();
+  assert.equal((await f.store.complete(id)).result.project.id, 7);
+  assert.equal((await f.store.create(crypto.randomUUID(), manifest())).state, "receiving");
+});
+
+test("restart after OSS publication releases the receive spool without replaying processing", async t => {
+  let calls = 0;
+  const f = await fixture(t, { processUpload: async () => { calls++; } });
+  const id = crypto.randomUUID();
+  await f.store.create(id, manifest()); await receive(f.store, id);
+  const filename = path.join(f.config.root, id, "session.json");
+  const session = JSON.parse(await fs.readFile(filename, "utf8"));
+  await fs.writeFile(filename, JSON.stringify({ ...session, state: "processing", phase: "stored",
+    result: { status: "ok", storage: "oss", project: { id: 9 } } }));
+  await f.restart();
+  assert.equal(f.store.status(id).state, "completed");
+  assert.equal(f.store.status(id).result.project.id, 9);
+  assert.equal(f.store.status(id).result.processingInterrupted, undefined);
+  await assert.rejects(fs.access(path.join(f.config.root, id, "0.bin")), { code: "ENOENT" });
+  assert.equal(calls, 0);
+});
+
+test("partial OSS success retains the receive spool for a failed derivative", async t => {
+  const f = await fixture(t, { canProcess: () => true, processUpload: async () => ({
+    status: "ok", storage: "oss", sourcesRetained: true, companionSdr: { status: "failed" }
+  }) });
+  const id = crypto.randomUUID();
+  await f.store.create(id, manifest()); await receive(f.store, id);
+  await f.store.complete(id); await f.store.drain(); await f.restart();
+  assert.equal(f.store.status(id).state, "completed");
+  assert.deepEqual(await fs.readFile(path.join(f.config.root, id, "0.bin")), bytes);
+});
+
+test("a stored session retries its private cleanup receipt after restart without republishing", async t => {
+  let available = false, calls = 0;
+  const receipt = [[{ relative: "film/source/file.mp4", size: bytes.length, sha256: hash(bytes) }]];
+  const id = crypto.randomUUID();
+  const f = await fixture(t, {
+    processUpload: async () => { throw new Error("must not replay"); },
+    completeStorage: async (publications, sessionId) => {
+      calls++; assert.equal(sessionId, id); assert.deepEqual(publications, receipt);
+      if (!available) throw new Error("outbox offline");
+      return false;
+    }
+  });
+  await f.store.create(id, manifest()); await receive(f.store, id);
+  const filename = path.join(f.config.root, id, "session.json");
+  const session = JSON.parse(await fs.readFile(filename, "utf8"));
+  await fs.writeFile(filename, JSON.stringify({ ...session, state: "processing", phase: "stored",
+    cleanupPublications: receipt, result: { status: "ok", storage: "oss", localCleanupPending: true } }));
+  await f.restart();
+  assert.equal(f.store.status(id).state, "completed");
+  assert.deepEqual(JSON.parse(await fs.readFile(filename, "utf8")).cleanupPublications, receipt);
+  assert.deepEqual(await fs.readFile(path.join(f.config.root, id, "0.bin")), bytes);
+  available = true;
+  await f.restart();
+  assert.equal(calls, 2);
+  assert.equal(f.store.status(id).result.localCleanupPending, false);
+  assert.equal(JSON.parse(await fs.readFile(filename, "utf8")).cleanupPublications, undefined);
+  await assert.rejects(fs.access(path.join(f.config.root, id, "0.bin")), { code: "ENOENT" });
+});
+
+test("the worker persists the publication result and cleanup work in the same checkpoint", async t => {
+  let signalStored, finish;
+  const stored = new Promise(resolve => { signalStored = resolve; });
+  const hold = new Promise(resolve => { finish = resolve; });
+  const id = crypto.randomUUID();
+  const publications = [[{ relative: "film/source/original.mp4", size: bytes.length, sha256: hash(bytes) }]];
+  const result = { status: "ok", storage: "oss", localCleanupPending: true };
+  const f = await fixture(t, { canProcess: () => true,
+    processUpload: async (parsed, checkpoint) => {
+      await checkpoint("stored", result, publications);
+      signalStored(); await hold; return result;
+    },
+    completeStorage: async (receipt, sessionId) => {
+      assert.deepEqual(receipt, publications); assert.equal(sessionId, id); return false;
+    } });
+  await f.store.create(id, manifest()); await receive(f.store, id);
+  await f.store.complete(id); const running = f.store.drain();
+  try {
+    await stored;
+    const saved = JSON.parse(await fs.readFile(path.join(f.config.root, id, "session.json"), "utf8"));
+    assert.equal(saved.state, "completed"); assert.deepEqual(saved.result, result);
+    assert.deepEqual(saved.cleanupPublications, publications);
+  } finally { finish(); await running; }
+  assert.equal(f.store.status(id).result.localCleanupPending, false);
+});
+
 test("recovery distinguishes safe processing, uncertain publication and saved primary results", async t => {
   const f = await fixture(t);
   const ids = {};

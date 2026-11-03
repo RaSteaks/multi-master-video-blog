@@ -7,7 +7,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // This suite only launches headless WebKit with a fresh browser context.
 (async () => {
-  const fixture = await startFixture();
+  const fixture = await startFixture({ oss: process.env.VIDEO_TEST_OSS === "true" });
   let browser, page;
   const report = { browser: "headless WebKit", checks: [], consoleErrors: [] };
   const pass = message => { report.checks.push(message); console.log(message); };
@@ -73,8 +73,18 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     assert.equal(fixture.collections.video_projects.length, 1);
     assert.equal(fixture.collections.video_masters.length, 1);
     assert.equal(fixture.collections.video_masters[0].verification_status, "ready");
-    const original = await fs.readFile(path.join(fixture.temp, fixture.collections.video_masters[0].file_url.replace("/media/", "media/")));
+    const sourceUrl = fixture.collections.video_masters[0].file_url;
+    const original = fixture.cloud ? Buffer.from(await (await fetch(`http://127.0.0.1:18060${sourceUrl}`, {
+      headers: { Authorization: `Bearer ${fixture.token}` }
+    })).arrayBuffer()) : await fs.readFile(path.join(fixture.temp, sourceUrl.replace("/media/", "media/")));
     assert.deepEqual(original, await fs.readFile(fixture.video));
+    if (fixture.cloud) {
+      await assert.rejects(fs.access(path.join(fixture.temp, sourceUrl.replace("/media/", "media/"))), { code: "ENOENT" });
+      await assert.rejects(fs.access(path.join(fixture.temp, "private/video", id, "0.bin")), { code: "ENOENT" });
+      assert.deepEqual(fixture.cloud.errors, []);
+      assert.equal(fixture.cloud.calls.some(call => call.method === "DELETE" && !call.multipart), false);
+      pass("OSS publication frees the local source and receive spool; the original media URL streams identical bytes");
+    }
     await page.screenshot({ path: path.join(fixture.output, "success-mobile.png"), fullPage: true });
     pass("1 Mbps resume through real FFmpeg verification and a single CMS publication; source bytes unchanged");
 

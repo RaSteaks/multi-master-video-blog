@@ -230,13 +230,41 @@ Linux 和 Docker 的 `/media/` 统一经过 API 的规范路径、私有目录�
 
 本机旧 API 测试集合为 127/153 通过；余下失败包含缺失的 FFmpeg 测试二进制及旧 VM 测试夹具未注入新增运行上下文，不能据此宣称完整转码验收通过。此前的缺失视频格式模块已由远端更新补齐。Docker/Linux/Vulkan 实机验收仍未执行。
 
-### 阿里云 OSS 存储 Directus 文件
+### 统一的阿里云 OSS 内容存储
 
-在 systemd 部署中，编辑 `/etc/video-blog/cms.env`。Docker 部署编辑 Compose 使用的 `.env`。两个部署模板末尾都有 OSS 配置示例。将已有的 `STORAGE_LOCATIONS` 改为 `oss,local`，启用示例中的全部 `STORAGE_OSS_*` 项，填入仅对目标 bucket 有所需读写、分片和删除权限的 RAM 凭据。凭据文件权限设为 600。杭州只是示例，地域和内网 S3 兼容 endpoint 都要与 bucket 匹配，服务器须能访问该内网地址。[阿里云 endpoint 说明](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
+直接在现有 `/etc/video-blog/cms.env` 中统一配置存储，示例见
+`deployment/linux/cms.env.example`，无需新增环境文件。沿用已部署的 `STORAGE_LOCATIONS=oss,local`，复用一套 `STORAGE_OSS_BUCKET`、`STORAGE_OSS_REGION`、`STORAGE_OSS_ENDPOINT`、`STORAGE_OSS_ROOT`、`STORAGE_OSS_KEY`
+和 `STORAGE_OSS_SECRET`；`STORAGE_OSS_ROOT=blog_all` 下自动使用 `album/`、`article/`
+和 `videos/`。Docker 在 Compose 的 `.env` 中填写同名变量；本地开发使用
+`apps/cms/directus/.env`。内网 endpoint 必须与服务器可访问的 OSS 地域匹配。
 
-systemd 执行 `sudo systemctl restart video-blog-cms`。Docker 在原部署目录沿用原有 Compose 参数执行 `docker compose up -d cms`。从 Directus 文件库上传一张测试图，检查文件记录的 storage 为 oss、bucket 的 blog_all/ 前缀下出现对象，并从原资产链接打开图片。再打开一张切换前的图片，确认 local 仍可读。需要暂停新文件写入 OSS 时，把顺序改为 local,oss 并重启 CMS，以保留已有 OSS 文件的读取能力。
+首次部署或从本地存储切换到 OSS 时，需要修改服务器**实际加载的**
+`/etc/video-blog/cms.env`：把 `STORAGE_LOCATIONS` 设为 `oss,local`，填写
+`STORAGE_OSS_*` 的 bucket、地域、endpoint、根目录与 RAM 凭据。只修改仓库里的
+`.env` 或 `.env.example` 不会覆盖 systemd 已注入的同名生产配置。若这组参数在
+`/etc/video-blog/cms.env` 中已经正确，则无需重复改值。
 
-该配置适用于 Directus 文件库。Blog 的专用视频上传、转码与 HLS 管线使用独立的本地媒体目录。CMS 上传仍经服务器中转，2 GB 主机可沿用 low-2gb 部署配置。
+`api.env` 中的 `MEDIA_ROOT`、`FILM_SCAN_ROOT`、FFmpeg 路径与续传目录仍是本地
+处理参数，采用 OSS 后继续保留。API 单元若已设置下面的 `CMS_ENV_FILE`，无需
+在 `api.env` 重复；定制单元没有设置时，可在 `/etc/video-blog/api.env` 增加
+`CMS_ENV_FILE=/etc/video-blog/cms.env`。Bucket 和 AccessKey 只维护在 `cms.env`。
+
+更新 API 单元时保留服务器定制，确认它设置
+`Environment=CMS_ENV_FILE=/etc/video-blog/cms.env`；API 仅导入该文件的存储字段，
+不导入 CMS 的端口、数据库或管理员凭据。保持文件为 `root:video-blog 0640`，
+执行 daemon-reload 后重启 CMS 与 API。Docker 沿用当前 Compose 文件和 profile 参数重新创建两项服务。
+新图片明确写入对应分类的 assets 子目录；文章正文保存 Markdown 副本，文章、相簿和
+视频保存含文件引用的 JSON 快照。数据库继续供编辑、查询和关系管理使用。归档队列
+失败后保留并重试，可在携带上传凭据的 API health 响应中检查
+`resources.contentArchive.pending`。手动通过 CMS 修改正文的内容会在下一次 API
+启动时补齐快照。
+
+视频在服务器完成处理和校验后上传 OSS，确认发布成功再清理本地视频及续传副本。
+现有 `/media/...` 和 `/api/assets/...` 保留访问权限检查。直接复用已部署的
+`STORAGE_OSS_*`；原有 local/oss 文件记录可读，单独的视频旧配置仅保留兼容，
+已有本地二进制文件不会自动迁移。不能在本地副本已清理后直接关闭 OSS 读取。
+只上传、读取和归档不需要 `oss:DeleteObject`；Directus 主动删除图片或回滚需要其
+资产范围内的列表与删除权限。详见 [统一配置、目录、权限与清理策略](upload-api.md#unified-oss-content-storage)。
 
 ### Ubuntu 上通过 Manager 控制 systemd
 
@@ -251,7 +279,24 @@ sudo visudo -cf deployment/linux/manager.sudoers &&
 sudo install -o root -g root -m 0440 deployment/linux/manager.sudoers /etc/sudoers.d/video-blog-manager &&
 sudo visudo -c
 sudo -u admin sudo -n -l /usr/bin/systemctl restart video-blog-web.service
+sudo -u admin sudo -n -l /usr/bin/systemctl --no-block restart video-blog-manager.service
 sudo systemctl restart video-blog-manager
 ```
 
-若 Manager 使用其他账号，先把模板中的 admin 改为该服务账号并校验。受控单元文件及其根权限启动脚本必须只允许可信管理员修改；CMS/API/Web 单元使用非 root 用户运行。Manager 单元需允许 sudo 提权；不要为它启用 `NoNewPrivileges=true`。状态查询无须 sudo，面板的写操作通过非交互 sudo 执行，仅授权上面四个单元的 start、stop、restart。Manager 账号需要能写仓库 logs 目录。数据库和 CMS 健康检查读取项目的 Directus 配置，部署在 /etc 的配置应通过 Manager 单元的 EnvironmentFile 提供相应的数据库及健康检查凭据。
+若 Manager 使用其他账号，先把模板中的 admin 改为该服务账号并校验。受控单元文件及其根权限启动脚本必须只允许可信管理员修改；CMS/API/Web 单元使用非 root 用户运行。Manager 单元需允许 sudo 提权；不要为它启用 `NoNewPrivileges=true`。状态查询无须 sudo，面板的写操作通过非交互 sudo 执行，仅授权上面四个单元的 start、stop、restart，以及 Manager 单元自身的 `--no-block restart`。Manager 账号需要能写仓库 logs 目录。数据库和 CMS 健康检查读取项目的 Directus 配置，部署在 /etc 的配置应通过 Manager 单元的 EnvironmentFile 提供相应的数据库及健康检查凭据。
+
+#### Manager 自身的监控与重启
+
+**Service Manager** 面板显示 Manager 的 PID、运行时长、内存、事件循环 p99 延迟、状态接口响应时间，以及 `video-blog-manager.service` 的单元状态和 systemd 自动重启次数。磁盘上的 Manager 代码与运行中的副本不一致时（例如 Pull 之后），面板提示需要重启。单元名不同时，在仓库根目录 `.env` 设置 `MANAGER_SYSTEMD_UNIT`，并同步修改 sudoers 中的单元名。
+
+**Restart Manager** 执行 `sudo -n /usr/bin/systemctl --no-block restart <单元>`：systemd 先接收重启任务，再停止当前进程，因此请求方不会被中途结束。以下情况会拒绝重启：有任务正在执行；当前进程不是该单元的 MainPID（例如在终端手动启动）；sudoers 未授权；磁盘上的 Manager 代码无法加载。最后一项让失败的 Pull 不会停掉唯一的 Manager。其他服务不受影响。会话只保存在内存中，重启后页面会跳转到登录页，需要重新登录。单元未把输出写入 `logs/manager.*.log` 时，**Logs** 读取 `journalctl -u <单元>`。
+
+#### 通过 Manager 更新 Git 仓库
+
+Manager 所在的仓库就是 `update-native.sh` 的源仓库，服务运行的是 `/opt/video-blog/current` 中的 release。**Check for updates** 执行 `git fetch`，然后列出待拉取的提交及其影响范围（Manager、API、Web、依赖、CMS、部署文件）。**Pull** 只把该仓库快进到页面上确认过的提交，运行中的服务不会改变。面板显示当前部署的 release 提交是否与仓库 HEAD 一致，并给出部署命令 `sudo bash <仓库>/deployment/linux/update-native.sh <仓库> <提交>`。Manager 不以 root 身份运行部署脚本。
+
+- 预检会拒绝分叉、进行中的 merge/rebase，以及可能覆盖本地修改的更新。未跟踪文件也受保护，包括被 Git 忽略的本机配置。远端发布分支已删除，或预检后切换了本地分支时，Manager 会停止拉取。不冲突的本地修改（例如服务器上定制的部署文件）会保留。
+- 本项目是公开仓库，用 HTTPS 地址克隆时可以匿名拉取，无需任何凭据。只有私有 fork 或 SSH 地址需要凭据（GitHub 通过 SSH 访问时，即使是公开仓库也要求密钥）。Manager 在后台运行，Git 无法弹出输入提示，因此这类凭据必须能免交互使用：为 Manager 账号配置只读部署密钥（预先写入 `known_hosts`）或 credential helper。SSH 默认以 `BatchMode=yes` 运行；已设置的 `core.sshCommand`、`GIT_SSH_COMMAND` 或 `GIT_SSH` 会保留。fetch 超过 120 秒会被终止，不会一直等待输入。可以用 Manager 账号执行 `git remote -v` 和 `GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote origin` 自检：地址是 `https://` 且能列出分支，就无需配置。
+- 仓库归属其他账号时，Git 会报告 dubious ownership；以 Manager 账号执行 `git config --global --add safe.directory <仓库>`。Manager 账号需要对 `.git` 有写权限。
+- 可选：用 `MANAGER_GIT_PATH` 指定 git 可执行文件，用 `MANAGER_RELEASE_LINK` 指定 release 链接（默认 `/opt/video-blog/current`）。
+- 命令行：`node scripts/service-control.cjs repo status|fetch|pull [COMMIT]`，与页面共用同一把操作锁。输出写入 `logs/git.out.log` 与 `logs/git.err.log`，也可以在页面 **Git** 日志中查看。

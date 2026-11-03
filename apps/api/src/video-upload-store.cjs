@@ -18,7 +18,7 @@ const inside = (root, target) => {
 /** One API process owns this durable spool. Confirmed offsets only advance after fsync. */
 function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
   maxTotalBytes = 8 * 1024 ** 3, quotaBytes = 20 * 1024 ** 3, maxSessions = 32,
-  chunkBytes = 1024 ** 2, ttlMs = 7 * 24 * 3600_000, processUpload,
+  chunkBytes = 1024 ** 2, ttlMs = 7 * 24 * 3600_000, processUpload, completeStorage,
   canProcess = () => true, now = Date.now }) {
   const sessions = new Map();
   const legacyReservations = new Map();
@@ -104,6 +104,11 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
 
   async function cleanup() {
     for (const session of sessions.values()) {
+      if (session.state === "completed" && session.result?.storage === "oss" && !busy.has(session.id)) {
+        await exclusive(session.id, () => cleanCompletedUpload(session));
+      }
+      // The session may still hold the sole durable copy of an unqueued cleanup receipt.
+      if (sessions.get(session.id)?.cleanupPublications) continue;
       // Never expire queued or running jobs. Failed/interrupted sources retain the same TTL.
       if (session.expiresAt > now() || ["queued", "processing"].includes(session.state) || busy.has(session.id)) continue;
       await exclusive(session.id, async () => {
@@ -111,6 +116,25 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
         sessions.delete(session.id);
       });
     }
+  }
+
+  async function cleanCompletedUpload(session) {
+    if (session.cleanupPublications) {
+      try {
+        if (!completeStorage) throw new Error("Re-enable OSS to queue the video cleanup receipt.");
+        const localCleanupPending = await completeStorage(session.cleanupPublications, session.id);
+        session = { ...session, cleanupPublications: undefined, result: { ...session.result, localCleanupPending } };
+        await save(session);
+      } catch (error) {
+        console.error(`[video-upload] Cleanup receipt deferred: ${error.message}`);
+        return;
+      }
+    }
+    if (session.sourcesReleased || session.result.sourcesRetained || session.result.processingInterrupted) return;
+    // Completion is durable before deleting bytes. A restart retries an interrupted
+    // deletion while retaining offsets, checksums and the completed result for tabs.
+    for (const [index] of session.files.entries()) await fsp.rm(dataPath(session.id, index), { force: true });
+    await save({ ...session, sourcesReleased: true });
   }
 
   async function create(id, input) {
@@ -125,9 +149,10 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
         if (existing.signature !== signature) throw fail(409, "Upload ID already belongs to different files or metadata.");
         return view(existing);
       }
-      const reserved = [...sessions.values()].reduce((sum, item) => sum + item.total, 0)
+      const storedSessions = [...sessions.values()].filter(item => !item.sourcesReleased);
+      const reserved = storedSessions.reduce((sum, item) => sum + item.total, 0)
         + [...legacyReservations.values()].reduce((sum, bytes) => sum + bytes, 0);
-      if (sessions.size + legacyReservations.size >= maxSessions || reserved + validated.total > quotaBytes) {
+      if (storedSessions.length + legacyReservations.size >= maxSessions || reserved + validated.total > quotaBytes) {
         throw fail(503, "Upload storage is full. Retry after existing sessions expire.");
       }
       const disk = await fsp.statfs(root);
@@ -150,9 +175,10 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
     if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > maxTotalBytes) throw fail(413, "Upload exceeds the session size limit.");
     return exclusive("create", async () => {
       await cleanup();
-      const reserved = [...sessions.values()].reduce((sum, item) => sum + item.total, 0)
+      const storedSessions = [...sessions.values()].filter(item => !item.sourcesReleased);
+      const reserved = storedSessions.reduce((sum, item) => sum + item.total, 0)
         + [...legacyReservations.values()].reduce((sum, value) => sum + value, 0);
-      if (sessions.size + legacyReservations.size >= maxSessions || reserved + bytes > quotaBytes) throw fail(503, "Upload storage is full.");
+      if (storedSessions.length + legacyReservations.size >= maxSessions || reserved + bytes > quotaBytes) throw fail(503, "Upload storage is full.");
       const disk = await fsp.statfs(root);
       if (disk.bavail * disk.bsize < (reserved + bytes) * 2 + 64 * 1024 ** 2) throw fail(507, "Insufficient free disk space.");
       // Native/Docker installs can put the legacy spool on another filesystem.
@@ -265,14 +291,32 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
         await exclusive(queued.id, async () => {
           try {
             const parsed = await parsedInput(queued);
-            const checkpoint = async (phase, result) => {
+            const checkpoint = async (phase, result, cleanupPublications) => {
+              if (phase === "stored") {
+                // Publication is final. Commit its result and cleanup work together,
+                // before returning to the caller or attempting media/spool eviction.
+                await save({ ...get(queued.id), state: "completed", phase: "completed",
+                  result, cleanupPublications, expiresAt: now() + ttlMs });
+                return;
+              }
               await save({ ...get(queued.id), state: "processing", phase,
                 ...(result ? { result } : {}) });
             };
             const result = await processUpload(parsed, checkpoint);
-            await save({ ...get(queued.id), state: "completed", phase: "completed", result, expiresAt: now() + ttlMs });
+            const current = get(queued.id);
+            if (current.state !== "completed") {
+              await save({ ...current, state: "completed", phase: "completed", result, expiresAt: now() + ttlMs });
+            }
+            if (result.storage === "oss") {
+              await cleanCompletedUpload(get(queued.id)).catch(error =>
+                console.error(`[video-upload] Completed OSS upload cleanup deferred: ${error.message}`));
+            }
           } catch (error) {
             const current = get(queued.id);
+            if (current.state === "completed") {
+              console.error(`[video-upload] Post-publication cleanup deferred: ${error.message}`);
+              return;
+            }
             // Admission failure is recoverable and retains the completed upload.
             if (current.state === "queued" && error.statusCode === 503) return;
             await save({ ...current, state: current.phase === "publishing" ? "interrupted" : "failed",
@@ -322,9 +366,9 @@ function createVideoUploadStore({ root, mediaRoot, maxFileBytes, maxCoverBytes,
         if (session.state === "processing") {
           // Before publication replay is safe; after publication use the saved primary result.
           if (session.phase === "processing") session = { ...session, state: "queued", phase: "queued" };
-          else if (session.phase === "derivatives" && session.result) {
+          else if (["derivatives", "stored"].includes(session.phase) && session.result) {
             session = { ...session, state: "completed", phase: "completed",
-              result: { ...session.result, processingInterrupted: true } };
+              result: { ...session.result, ...(session.phase === "stored" ? {} : { processingInterrupted: true }) } };
           } else session = { ...session, state: "interrupted",
             error: "Publication was interrupted. Check the project's saved masters before starting another upload." };
           await save(session);
