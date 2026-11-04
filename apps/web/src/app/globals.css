@@ -1247,6 +1247,12 @@ h3 {
   grid-column: span 3;
 }
 
+/* Every row takes the height of the tallest card in the grid, so wide cards
+   stay one size while their caption is only as tall as the longest text needs. */
+.content-grid--wide {
+  grid-auto-rows: 1fr;
+}
+
 .content-grid > li {
   position: relative;
   display: grid;
@@ -1445,16 +1451,8 @@ h3 {
   color: var(--accent-2);
 }
 
-/* Wide cards reserve the same text block, so a short card matches a full one. */
 .content-grid--wide .content-card-copy {
-  min-height: 150px;
   padding: 22px 24px 24px;
-}
-
-/* With no description there is no text block to reserve. A row still shares
-   one height, so this only shows once every card beside it is bare too. */
-.content-grid--wide .content-card-copy:has(> h2:last-child) {
-  min-height: 0;
 }
 
 .content-grid--wide .content-card h2 {
@@ -7645,6 +7643,14 @@ h3 {
   .album-toolbar,
   .album-detail-aside {
     justify-items: start;
+  }
+
+  /* The manage button now sits at the start edge, so its menu opens from there
+     instead of extending past the viewport's left edge. */
+  .album-detail-actions .action-menu-panel {
+    right: auto;
+    left: 0;
+    transform-origin: left top;
   }
 
   .album-toolbar-status {

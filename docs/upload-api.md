@@ -165,13 +165,14 @@ blog_all/
 ```
 
 HLG and Dolby Vision retain their existing rendition directory names as applicable.
-The API explicitly routes article images to `oss_article`, album/HDR/film-published
-images to `oss_album`, and video covers to `oss_video`. Directus resolves file IDs
+Article covers, inline images and external project covers use `oss_article`.
+Album SDR/HDR photos and published film scans use `oss_album`. Video covers use
+`oss_video`. Directus resolves file IDs
 through these adapters, preserving `/api/assets/<id>` links and transforms.
 The API verifies the returned storage location; its CMS service account must be
 allowed to create/read the `directus_files.storage` field.
 Manual CMS file-library uploads retain the existing first `oss` location and flat
-root. The API appends its category adapters at runtime and explicitly selects them;
+root. The CMS launcher registers the category adapters and the API selects them for uploads;
 the deployed `oss,local` order and the original `oss`/`local` file records keep
 their meaning. No second `OSS_*` credential set or new enable flag is required.
 

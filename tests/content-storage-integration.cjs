@@ -35,15 +35,29 @@ async function main() {
     articleForm.set("title", "OSS article"); articleForm.set("slug", "oss-article"); articleForm.set("published", "true");
     articleForm.set("content", "# OSS 正文\n\n![图片](article-image://picture)");
     articleForm.set("inlineImageManifest", JSON.stringify([{ key: "picture", name: "picture.png", alt: "图片" }]));
+    articleForm.append("cover", new Blob([png], { type: "image/png" }), "article-cover.png");
     articleForm.append("inlineImages", new Blob([png], { type: "image/png" }), "picture.png");
     const article = await request("/articles", { method: "POST", headers: { "X-Article-Token": fixture.token }, body: articleForm });
-    const articleFile = fixture.collections.files.find(file => file.id === article.uploadedImages[0].id);
-    assert.equal(articleFile.storage, "oss_article");
-    assert.deepEqual(fixture.cloud.objects.get(`blog_all/article/assets/${articleFile.filename_disk}`).bytes, png);
+    function verifyAsset(id, location, directory, bytes) {
+      const file = fixture.collections.files.find(file => file.id === id);
+      assert.equal(file.storage, location);
+      const key = `blog_all/${directory}/assets/${file.filename_disk}`;
+      assert.deepEqual(fixture.cloud.objects.get(key)?.bytes, bytes);
+      return key;
+    }
+    const coverKey = verifyAsset(article.article.coverImage.id, "oss_article", "article", png);
+    const inlineKey = verifyAsset(article.uploadedImages[0].id, "oss_article", "article", png);
     const archivedArticle = await waitForSnapshot(`blog_all/article/${article.article.id}/latest.json`);
     assert.match(fixture.cloud.objects.get(archivedArticle.pointer.contentKey).bytes.toString(), /# OSS 正文/);
-    assert.equal(archivedArticle.snapshot.files[0].object_key, `blog_all/article/assets/${articleFile.filename_disk}`);
-    pass("article API routes images under article/assets and archives Markdown with restorable file metadata");
+    assert.deepEqual(archivedArticle.snapshot.files.map(file => file.object_key).sort(), [coverKey, inlineKey].sort());
+    pass("article cover and inline image use article/assets and both archive keys match the stored objects");
+
+    const websiteForm = new FormData();
+    websiteForm.set("title", "OSS website"); websiteForm.set("url", "https://example.invalid/");
+    websiteForm.append("cover", new Blob([png], { type: "image/png" }), "website-cover.png");
+    const website = await request("/external-projects", { method: "POST", body: websiteForm });
+    verifyAsset(website.project.cover_image, "oss_article", "article", png);
+    pass("external project cover uses the shared article asset location");
 
     // A saved article keeps its ID even if disk admission to the outbox fails.
     const journal = path.join(fixture.temp, "content-archive");
@@ -69,16 +83,21 @@ async function main() {
     const photoForm = new FormData();
     photoForm.set("manifest", JSON.stringify({ photos: [{ key: "photo", caption: "OSS 相片", published: true }] }));
     photoForm.append("sdrFiles", new Blob([png], { type: "image/png" }), "photo.png");
+    const hdrPath = path.join(fixture.temp, "photo.avif");
+    const ffmpeg = process.env.FFMPEG_PATH || require("ffmpeg-static");
+    await promisify(execFile)(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=size=48x32", "-frames:v", "1",
+      "-c:v", "libaom-av1", "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "smpte2084",
+      "-colorspace", "bt2020nc", hdrPath]);
+    const hdr = await fs.readFile(hdrPath);
+    photoForm.append("hdrFiles", new Blob([hdr], { type: "image/avif" }), "photo.avif");
     const photos = await request(`/albums/${album.album.id}/photos`, { method: "POST", body: photoForm });
-    const photoId = photos.photos[0].sdrImage;
-    const photoFile = fixture.collections.files.find(file => file.id === photoId);
-    assert.equal(photoFile.storage, "oss_album");
-    assert.deepEqual(fixture.cloud.objects.get(`blog_all/album/assets/${photoFile.filename_disk}`).bytes, png);
+    verifyAsset(photos.photos[0].sdrImage, "oss_album", "album", png);
+    verifyAsset(photos.photos[0].hdrImage, "oss_album", "album", hdr);
     await waitForSnapshot(`blog_all/album/${album.album.id}/latest.json`, snapshot => snapshot.photos?.length === 1);
-    pass("album API routes photos under album/assets and archives the album description/order/photo references");
+    pass("album SDR and HDR uploads use album/assets and the album snapshot references the photo");
 
     const videoPath = path.join(fixture.temp, "input.mp4");
-    await promisify(execFile)(process.env.FFMPEG_PATH || require("ffmpeg-static"), ["-v", "error", "-f", "lavfi", "-i",
+    await promisify(execFile)(ffmpeg, ["-v", "error", "-f", "lavfi", "-i",
       "testsrc2=size=160x96:rate=10:duration=0.4", "-c:v", "libx264", "-pix_fmt", "yuv420p",
       "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709", "-color_primaries", "bt709",
       "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv", "-chroma_sample_location", "left", videoPath]);
@@ -90,9 +109,7 @@ async function main() {
     const video = await request("/uploads/videos", { method: "POST", body: videoForm });
     assert.equal(video.storage, "oss");
     assert.ok(fixture.cloud.objects.has(`blog_all/videos/${video.hlsUrl.slice("/media/".length)}`));
-    const cover = fixture.collections.files.find(file => file.id === video.project.cover_image);
-    assert.equal(cover.storage, "oss_video");
-    assert.ok(fixture.cloud.objects.has(`blog_all/videos/assets/${cover.filename_disk}`));
+    verifyAsset(video.project.cover_image, "oss_video", "videos", png);
     await waitForSnapshot("blog_all/videos/oss-video/metadata/latest.json", snapshot => snapshot.masters?.length === 1);
     await assert.rejects(fs.access(path.join(fixture.temp, video.sourceUrl.replace("/media/", "media/"))), { code: "ENOENT" });
     const stream = await fetch(`${fixture.apiUrl}${video.sourceUrl}`, { headers: { ...headers, Range: "bytes=0-15" } });

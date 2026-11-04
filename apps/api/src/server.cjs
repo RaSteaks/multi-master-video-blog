@@ -10,7 +10,7 @@ const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const { resolveResourceProfile } = require("../../../config/resource-profile.cjs");
-const { loadStorageEnvironment, contentStorageConfig } = require("../../../config/storage.cjs");
+const { loadStorageEnvironment, contentStorageConfig, fileStorageLocations } = require("../../../config/storage.cjs");
 const { mediaThreadArgs, downloadToFile, moveUploadFile } = require("./resource-io.cjs");
 const { configureFilmResources } = require("./film-scan-utils.cjs");
 const zlib = require("node:zlib");
@@ -115,7 +115,7 @@ const {
   url: DIRECTUS_URL,
   email: DIRECTUS_EMAIL,
   password: DIRECTUS_PASSWORD,
-  fileStorage: sharedStorageConfig ? { article: "oss_article", album: "oss_album", video: "oss_video" } : undefined,
+  fileStorage: sharedStorageConfig ? fileStorageLocations : undefined,
   // Callbacks run after startup, once the archive below owns its durable outbox.
   mutations: sharedStorageConfig ? {
     before: mutation => contentArchive.before(mutation),

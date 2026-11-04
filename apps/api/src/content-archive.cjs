@@ -1,6 +1,7 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { fileStorageRoots } = require("../../../config/storage.cjs");
 const { createOssObjects } = require("./object-storage.cjs");
 
 const owners = { posts: "article", albums: "album", video_projects: "videos" };
@@ -19,6 +20,7 @@ function createContentArchive({ config, journalRoot, request, objectStore }) {
   const objects = objectStore || createOssObjects(config);
   const journal = path.resolve(journalRoot);
   const prefix = config.root ? `${config.root}/` : "";
+  const storageRoots = { oss: config.root, ...fileStorageRoots(config.root) };
   const unwritten = new Map();
   let timer, scheduled, draining, dirty = false, closed = false;
 
@@ -122,8 +124,7 @@ function createContentArchive({ config, journalRoot, request, objectStore }) {
         "filter[id][_eq]": id, limit: "1" });
       const [file] = (await request(`/files?${query}`)).data;
       if (file) {
-        const location = { oss_article: `${prefix}article/assets`, oss_album: `${prefix}album/assets`,
-          oss_video: `${prefix}videos/assets`, oss: config.root }[file.storage];
+        const location = storageRoots[file.storage];
         result.files.push({ ...file, object_key: location != null && file.filename_disk
           ? [location, file.filename_disk].filter(Boolean).join("/") : null });
       } else {

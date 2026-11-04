@@ -71,11 +71,20 @@ async function port() {
     await fsp.rm(dir, { recursive: true, force: true });
   }
   try {
+    // Local drivers exercise real Directus uploads without contacting an OSS bucket.
+    // Explicitly selecting the ordinary .env must also honor the launcher's locations.
+    await fsp.writeFile(path.join(dir, ".env"), "STORAGE_LOCATIONS=local\n");
+    const locations = ["oss_article", "oss_album", "oss_video"];
+    const cmsLaunch = { SERVICE_CWD: dir, CONFIG_PATH: ".env", STORAGE_LOCATIONS: ["local", ...locations].join(",") };
+    for (const location of locations) {
+      cmsLaunch[`STORAGE_${location.toUpperCase()}_DRIVER`] = "local";
+      cmsLaunch[`STORAGE_${location.toUpperCase()}_ROOT`] = path.join(dir, location);
+    }
     await fsp.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "isolated-security-fixture", private: true }));
     await fsp.mkdir(env.STORAGE_LOCAL_ROOT); await fsp.mkdir(env.EXTENSIONS_PATH);
     const cli = path.join(root, "node_modules/directus/cli.js");
-    await command("bootstrap", [path.join(root, "scripts/run-service.cjs"), "bootstrap"], { SERVICE_CWD: dir, DIRECTUS_CLI: cli });
-    const cmsChild = start("cms", [path.join(root, "scripts/run-service.cjs"), "cms"], { SERVICE_CWD: dir, DIRECTUS_CLI: cli }); await ready(cms + "/server/health", cmsChild);
+    await command("bootstrap", [path.join(root, "scripts/run-service.cjs"), "bootstrap"], { ...cmsLaunch, DIRECTUS_CLI: cli });
+    const cmsChild = start("cms", [path.join(root, "scripts/run-service.cjs"), "cms"], { ...cmsLaunch, DIRECTUS_CLI: cli }); await ready(cms + "/server/health", cmsChild);
     await command("schema", [path.join(root, "scripts/setup-directus-schema.cjs")]);
     checks.push("Directus bootstrap and schema succeed on an empty isolated database");
     let token;
@@ -89,9 +98,19 @@ async function port() {
     token = (await request("/auth/login", "POST", { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD })).access_token;
     const album = await request("/items/albums", "POST", { title: "隔离测试相簿", slug: "fixture-album", published: true });
     const image = await require("sharp")({ create: { width: 48, height: 64, channels: 3, background: "#79838a" } }).png().toBuffer();
-    const form = new FormData(); form.append("file", new Blob([image], { type: "image/png" }), "fixture.png");
-    const uploaded = await fetch(cms + "/files", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form });
-    assert.equal(uploaded.status, 200); const file = (await uploaded.json()).data;
+    const uploadedFiles = {};
+    for (const location of locations) {
+      const form = new FormData(); form.set("storage", location);
+      form.append("file", new Blob([image], { type: "image/png" }), "fixture.png");
+      const uploaded = await fetch(cms + "/files", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form });
+      const result = await uploaded.json();
+      assert.equal(uploaded.status, 200, JSON.stringify(result.errors));
+      assert.equal(result.data.storage, location);
+      assert.deepEqual(await fsp.readFile(path.join(dir, location, result.data.filename_disk)), image);
+      uploadedFiles[location] = result.data;
+      checks.push(`Directus accepts ${location} and writes the uploaded image to its configured root`);
+    }
+    const file = uploadedFiles.oss_album;
     await request("/items/album_photos", "POST", { album_id: album.id, sdr_image: file.id, published: true, sort_order: 0 });
     const post = await request("/items/posts", "POST", { title: "Published fixture", slug: "fixture-post", content: "Fixture", published: true });
     const project = await request("/items/video_projects", "POST", { title: "Video fixture", slug: "film", published: true });

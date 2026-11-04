@@ -3,6 +3,18 @@ const path = require("node:path");
 const { parseEnv } = require("node:util");
 const { loadEnvironment } = require("./resource-profile.cjs");
 
+// CMS registration, upload requests and archive references must agree on these names.
+const fileStorageLocations = { article: "oss_article", album: "oss_album", video: "oss_video" };
+
+function fileStorageRoots(root) {
+  const prefix = root ? root + "/" : "";
+  return {
+    [fileStorageLocations.article]: prefix + "article/assets",
+    [fileStorageLocations.album]: prefix + "album/assets",
+    [fileStorageLocations.video]: prefix + "videos/assets"
+  };
+}
+
 function contentStorageConfig(env) {
   const locations = (env.STORAGE_LOCATIONS || "local").split(",").map(value => value.trim()).filter(Boolean);
   if (locations[0] !== "oss") return null;
@@ -31,15 +43,12 @@ function configureStorage(env) {
     VIDEO_OSS_ROOT: `${prefix}videos`, VIDEO_OSS_KEY: config.key, VIDEO_OSS_SECRET: config.secret };
   const locations = (env.STORAGE_LOCATIONS || "oss,local").split(",").map(value => value.trim()).filter(Boolean);
   // Keep the deployed default location/order and append category adapters only.
-  settings.STORAGE_LOCATIONS = [...new Set(["oss", ...locations, "local", "oss_article", "oss_album", "oss_video"])].join(",");
-  for (const [location, root] of [
-    ["OSS_ARTICLE", `${prefix}article/assets`],
-    ["OSS_ALBUM", `${prefix}album/assets`],
-    ["OSS_VIDEO", `${prefix}videos/assets`]
-  ]) {
+  const roots = fileStorageRoots(config.root);
+  settings.STORAGE_LOCATIONS = [...new Set(["oss", ...locations, "local", ...Object.keys(roots)])].join(",");
+  for (const [location, root] of Object.entries(roots)) {
     for (const [name, value] of Object.entries({ DRIVER: "s3", BUCKET: config.bucket, REGION: config.region,
       ENDPOINT: config.endpoint, ROOT: root, KEY: config.key, SECRET: config.secret })) {
-      settings[`STORAGE_${location}_${name}`] = value;
+      settings[`STORAGE_${location.toUpperCase()}_${name}`] = value;
     }
   }
   return settings;
@@ -62,4 +71,4 @@ function loadStorageEnvironment(filename, environment = process.env, sharedFilen
   return configureStorage({ ...service, ...storageSettings(shared), ...storageSettings(environment) });
 }
 
-module.exports = { configureStorage, contentStorageConfig, loadStorageEnvironment };
+module.exports = { fileStorageLocations, fileStorageRoots, configureStorage, contentStorageConfig, loadStorageEnvironment };

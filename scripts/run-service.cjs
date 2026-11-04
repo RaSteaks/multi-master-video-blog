@@ -43,6 +43,12 @@ let args;
 if (service === "api") args = [path.join(root, "apps/api/src/server.cjs")];
 else if (service === "schema") args = [path.join(root, "scripts/setup-directus-schema.cjs")];
 else if (["cms", "bootstrap"].includes(service)) {
+  // Directus gives its config file precedence over the child environment. The
+  // launcher has already merged .env and expanded the category storage adapters.
+  // The runtime file keeps .env as Directus's protected config path for uploads.
+  if (!env.CONFIG_PATH || path.resolve(cwd, env.CONFIG_PATH) === path.join(cwd, ".env")) {
+    env.CONFIG_PATH = path.join(root, "config/directus-runtime.json");
+  }
   const cli = process.env.DIRECTUS_CLI || path.join(path.dirname(resolve("directus/package.json")), "cli.js");
   args = [cli, service === "bootstrap" ? "bootstrap" : "start"];
 } else if (service === "build") args = [resolve("next/dist/bin/next"), "build"];
