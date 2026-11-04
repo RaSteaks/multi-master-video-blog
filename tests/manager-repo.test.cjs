@@ -143,6 +143,19 @@ test("pull handles stale file metadata while preserving staged and unstaged loca
   assert.equal(fs.readFileSync(path.join(fixture.checkout, customized), "utf8"), "working configuration\n");
 });
 
+test("checkout impact includes the services consuming storage config and the shared lockfile", async t => {
+  const fixture = sandbox(t);
+  const repo = fixture.updater();
+  const storage = await repo.prepare(fixture.publish({ "config/storage.cjs": "module.exports = {};\n" }, "Update storage"));
+  assert.equal(storage.impact.cms, true);
+  assert.equal(storage.impact.api, true);
+  assert.equal(storage.impact.web, false);
+  await repo.fastForward(storage);
+  const lock = await repo.prepare(fixture.publish({ "package-lock.json": "{}\n" }, "Update shared dependencies"));
+  assert.equal(lock.rootDependencies, true);
+  assert.deepEqual(lock.impact, { manager:false, dependencies:true, api:true, web:true, cms:true, deployment:false });
+});
+
 test("fast-forwards to the exact reviewed commit, even when upstream has moved on", async t => {
   const fixture = sandbox(t);
   const reviewed = fixture.publish({ "apps/web/src/page.tsx": "web v2\n" }, "Reviewed");

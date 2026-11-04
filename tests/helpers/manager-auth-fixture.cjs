@@ -4,14 +4,14 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { createRequire } = require("node:module");
 
-async function startAuthFixture({ port = 0, basePath = "/manager", password = "fixture-password-only", root: givenRoot, env = {} } = {}) {
+async function startAuthFixture({ port = 0, basePath = "/manager", password = "fixture-password-only", root: givenRoot, env = {}, platform } = {}) {
   // A caller-provided root (for example a Git checkout) stays owned by the caller.
   const root = givenRoot || await fs.mkdtemp(path.join(os.tmpdir(), "manager-auth-test-"));
   const sourcePath = path.resolve(__dirname, "../../scripts/manager-dashboard.cjs");
   const context = vm.createContext({ require: name => name === "./manager-config.cjs"
       ? { createConfigTransfer: dir => require("../../scripts/manager-config.cjs").createConfigTransfer(dir, path.join(dir, "systemd")) }
       : createRequire(sourcePath)(name), module: { exports: {} },
-    __dirname: path.join(root, "scripts"), process: { env: { ...env, MANAGER_AUTH_PASSWORD: password, MANAGER_BASE_PATH: basePath }, pid: process.pid },
+    __dirname: path.join(root, "scripts"), process: { platform, env: { ...env, MANAGER_AUTH_PASSWORD: password, MANAGER_BASE_PATH: basePath }, pid: process.pid },
     console, Buffer, URL, AbortSignal, fetch, setTimeout, clearTimeout });
   vm.runInContext(await fs.readFile(sourcePath, "utf8"), context);
   // Keep the actual HTTP authentication and routing. Only service/DB/log effects

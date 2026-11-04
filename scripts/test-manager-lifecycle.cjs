@@ -544,6 +544,53 @@ test("Linux Web mode switch uses the active unit's build, persists both directio
   assert.deepEqual(actions, [], "preflight failures must keep the old Web serving");
 });
 
+test("Linux Pull updates only running checkout units and builds Web for its actual mode", async t => {
+  const root = temporaryRoot(t);
+  fs.mkdirSync(path.join(root, "apps/api"), { recursive: true });
+  const release = temporaryRoot(t);
+  const calls = [];
+  let failBuild = false;
+  const execFile = (file, args, options, callback) => {
+    const action = file === "npm" ? "install" : args.at(-2) + ":" + args.at(-1);
+    calls.push(action);
+    callback(failBuild && action === "start:video-blog-web-build.service" ? Error("build failed") : null, { stdout: "" });
+  };
+  const { run } = harness(root, {}, "linux", execFile);
+  run(`var calls = []; var impact = {}, cwd = ROOT, mode = "dev:web", active = "active";
+    process.getuid = () => 1000;
+    readUnit = async name => ({ LoadState:"loaded", ActiveState:active, User:"admin", ExecStart:"npm run "+mode,
+      WorkingDirectory:name === "video-blog-api.service" && cwd === ROOT ? ROOT+"/apps/api" : cwd });
+    waitForProcessHealth = async () => {}; checkWebBuildUnit = async () => { calls.push("preflight") };
+    repoUpdater.prepare = async () => ({impact, to:"b".repeat(40)});
+    repoUpdater.fastForward = async () => { calls.push("pull"); return {message:"pulled"} };`);
+  const pull = async impact => run(`impact=${JSON.stringify(impact)}; handleRepoPull()`);
+  await pull({ api:true });
+  assert.deepEqual(calls.splice(0), ["stop:video-blog-api.service", "start:video-blog-api.service"]);
+  await pull({ web:true });
+  assert.deepEqual(calls.splice(0), ["stop:video-blog-web.service", "start:video-blog-web.service"]);
+  run('mode="start:web"; calls=[]');
+  await pull({ cms:true, web:true, dependencies:true });
+  assert.equal(run('calls.join(",")'), "preflight,pull");
+  assert.deepEqual(calls.splice(0), ["stop:video-blog-web.service", "stop:video-blog-cms.service", "install",
+    "start:video-blog-cms.service", "start:video-blog-web-build.service", "start:video-blog-web.service"]);
+  run('active="inactive"');
+  await pull({ api:true });
+  assert.deepEqual(calls, []);
+  run(`active="active"; cwd=${JSON.stringify(release)}`);
+  assert.match((await pull({ api:true })).message, /update-native/);
+  assert.deepEqual(calls, []);
+  run('cwd=ROOT');
+  failBuild = true;
+  await assert.rejects(pull({ web:true }), /pulled.*build failed.*web/);
+  assert.deepEqual(calls.splice(0), ["stop:video-blog-web.service", "start:video-blog-web-build.service"]);
+  run('checkWebBuildUnit = async () => { throw Error("missing build unit") }; calls=[]');
+  await assert.rejects(pull({ web:true }), /missing build unit/);
+  assert.equal(run('calls.length'), 0, "preflight failed before Git or service changes");
+  run('repoUpdater.fastForward = async () => { throw Error("checkout failed") }');
+  await assert.rejects(pull({ api:true }), /checkout failed/);
+  assert.deepEqual(calls, []);
+});
+
 test("Windows pull + update verifies before stopping, updates only after both stop, then installs and starts", async () => {
   const { run } = harness();
   const target = "b".repeat(40);
@@ -667,6 +714,11 @@ test("Linux restart requires owning the unit and the exact sudoers grant, then q
   const logs = await run('readServiceLogs("manager")');
   assert.deepEqual(calls.at(-1).slice(0, 3), ['/usr/bin/journalctl', '--unit', 'video-blog-manager.service']);
   assert.equal(logs.files.stdout, 'journalctl -u video-blog-manager.service');
+  for (const id of ['cms', 'api', 'web']) {
+    const unitLogs = await run(`readServiceLogs("${id}")`);
+    assert.deepEqual(calls.at(-1).slice(0, 3), ['/usr/bin/journalctl', '--unit', `video-blog-${id}.service`]);
+    assert.equal(unitLogs.serviceId, id);
+  }
 });
 
 test("Linux restart recognizes a wrapped Manager only inside its systemd unit", async t => {

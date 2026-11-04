@@ -8,7 +8,8 @@ const { webkit } = require("playwright");
 const { startAuthFixture } = require("./helpers/manager-auth-fixture.cjs");
 
 async function main() {
-  const output = path.resolve("test-results/manager-repo");
+  const linux = process.argv.includes("--linux");
+  const output = path.resolve(linux ? "test-results/manager-repo-linux" : "test-results/manager-repo");
   await fs.mkdir(output, { recursive: true });
   // Real Git, authentication, HTTP dispatch and journal against local repositories.
   // Only Windows service, npm and restart effects are simulated.
@@ -34,7 +35,7 @@ async function main() {
   await publish({ "apps/api/src/server.cjs": "v1\n", "apps/web/src/page.tsx": "v1\n", "scripts/manager-dashboard.cjs": "v1\n", "deployment/docker/compose.yaml": "v1\n" }, "Initial");
   git(dir, "clone", "--quiet", remote, checkout);
 
-  const fixture = await startAuthFixture({ root: checkout, env });
+  const fixture = await startAuthFixture({ root: checkout, env, platform: linux ? "linux" : "win32" });
   const report = { browser: "headless WebKit", checks: [], errors: [], passed: false };
   let browser, page;
   try {
@@ -57,6 +58,18 @@ async function main() {
       repoUpdater.prepare = target => { calls.push("verify"); return realPrepare(target); };
       repoUpdater.fastForward = plan => { calls.push("pull"); return realFastForward(plan); };
     `, fixture.context);
+    if (linux) vm.runInContext(`
+      readUnit = async () => ({ LoadState:"loaded", ActiveState:"active", WorkingDirectory:ROOT, User:"fixture", ExecStart:"npm run start:web" });
+      controlSystemd = async (service, action) => { calls.push(service.id + ":" + action); };
+      checkWebBuildUnit = async () => { calls.push("check-build"); };
+      buildSystemdWeb = async () => { calls.push("build"); };
+      const initialStatus = allStatus;
+      allStatus = async () => {
+        const status = await initialStatus();
+        status.services.find(service => service.id === "web").mode = "production";
+        return status;
+      };
+    `, fixture.context);
     const calls = () => vm.runInContext('calls.splice(0).join(",")', fixture.context);
     const notice = page => page.locator("#repoNotice");
     const waitForNotice = text => page.waitForFunction(value => document.querySelector("#repoNotice").textContent.includes(value), text);
@@ -77,7 +90,7 @@ async function main() {
     const pullUpdate = page.getByRole("button", { name: "Pull + Update API + Web", exact: true });
     assert.equal(await pull.isDisabled(), true);
     assert.match(await pull.getAttribute("title"), /Nothing to pull/);
-    report.checks.push("An up-to-date checkout disables both pull actions with a reason");
+    report.checks.push("An up-to-date checkout disables Pull with a reason");
 
     // A server customization of a tracked file survives an unrelated update.
     await write(checkout, "deployment/docker/compose.yaml", "server customization\n");
@@ -95,19 +108,34 @@ async function main() {
     await pull.click();
     const dialog = page.locator("#actionDialogMessage");
     await dialog.waitFor();
-    assert.match(await dialog.innerText(), new RegExp("Fast-forward main from \\w{7} to " + first.slice(0, 7) + " \\(1 commit from origin/main\\)\\?.*keep running.*1 local modification will be kept.*restart Manager afterwards", "s"));
+    if (linux) assert.match(await dialog.innerText(), /restart affected running checkout services \(api\)/);
+    else assert.match(await dialog.innerText(), new RegExp("Fast-forward main from \\w{7} to " + first.slice(0, 7) + " \\(1 commit from origin/main\\)\\?.*keep running.*1 local modification will be kept.*restart Manager afterwards", "s"));
     await page.locator("#actionDialogConfirm").click();
     await waitForResult("Completed · Fast-forwarded main");
-    assert.match(await page.locator("#operationSummary").innerText(), /Run Update API \+ Web.*Restart Manager/);
+    assert.match(await page.locator("#operationSummary").innerText(), linux ? /Restarted api.*Restart Manager/ : /Run Update API \+ Web.*Restart Manager/);
     assert.equal(git(checkout, "rev-parse", "HEAD"), first);
     assert.equal(await fs.readFile(path.join(checkout, "deployment/docker/compose.yaml"), "utf8"), "server customization\n");
-    assert.equal(calls(), "verify,pull");
+    assert.equal(calls(), linux ? "verify,pull,api:stop,api:start" : "verify,pull");
     await waitForNotice("main matches origin/main");
-    report.checks.push("Pull fast-forwards to the confirmed commit, keeps local edits, touches no service and names follow-up steps");
+    report.checks.push("Pull fast-forwards to the confirmed commit, keeps local edits and reports service actions");
 
     const second = await publish({ "apps/web/src/page.tsx": "v2\n" }, "Refresh home page");
     await page.getByRole("button", { name: "Check for updates", exact: true }).click();
     await waitForNotice("1 new commit on origin/main");
+    if (linux) {
+      await pull.click();
+      await dialog.waitFor();
+      assert.match(await dialog.innerText(), /restart affected running checkout services \(web\).*Rebuild Production Web/);
+      await page.locator("#actionDialogConfirm").click();
+      await waitForResult("Rebuilt production Web. Restarted web.");
+      assert.equal(git(checkout, "rev-parse", "HEAD"), second);
+      assert.equal(calls(), "verify,check-build,pull,web:stop,build,web:start");
+      await page.screenshot({ path: path.join(output, "production-web-updated.png"), fullPage: true });
+      report.checks.push("Linux checkout Pull restarts only API, then rebuilds and restarts only production Web for the next commit");
+      assert.deepEqual(report.errors, []);
+      report.passed = true;
+      return;
+    }
     await page.waitForFunction(() => !document.querySelector('[data-repo="pull-update"]').disabled);
     await pullUpdate.click();
     await dialog.waitFor();

@@ -923,8 +923,8 @@ async function systemdWebMode(unit) {
   }
   const command = unit.ExecStart || "";
   let mode = null;
-  if (/\b(?:dev:web|next dev)\b/.test(command)) mode = "development";
-  if (/\b(?:start:web|next start|run-service\.cjs web)\b/.test(command)) mode = "production";
+  if (/\b(?:dev:web|next dev)\b/.test(command) || /\bnpm (?:run )?dev(?:\s|$)/.test(command)) mode = "development";
+  if (/\b(?:start:web|start:linux:web|next start|run-service\.cjs web)\b/.test(command) || /\bnpm (?:run )?start(?:\s|$)/.test(command)) mode = "production";
   return { mode, modeSwitchAvailable: false };
 }
 
@@ -964,7 +964,7 @@ async function controlSystemd(service, action) {
 
 async function checkWebBuildUnit(unit) {
   const build = await readUnit(WEB_BUILD_UNIT, "LoadState,User,WorkingDirectory,ExecStart");
-  if (build.LoadState !== "loaded" || build.User !== unit.User || build.WorkingDirectory !== unit.WorkingDirectory ||
+  if (build.LoadState !== "loaded" || !build.User || ["root", "0"].includes(build.User) || build.User !== unit.User || build.WorkingDirectory !== unit.WorkingDirectory ||
       !/\brun-service\.cjs build(?:\s|$)/.test(build.ExecStart || "")) {
     throw new Error("Install the Web build unit with the same User and WorkingDirectory as Web. " + WEB_MODE_SETUP);
   }
@@ -974,6 +974,10 @@ async function checkWebBuildUnit(unit) {
     throw new Error("A production build on a 2 GiB host requires at least 2 GiB of swap. Web was not stopped.");
   }
   await execFileAsync("/usr/bin/sudo", ["-n", "-l", "/usr/bin/systemctl", "start", WEB_BUILD_UNIT], { timeout: 5000 });
+}
+
+function buildSystemdWeb() {
+  return execFileAsync("/usr/bin/sudo", ["-n", "/usr/bin/systemctl", "start", WEB_BUILD_UNIT], { timeout: 31 * 60_000 });
 }
 
 async function switchSystemdWeb(web, nextMode) {
@@ -988,8 +992,7 @@ async function switchSystemdWeb(web, nextMode) {
   await serviceStep(web, "stop", () => controlSystemd(web, "stop"));
   try {
     if (nextMode === "production") {
-      await serviceStep(web, "build", () => execFileAsync("/usr/bin/sudo", ["-n", "/usr/bin/systemctl", "start", WEB_BUILD_UNIT],
-        { timeout: 31 * 60_000 }));
+      await serviceStep(web, "build", buildSystemdWeb);
     }
     await writeWebMode(MODE_FILE, nextMode);
     await serviceStep(web, "start", () => controlSystemd(web, "start"));
@@ -1534,13 +1537,27 @@ function repoStatus() {
   return repoStatusCache.promise;
 }
 
+// A Linux Manager can share its Git checkout with some units while others run
+// a packaged release. Resolve symlinks and only act on units rooted in this tree.
+async function checkoutUnits(ids) {
+  const root = await fsp.realpath(ROOT);
+  const workspace = { cms: "apps/cms/directus", api: "apps/api", web: "apps/web" };
+  const entries = await Promise.all(ids.map(async id => {
+    const unit = await readUnit(serviceMap.get(id).serviceName, "LoadState,ActiveState,WorkingDirectory,ExecStart,User");
+    if (unit.LoadState !== "loaded" || !unit.WorkingDirectory) return null;
+    const cwd = await fsp.realpath(unit.WorkingDirectory);
+    return cwd === root || cwd === path.join(root, workspace[id]) ? [id, unit] : null;
+  }));
+  return Object.fromEntries(entries.filter(Boolean));
+}
+
 async function readRepoStatus() {
   const repo = { ...await repoUpdater.status(), mode: systemd ? "systemd" : "windows" };
   if (systemd && repo.available) {
-    // Linux services run a release built from this checkout, not the checkout itself.
+    repo.checkoutServices = Object.keys(await checkoutUnits(["cms", "api", "web"]));
     const release = await fsp.realpath(RELEASE_LINK).catch(() => null);
     repo.release = release && { path: release, revision: path.basename(release).match(/-([0-9a-f]{12})$/)?.[1] || null };
-    repo.deployCommand = deployCommand(repo.head.hash);
+    if (repo.checkoutServices.length < 3) repo.deployCommand = deployCommand(repo.head.hash);
   }
   return repo;
 }
@@ -1578,11 +1595,56 @@ async function handleRepoPull(target) {
   try {
     const plan = await serviceStep(REPO_STEP, "fetch", () => repoUpdater.prepare(target));
     if (plan.upToDate) return { message: plan.message };
+    if (systemd) return await pullSystemdCheckout(plan);
     const result = await serviceStep(REPO_STEP, "pull", () => repoUpdater.fastForward(plan));
     return { message: result.message + " " + (repoNextSteps(plan.impact, plan.to) || "No service restart is needed for these files.") };
   } finally {
     repoStatusCache = null;
   }
+}
+
+async function pullSystemdCheckout(plan) {
+  const affected = ["cms", "api", "web"].filter(id => plan.impact[id]);
+  const units = await checkoutUnits(affected);
+  const local = Object.keys(units);
+  const running = local.filter(id => units[id].ActiveState === "active");
+  for (const id of local) {
+    if (!["active", "inactive", "failed"].includes(units[id].ActiveState)) throw new Error("Wait for the " + id + " unit operation to finish before pulling.");
+  }
+  let rebuild = false;
+  if (units.web) {
+    const { mode } = await systemdWebMode(units.web);
+    if (!mode) throw new Error("Cannot determine the Web unit's mode. " + WEB_MODE_SETUP);
+    rebuild = mode === "production";
+    if (rebuild) await checkWebBuildUnit(units.web);
+  }
+  const install = plan.impact.dependencies && local.length > 0;
+  if (install && process.getuid() === 0) throw new Error("Run Manager as the checkout's unprivileged owner to install workspace dependencies.");
+  const pulled = await serviceStep(REPO_STEP, "pull", () => repoUpdater.fastForward(plan));
+  try {
+    // Build with the matching Web unit's identity and production environment.
+    // Quiesce affected services before replacing dependencies or the .next tree.
+    for (const id of [...running].reverse()) await handleAction(id, "stop");
+    if (install) await serviceStep({ id: "app-dependencies" }, "install", () => execFileAsync("npm",
+      ["install", ...local.map(id => "--workspace=@multi-master-video-blog/" + id),
+        "--include-workspace-root=" + Boolean(plan.rootDependencies), "--include=dev", "--no-save", "--no-audit", "--no-fund"],
+      { cwd: ROOT, timeout: 15 * 60_000 }));
+    // Restore CMS/API before a Web build that may read them or take minutes.
+    for (const id of local) {
+      if (id === "web" && rebuild) await serviceStep(serviceMap.get("web"), "build", buildSystemdWeb);
+      if (running.includes(id)) await handleAction(id, "start");
+    }
+  } catch (error) {
+    throw new Error(pulled.message + " Service update failed: " + error.message
+      + ". After correcting the failed step, restore the previously running services: " + (running.join(", ") || "none") + ".");
+  }
+  const summary = [pulled.message];
+  if (rebuild) summary.push("Rebuilt production Web.");
+  if (running.length) summary.push("Restarted " + running.join(", ") + ".");
+  const outside = affected.filter(id => !units[id]);
+  if (outside.length) summary.push("Outside this checkout or not installed: " + outside.join(", ") + ". For release units use " + deployCommand(plan.to) + ".");
+  summary.push(repoNextSteps({ manager: plan.impact.manager, deployment: plan.impact.deployment }, plan.to));
+  return { message: summary.filter(Boolean).join(" ") };
 }
 
 async function readServiceLogs(serviceId) {
@@ -1602,7 +1664,8 @@ async function readServiceLogs(serviceId) {
   const stdoutPath = path.join(logDir, `${service.logName}.out.log`);
   const stderrPath = path.join(logDir, `${service.logName}.err.log`);
   if (systemd && serviceId === "web-build") return readUnitJournal(service, WEB_BUILD_UNIT);
-  if (systemd && ["manager", "web"].includes(serviceId) && !fs.existsSync(stdoutPath) && !fs.existsSync(stderrPath)) {
+  // Units send stdout/stderr to journald unless a custom unit redirects them into logs/.
+  if (systemd && ["manager", "cms", "api", "web"].includes(serviceId) && !fs.existsSync(stdoutPath) && !fs.existsSync(stderrPath)) {
     return readUnitJournal(service, serviceId === "manager" ? MANAGER_UNIT : service.serviceName);
   }
 
@@ -2594,7 +2657,7 @@ function html(csrfToken = "") {
               <summary>Checkout, how updates work and commands</summary>
               <dl class="ledger" id="repoLocation"></dl>
               <p class="service-help">${systemd
-                ? "Services run a release that deployment/linux/update-native.sh builds from this checkout. Pull fast-forwards only to the commit you reviewed and keeps unrelated local edits; then deploy that revision with the release script (root)."
+                ? "Pull updates the reviewed commit and restarts affected running units that use this checkout. Production Web rebuilds before starting. Units running a separate release require deployment."
                 : "API, CMS and Web run from this checkout. Pull fast-forwards only to the commit you reviewed and keeps unrelated local edits. Pull + Update API + Web verifies the update while the site still serves, stops Web and API so Windows releases their files, then pulls, installs dependencies, builds Production Web and starts both."}</p>
               <code>node scripts/service-control.cjs repo status</code><code>node scripts/service-control.cjs repo fetch</code><code>node scripts/service-control.cjs repo pull [COMMIT]</code>${systemd ? '<code id="repoDeployCommand"></code>' : "<code>node scripts/service-control.cjs stack pull-update [COMMIT]</code>"}
             </details>
@@ -3392,7 +3455,8 @@ function html(csrfToken = "") {
       if (repo.mode === "systemd") {
         const release = repo.release;
         const matches = release?.revision && repo.head.hash.startsWith(release.revision);
-        rows.push(ledgerRow("Deployed release", release
+        if (repo.checkoutServices?.length) rows.push(ledgerRow("Running from checkout", repo.checkoutServices.join(", ")));
+        if (repo.deployCommand) rows.push(ledgerRow("Deployed release", release
           ? (release.revision || release.path) + (release.revision ? (matches ? " · matches this checkout" : " · differs from this checkout") : "")
           : "Not found", release && release.revision && !matches ? "bad" : ""));
       }
@@ -3450,7 +3514,14 @@ function html(csrfToken = "") {
         message += " The update is verified first. Then Web and API stop, the checkout updates, API and Web dependencies install"
           + (production ? ", Production Web rebuilds" : "") + " and both start. A failure after stopping leaves API and Web stopped.";
       } else if (repo.mode === "systemd") {
-        message += " Running services stay on the deployed release; deploy the new revision with the release script afterwards.";
+        const local = (repo.checkoutServices || []).filter(id => repo.impact?.[id]);
+        if (local.length) {
+          message += " After pulling, restart affected running checkout services (" + local.join(", ") + ").";
+          if (local.includes("api")) message += " Active uploads and conversions may be interrupted.";
+          if (repo.impact?.dependencies) message += " Install dependencies before restarting.";
+          if (local.includes("web") && state?.services?.find(item => item.id === "web")?.mode === "production") message += " Rebuild Production Web before starting it.";
+        }
+        if (["cms", "api", "web"].some(id => repo.impact?.[id] && !local.includes(id))) message += " Services outside this checkout need a separate deployment.";
       } else {
         message += " API and Web keep running the code they loaded, and Development Web may reload changed files. Pull + Update API + Web applies API and Web changes in one step.";
       }

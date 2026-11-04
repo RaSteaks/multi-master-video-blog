@@ -109,13 +109,16 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
   function classify(files) {
     const loaded = new Set(loadedFiles());
     const any = test => files.some(test);
-    const shared = file => file.startsWith("shared/") || file.startsWith("config/");
+    // The root manifest and shared lockfile can change any workspace's runtime.
+    const all = any(file => ["package.json", "package-lock.json", "scripts/run-service.cjs", "config/resource-profile.cjs"].includes(file));
+    const shared = file => file.startsWith("shared/") || file === "config/directus-asset-presets.json";
     return {
       manager: any(file => loaded.has(file)),
-      dependencies: any(file => file === "package-lock.json" || /(^|\/)package\.json$/.test(file)),
-      api: any(file => file.startsWith("apps/api/") || shared(file)),
-      web: any(file => file.startsWith("apps/web/") || shared(file)),
-      cms: any(file => file.startsWith("apps/cms/")),
+      dependencies: any(file => ["package.json", "package-lock.json", "apps/api/package.json", "apps/web/package.json", "apps/cms/directus/package.json"].includes(file)),
+      api: all || any(file => file.startsWith("apps/api/") || shared(file) || file === "config/storage.cjs"),
+      web: all || any(file => file.startsWith("apps/web/") || shared(file)),
+      cms: all || any(file => file.startsWith("apps/cms/") || ["config/storage.cjs", "config/directus-runtime.json", "config/private-cms-collections.json",
+        "scripts/directus-db-utils.cjs", "scripts/directus-public-access.cjs"].includes(file)),
       deployment: any(file => file.startsWith("deployment/"))
     };
   }
@@ -247,6 +250,7 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
       await git(["read-tree", "--dry-run", "-m", "-u", from, to], { write: true, log: true });
       return {
         ...base, upToDate: false, count, changedFiles: files.length, impact: classify(files),
+        rootDependencies: files.includes("package.json") || files.includes("package-lock.json"),
         message: "Verified a fast-forward of " + before.branch + " from " + short(from) + " to " + short(to) + " (" + commits(count) + ")."
       };
     });

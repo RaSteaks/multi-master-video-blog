@@ -284,7 +284,7 @@ sudo -u admin sudo -n -l /usr/bin/systemctl --no-block restart video-blog-manage
 sudo systemctl restart video-blog-manager
 ```
 
-若 Manager 使用其他账号，先把模板中的 admin 改为该服务账号并校验。受控单元文件及其根权限启动脚本必须只允许可信管理员修改；CMS/API/Web 单元使用非 root 用户运行。Manager 单元需允许 sudo 提权；不要为它启用 `NoNewPrivileges=true`。sudoers 授权四个服务的启停、固定 Web 构建单元的 start，以及 Manager 单元自身的 `--no-block restart`。Manager 账号需要能写仓库 logs 目录。数据库和 CMS 健康检查读取项目的 Directus 配置，部署在 /etc 的配置应通过 Manager 单元的 EnvironmentFile 提供相应的数据库及健康检查凭据。
+若 Manager 使用其他账号，先把模板中的 admin 改为该服务账号并校验。受控单元文件及其根权限启动脚本必须只允许可信管理员修改；CMS/API/Web 单元使用非 root 用户运行。Manager 单元需允许 sudo 提权；不要为它启用 `NoNewPrivileges=true`。sudoers 授权四个服务的启停、固定 Web 构建单元的 start，以及 Manager 单元自身的 `--no-block restart`。Manager 账号需要能写仓库 logs 目录。CMS/API/Web 单元把输出写入 journald，面板的 **Live output** 通过 `journalctl -u <单元>` 读取；这些单元以其他系统账号运行时，Manager 账号需加入 `systemd-journal` 组（`sudo usermod -aG systemd-journal admin`，再重启 Manager 单元），否则只能看到 journalctl 的权限提示。数据库和 CMS 健康检查读取项目的 Directus 配置，部署在 /etc 的配置应通过 Manager 单元的 EnvironmentFile 提供相应的数据库及健康检查凭据。
 
 #### 在 Linux Manager 启用 Web 模式切换
 
@@ -337,7 +337,11 @@ sudo -u admin sudo -n -l /usr/bin/systemctl start video-blog-web-build.service
 
 #### 通过 Manager 更新 Git 仓库
 
-Manager 所在的仓库就是 `update-native.sh` 的源仓库，服务运行的是 `/opt/video-blog/current` 中的 release。**Check for updates** 执行 `git fetch`，然后列出待拉取的提交及其影响范围（Manager、API、Web、依赖、CMS、部署文件）。**Pull** 只把该仓库快进到页面上确认过的提交，运行中的服务不会改变。面板显示当前部署的 release 提交是否与仓库 HEAD 一致，并给出部署命令 `sudo bash <仓库>/deployment/linux/update-native.sh <仓库> <提交>`。Manager 不以 root 身份运行部署脚本。
+**Check for updates** 列出待拉取提交及其影响范围。**Pull** 只快进到确认的提交。Manager 会解析 CMS、API 和 Web 单元的 `WorkingDirectory`，在面板列出使用当前 Git 仓库或对应工作区的服务。
+
+- **直接从 Git clone 目录运行**：拉取成功后，Manager 自动重启受影响且原先运行的服务。只有 API 改动时只重启 API。Web 为 Development 时直接重启；Production 时先检查构建单元，再停 Web、构建并启动。按上一节配置与 Web 同账号、同工作目录的 `video-blog-web-build.service`。构建失败会显示失败步骤，修复后再启动服务。已停止的服务不会被启动。
+- **依赖改动**：受影响的工作区会在启动前安装依赖，根 `package.json` 或共享锁文件变化会影响全部工作区。请以有权写入 checkout 及其 `node_modules` 的非 root 账号运行 Manager。
+- **独立 release**：运行在 `/opt/video-blog/current` 等其他目录的单元仍使用原 release。面板提供 `update-native.sh` 对应目标提交的部署命令。Manager 代码变动后仍通过 **Restart Manager** 单独加载。
 
 - 预检会拒绝分叉、进行中的 merge/rebase，以及可能覆盖本地修改的更新。未跟踪文件也受保护，包括被 Git 忽略的本机配置。远端发布分支已删除，或预检后切换了本地分支时，Manager 会停止拉取。不冲突的本地修改（例如服务器上定制的部署文件）会保留。
 - 本项目是公开仓库，用 HTTPS 地址克隆时可以匿名拉取，无需任何凭据。只有私有 fork 或 SSH 地址需要凭据（GitHub 通过 SSH 访问时，即使是公开仓库也要求密钥）。Manager 在后台运行，Git 无法弹出输入提示，因此这类凭据必须能免交互使用：为 Manager 账号配置只读部署密钥（预先写入 `known_hosts`）或 credential helper。SSH 默认以 `BatchMode=yes` 运行；已设置的 `core.sshCommand`、`GIT_SSH_COMMAND` 或 `GIT_SSH` 会保留。fetch 超过 120 秒会被终止，不会一直等待输入。可以用 Manager 账号执行 `git remote -v` 和 `GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote origin` 自检：地址是 `https://` 且能列出分支，就无需配置。
