@@ -19,7 +19,10 @@ function load(filename) {
   } });
   const module = { exports: {} };
   vm.runInNewContext(outputText, { module, exports: module.exports, require: id => {
-    if (id.startsWith("@/")) return load(path.join(root, id.slice(2) + ".ts"));
+    if (id.startsWith("@/") || id.startsWith(".")) {
+      const target = id.startsWith("@/") ? path.join(root, id.slice(2)) : path.resolve(path.dirname(filename), id);
+      return load(target + (fs.existsSync(target + ".tsx") ? ".tsx" : ".ts"));
+    }
     return require(id);
   }, setTimeout, clearTimeout }, { filename });
   cache.set(filename, module.exports);

@@ -190,18 +190,16 @@ npm run dev:cms                # 启动 Directus
 npm run setup:cms-schema       # 创建 / 修复 CMS 内容模型
 npm run repair:cms-insights    # 只读检查部署环境中缺少聚合函数的 Insights 折线图
 npm run migrate:cms:postgres   # SQLite → PostgreSQL 迁移入口
-npm run test:api               # API 语法与单元、媒体回归测试
-npm run test:album-api         # 对运行中的 API / Directus 执行相簿集成测试并清理测试数据
-npm run test:db                # 检查 Directus 数据库（SQLite / PostgreSQL）
-npm run test:cms-schema        # 检查 CMS 表、字段、关系
-npm run test:cms-crud          # 检查 CMS CRUD 与关联读取
-npm run test:web               # 前端单元测试
-npm run test:external-projects # 独立网站数据、封面和发布权限测试
-npm run test:project-browser   # 隔离 CMS 与 headless WebKit 项目页验证
-npm run test:article-editor-browser # 启动 dev:web 后，以 headless WebKit 检查文章预览滚动
+npm test                      # 前端、Node 和 API 测试各运行一次
+npm run test:web              # 仅前端单元测试
+npm run test:node             # 根目录服务/部署测试与 Manager 平台测试
+npm run test:api              # API 单元与真实媒体验证，需匹配的 FFmpeg/FFprobe
 npm run health                 # 检查本地服务健康状态
 npm run manager                # 启动本地服务管理面板
 ```
+
+完整测试清单、按需浏览器验证和连接运行中 CMS 的操作检查见 [测试说明](tests/README.md)。
+浏览器脚本直接用 `node tests/<名称>-browser.cjs` 运行，不为每个功能重复维护 npm 入口。
 
 ---
 

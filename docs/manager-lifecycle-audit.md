@@ -38,7 +38,7 @@ Web 默认遵循 MANAGER_WEB_MODE；显式传入 web-service.ps1 的 NpmScript �
 - 1 项 Windows 真实进程测试通过：隔离端口上的启动、重复启动、重启 PID 变化、重复停止及启动进程提前退出。
 - Edge 无头浏览器隔离测试通过：操作等待/成功/失败、超过 12 秒错误仍可见、对话框取消/确认/Escape/焦点、390px 宽度无横向溢出、无页面异常。
 - 所有 Windows PowerShell 脚本语法检查及 git diff --check 通过。
-- 可重复运行服务端测试：`npm run test:manager`。启动器测试使用临时目录与测试端口，不控制实际数据库。
+- 可重复运行服务端测试：`node --test scripts/test-manager-powershell.cjs scripts/test-manager-lifecycle.cjs scripts/test-manager-launcher.cjs`。启动器测试使用临时目录与测试端口，不控制实际数据库。
 
 ## 验证边界与注意事项
 
@@ -52,6 +52,6 @@ Web 默认遵循 MANAGER_WEB_MODE；显式传入 web-service.ps1 的 NpmScript �
 
 - 根因：Windows PowerShell 已退出后，Start-Process 启动的常驻服务仍持有继承的管道句柄，Node execFile 一直等不到管道关闭，导致 Start All 无法释放操作锁。
 - 修复：在确认 PowerShell 退出后留出 250ms 排空输出，再关闭执行器的 stdout/stderr 读取端；保留服务自身的运行状态、文件日志和原有互斥控制。此处理不对仍在运行的 PowerShell 命令强制超时。
-- 回归：增加真实 npm 常驻服务测试，检查服务仍健康时启动操作能结束、下一操作能取得锁，以及 stdout/stderr 日志正常写入；完整 `npm run test:manager` 共 22 项通过。
+- 回归：增加真实 npm 常驻服务测试，检查服务仍健康时启动操作能结束、下一操作能取得锁，以及 stdout/stderr 日志正常写入；完整 `node --test scripts/test-manager-powershell.cjs scripts/test-manager-lifecycle.cjs scripts/test-manager-launcher.cjs` 共 22 项通过。
 - 实机 Directus 冷启动约 64 秒，超过此前 30 秒等待期限；默认 MANAGER_WAIT_MS 调整为 90000，显式环境变量仍可覆盖。
 - 实机验证：经用户 UAC 授权，以管理员身份重载 Manager 后，`POST /manager/api/stack/restart-all` 返回 200；PostgreSQL、CMS、API、Web 均健康，三个应用监听 PID 全部变化，Manager 的 activeOperation 为 null。此前“未对真实服务执行重启”的验证边界仅对应早期检查。

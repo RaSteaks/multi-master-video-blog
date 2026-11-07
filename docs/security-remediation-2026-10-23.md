@@ -102,4 +102,4 @@ npm run test:cms-security
 CMS_RUNTIME_ONLY=true npm run build:web
 ```
 
-浏览器验证需要 Playwright WebKit：先 `npx playwright install webkit`，在一个终端运行 `HOLD_FIXTURE=1 npm run test:cms-security`，待显示 fixture ready 后在另一个终端运行 `npm run test:security-browser`；最后结束 fixture，测试会清理临时进程/数据库。也可通过 `PLAYWRIGHT_MODULE` 与 `WEBKIT_EXECUTABLE_PATH` 指定已经安装的测试运行库和 WebKit。不会连接个人浏览器配置或启动 Chrome。
+浏览器验证需要 Playwright WebKit：先 `npx playwright install webkit`，在一个终端运行 `HOLD_FIXTURE=1 npm run test:cms-security`，待显示 fixture ready 后在另一个终端运行 `node --test tests/security.test.cjs tests/security-remediation.test.cjs-browser`；最后结束 fixture，测试会清理临时进程/数据库。也可通过 `PLAYWRIGHT_MODULE` 与 `WEBKIT_EXECUTABLE_PATH` 指定已经安装的测试运行库和 WebKit。不会连接个人浏览器配置或启动 Chrome。

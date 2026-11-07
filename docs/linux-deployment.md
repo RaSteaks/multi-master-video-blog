@@ -190,8 +190,7 @@ dc exec -T api node /app/scripts/maintenance.cjs check
 实现验证：
 
 ```bash
-npm run test:resources
-node --test apps/api/test/performance.test.cjs
+npm run test:node
 npm run test:api
 npm run test:web
 RESOURCE_PROFILE=low-2gb CMS_RUNTIME_ONLY=true STANDALONE_BUILD=true npm run build:low-memory

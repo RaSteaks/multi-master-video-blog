@@ -160,7 +160,7 @@ PostgreSQL control may require an Administrator terminal/Manager process.
   `logs/app.dependencies.out.log` and `logs/app.dependencies.err.log`.
   After deploying this controller change, restart Manager once to load it;
   merely clicking Update in an already-running older Manager uses the old flow.
-  Regression checks: `npm run test:manager` covers sequencing, failures and
+  Regression checks: `node --test scripts/test-manager-powershell.cjs scripts/test-manager-lifecycle.cjs scripts/test-manager-launcher.cjs` covers sequencing, failures and
   offline fixture package installation; `node tests/manager-update-browser.cjs`
   checks the authenticated UI with isolated, simulated Windows service effects.
   Browser evidence is saved in `test-results/manager-auto-install`.
@@ -306,7 +306,7 @@ The homepage has one fixed laboratory link to `/project`, so project edits never
 need to invalidate it. Failed CMS reads propagate to ISR, which retains the last
 successful homepage. A cold build requires a reachable CMS. `CMS_RUNTIME_ONLY=true` continues to opt deployments into runtime
 rendering intentionally; normal builds with positive cache revalidation retain a
-static homepage. `npm run test:phase6-cache` verifies a production build, failed
+static homepage. `node tests/phase6-cache.cjs` verifies a production build, failed
 CMS revalidation retaining good data, and recovery after project invalidation.
 The former home upload-link environment overrides are removed.
 
@@ -320,10 +320,10 @@ controls; the site's fullscreen button retains the complete player. iPhone falls
 page immersion, Android attempts landscape locking, and touch landscape playback
 uses immersion. Physical device rotation, safe areas and HDR output require device
 validation. These modes pause the liquid background without changing saved speed.
-Run `npm run test:create-menu-browser` for author/upload regressions and
-`npm run test:phase6-browser` for public tools, homepage and playback checks.
+Run `node tests/create-menu-browser.cjs` for author/upload regressions and
+`node tests/phase6-browser.cjs` for public tools, homepage and playback checks.
 Both use disposable localhost fixtures and headless WebKit;
-`PHASE6_BROWSER=firefox npm run test:phase6-browser` selects headless Firefox.
+`PHASE6_BROWSER=firefox node tests/phase6-browser.cjs` selects headless Firefox.
 Evidence is saved under `test-results/create-menu` and `test-results/phase6-<browser>`.
 Run `node tests/author-session-browser.cjs` for browser restart, missing display
 hints and cross-window logout regressions. It uses a disposable persistent WebKit
@@ -465,7 +465,7 @@ For production, replace the Directus admin credentials in API and frontend `.env
   Health checks share cached FFmpeg/FFprobe availability for 60 seconds, with a
   five-second deadline per probe; they are not a real-time codec diagnostic.
 
-The offline security regression checks are `npm run test:security`. They use
+The offline security regression checks are `node --test tests/security.test.cjs tests/security-remediation.test.cjs`. They use
 temporary files and mocked CMS/service effects; they do not alter live services.
 
 ## Linux and Docker

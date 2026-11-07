@@ -214,7 +214,7 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
 - 作者登录后，相簿管理、写作台、视频上传中的令牌输入框显示为"已作为作者登录"，可以展开后改用手动输入。
 - 涉及文件：`apps/api/src/server.cjs` 中的鉴权函数（`tokenMatches` 附近）、`apps/web/src/lib/album-management.ts`、`ArticleEditor.tsx`、`UploadVideoForm.tsx`。
 
-**验收**：原有的 Bearer 用法完全不受影响（运行现有的 `npm run test:album-api`、`npm run test:security`）；登录后的三处上传都无需输入令牌；跨站请求和缺少 CSRF 请求头的请求被拒绝。
+**验收**：原有的 Bearer 用法完全不受影响（运行现有的 `npm run test:album-api`、`node --test tests/security.test.cjs tests/security-remediation.test.cjs`）；登录后的三处上传都无需输入令牌；跨站请求和缺少 CSRF 请求头的请求被拒绝。
 
 ## 7. 不要做
 
@@ -406,7 +406,7 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
 - 钢笔图标保留。完成小点使用成功色并保留 6 秒；第 15 项采用默认方案，失败小点使用危险色，打开面板后清除未读提示，失败详情继续保留。任务详情仅保存在当前客户端会话，退出作者登录时清除。
 - 第 6、8 项及第 5 项中的 featured-project 部分由第 8.10 节作废，本轮保留该并行改动，不再恢复已删除的缓存链路。
 - 第 3 项代码改为 `⌘⌥⇧L` / `Ctrl+Alt+Shift+L`，使用物理 `KeyL` 兼容 Option 改变字符的键盘布局。Safari 26.2 的原生验证被“允许远程自动化”关闭阻塞；没有更改 Safari 设置，WebKit 页面测试不作为 Safari 应用层快捷键验证。
-- 新增 `npm run test:phase6-cache`：生产构建后检查静态首页、CMS 故障时保留成功计数、恢复后的失效刷新，以及真实非 HTTPS 域名下的剪贴板缺失提示。移动端回归使用浏览器触控与方向模拟，不替代真机安全区或 Android 屏幕锁定验证。
+- 新增 `node tests/phase6-cache.cjs`：生产构建后检查静态首页、CMS 故障时保留成功计数、恢复后的失效刷新，以及真实非 HTTPS 域名下的剪贴板缺失提示。移动端回归使用浏览器触控与方向模拟，不替代真机安全区或 Android 屏幕锁定验证。
 
 ### 8.12 回首页的划变（2026-10-31）
 
@@ -420,7 +420,7 @@ API 自身的路径没有 `/api` 前缀，这个前缀由 Nginx 和 Next 的 rew
 - Esc、窗口失焦、视口变化、路由变化或会话失效均取消。普通作者菜单保留，作为点击与键盘替代入口。
 - 使用真实 Link 激活，继续经过写作页的未保存提醒和站内转场；不直接提交、上传或绕过鉴权。
 - 圆盘是光圈外观：弧形叶片从近乎圆形的开孔切线旋出，第一项固定在正上方，标签位于各叶片重心；复用原图标与配色，直径 340–352px（标签不缩放，再小时两行标签会碰到叶片边缘），中心 36% 为取消区，透明背景层不改变媒体像素。靠近边缘时先提示向内移动，能留出 12px 边距后才展开，绝不通过挪动圆心来避让；窗口过小时提示使用普通作者菜单。减少动态效果时无入场动画。
-- `npm run test:author-tray-browser` 使用隔离 CMS/API 和 headless WebKit；`TRAY_BROWSER=firefox` 可验证 Firefox。证据保存在 `test-results/author-tray-<browser>`。
+- `node tests/author-tray-browser.cjs` 使用隔离 CMS/API 和 headless WebKit；`TRAY_BROWSER=firefox` 可验证 Firefox。证据保存在 `test-results/author-tray-<browser>`。
 
 ### 8.12 作者圆盘：会话过期提示（2026-10-31）
 

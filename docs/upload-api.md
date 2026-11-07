@@ -103,7 +103,7 @@ automatically by changing these example files.
 Focused regression checks:
 
 ```sh
-npm run test:video-upload
+node --test tests/video-upload.test.cjs
 ```
 
 `tests/video-upload-browser.cjs` exercises the real Next/API/FFmpeg pipeline with
@@ -238,7 +238,7 @@ Focused verification from the repository root:
 ```sh
 node --test tests/storage-config.test.cjs apps/api/test/content-archive.test.cjs apps/api/test/directus-client.test.cjs
 node --test apps/api/test/video-storage.test.cjs
-npm run test:video-upload
+node --test tests/video-upload.test.cjs
 npm run test:content-storage
 ```
 

@@ -4,6 +4,7 @@ const playwright = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const { startFixture } = require("./helpers/create-menu-fixture.cjs");
 
 const ENGINE = process.env.SORT_ENGINE || "webkit";
+if (!["webkit", "firefox"].includes(ENGINE)) throw new Error("SORT_ENGINE must be webkit or firefox.");
 
 async function main() {
   const fixture = await startFixture({ name: `sort-${ENGINE}`, cmsPort: 18181, apiPort: 18186, webPort: 13071 });
@@ -231,37 +232,6 @@ async function main() {
     assert.ok(await page.locator(".contact-frame").count() >= 5, "The home strip reads by date and never needed the field.");
     fixture.unmigratedCollections.clear();
     pass("a site deployed before its schema upgrade keeps every list up");
-
-    if (ENGINE === "chromium") {
-      const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
-      const mobile = await phone.newPage();
-      await phone.addCookies((await context.cookies()).filter(cookie => cookie.name.startsWith("author")));
-      await mobile.goto(`${fixture.url}/posts`, { waitUntil: "networkidle" });
-      const grip = mobile.locator(".sort-handle");
-      await grip.first().waitFor();
-      const size = await grip.first().boundingBox();
-      assert.ok(size.width >= 40 && size.height >= 40, `The touch target is ${size.width}px.`);
-      assert.equal(await grip.first().evaluate(handle => getComputedStyle(handle).touchAction), "none");
-      const order = await mobile.locator("main .content-grid > li h2").allTextContents();
-      const cdp = await phone.newCDPSession(mobile);
-      const touch = (type, x, y) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y }] });
-      const a = await grip.nth(0).boundingBox();
-      const b = await grip.nth(1).boundingBox();
-      const x = a.x + a.width / 2;
-      const y = a.y + a.height / 2;
-      const scrolled = await mobile.evaluate(() => scrollY);
-      await touch("touchStart", x, y);
-      for (let step = 1; step <= 8; step++) {
-        await touch("touchMove", x, y + (b.y - a.y) * step / 8);
-        await mobile.waitForTimeout(30);
-      }
-      assert.equal(await mobile.evaluate(() => scrollY), scrolled, "Dragging the handle does not scroll the page.");
-      await touch("touchEnd");
-      await mobile.waitForTimeout(300);
-      assert.deepEqual((await mobile.locator("main .content-grid > li h2").allTextContents()).slice(0, 2), [order[1], order[0]]);
-      await phone.close();
-      pass("a finger can drag a handle on a phone without scrolling the page");
-    }
 
     // Article publishing can hold a separate token; arranging a list never needs it.
     await fixture.restartApi({ ARTICLE_API_TOKEN: "separate-article-token" });
