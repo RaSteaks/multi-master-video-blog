@@ -1,5 +1,29 @@
 # Video Workflow
 
+## Public playback support
+
+`/support` serves the standalone HTML/CSS/JavaScript guide in
+`apps/web/public/support/` through a frontend rewrite. It bypasses the App Router
+layout and performs no API/CMS requests. Home links to it directly below Info;
+both CMS and local About pages provide the same document link. The guide is a
+route map: the playback line (P1–P6) and the color line (C1–C6) share one
+network across three ownership zones (server, web player, browser and system)
+and interchange at probe, packaging, decode and display. Its twelve stops are
+read as one ride, and native scrolling drives a marker along the pinned map with
+an in-car display of the current and next stop; phones and short windows show
+the map once in flow, then a pinned route strip. Metadata definitions, format
+conditions and troubleshooting link back to stops by station code. Reduced
+motion moves the marker only between stops. Each stop also has a station
+figure (`figures.js`): computed where a formula exists (CIE 1931 primaries,
+PQ/HLG curves, limited/full ranges, and the BT.2020 → BT.2390 EETF → BT.709
+colour volume for the SDR branch), labelled illustrations otherwise, plus an
+opt-in local `decodingInfo()` check at device selection. Existing
+`#playback-*`/`#color-*` anchors stay valid, and `#playback` / `#color` open the
+first stop of each line.
+Keep its explanations aligned with the implementation below.
+Run `node tests/support-browser.cjs` for an isolated production build and headless
+WebKit checks, including unavailable backends and JavaScript-disabled reading.
+
 ## Manual HLS Workflow
 
 1. Export video masters from DaVinci Resolve or another editing tool.

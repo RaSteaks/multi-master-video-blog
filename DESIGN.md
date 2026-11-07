@@ -9,6 +9,14 @@ colors:
   secondary: "#9AAABB"
   liquidBase: "#000000"
   liquidDefault: "#82868A"
+  lineLight: "#2C3840"
+  supportBody: "#C4CED8"
+  supportTrackAhead: "#5D6B7B"
+  supportLabelAhead: "#8A98A6"
+  supportZoneA: "#13171C"
+  supportFocus: "#86B8DC"
+  supportLinePlayback: "#D9A35E"
+  supportLineColor: "#74C290"
 typography:
   sans:
     fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
@@ -17,6 +25,9 @@ typography:
 rounded:
   swatch: 8px
   preview: 4px
+  supportPlate: 10px
+  supportControl: 6px
+  supportSign: 0.6em
 ---
 
 # Reference Room design context
@@ -37,7 +48,13 @@ background preferences. The liquid surround always stays pure black (#000000);
 HSV and saved colors affect only the flowing blobs, without white mixing.
 Black dye blends into the black surround; the default dye is neutral gray.
 WebGL composites dye onto opaque black before browser blur/compositing.
-Controls retain their dark surfaces and readable labels.
+Controls retain their dark surfaces and readable labels. Hairlines use
+`--line-light`. The standalone `/support` snapshot adds support-only roles:
+a softer body-copy reading tone, dimmed track and label tones for the route ahead,
+one raised zone fill, and a single focus blue reserved for "you are here". Colour is
+otherwise allowed in only two roles: line identity (amber playback line, green
+colour line, as on a transit map, always paired with line form) and colour that is
+itself the data in the station figures, shown as labelled sRGB approximations.
 
 ## Typography
 
@@ -63,9 +80,78 @@ while reduced motion retains one static blob.
 ## Shapes
 
 Reuse the existing rounded input and panel geometry; swatch controls use 8px
-corners and inset preview chips use 4px corners.
+corners and inset preview chips use 4px corners. On `/support` the map plate, the 6px
+readout controls and the em-relative station signs use the `support*` radii.
 
 ## Components
+
+- `/support` is a standalone, Chinese-language static technical guide in
+  `apps/web/public/support/`, served by a frontend rewrite without the CMS-backed
+  layout. Its CSS snapshots the reference-room surface/text/font tokens above;
+  it deliberately has no live appearance settings or remote dependencies.
+  It is a route map: one inline SVG network over three ownership zone bands
+  (服务器 and 网页播放器 are this site's code; 浏览器与系统 is decided by the
+  platform), alternating the `supportZoneA` fill with the page background. The
+  playback line (P1–P6) is a solid stroke, the colour line (C1–C6) a hollow double
+  rail, the SDR branch dashed and the fallback dotted; the lines interchange in
+  pills at probe, packaging, decode and display. One ride order, P1 P2 C1 P3 C2 C6
+  P4 P5 C3 C4 C5 P6, makes C6 a spur trip that returns to the main line. Line
+  identity pairs form with hue: the playback line in `supportLinePlayback`, the
+  colour line and its SDR branch in `supportLineColor`. State is brightness: passed
+  spans light in their line's hue and stations turn bright, those ahead stay in
+  `supportTrackAhead` / `supportLabelAhead`, and `supportFocus` is reserved for the
+  current stop, its ring, the trail and the marker. Station signs (2px rounded
+  rules in the line's hue, double for colour, dashed for SDR; the current stop's
+  sign turns `supportFocus`) are the page-wide numbering system in
+  stop headings, the readout, the ticks and the metadata, format and
+  troubleshooting cross-references, which all ride to their stop. Scroll drives the
+  marker: it holds for the first half of each stop, then eases along the real leg;
+  an interchange pill takes the accent during its transfer, and a terminus runway
+  lets the train reach 屏幕 while the map is still pinned. The in-car readout under
+  the map shows current and next stop, 12 ticks drawn in each stop's line form, and
+  上一站/下一站 buttons. Desktop pins the map plate with the readout beneath; windows
+  761–860px tall fold the readout label, 561–760px tall tighten insets to a two-line
+  readout, and a map drawn below 80% scale enlarges its labels up to 1.25× from JS.
+  At ≤860px wide or ≤560px tall the whole map sits once in flow with codes only,
+  then the readout pins under the header as a route strip; wide-but-very-short
+  windows centre a 720px column. Reduced motion moves the marker only between
+  stops; without JavaScript the full static map and every stop remain readable.
+  Legacy `#playback`/`#color` anchors open P1/C1, and cached stop geometry keeps the
+  scroll callback free of layout reads. Each stop also carries one station figure
+  (`figures.js`, canvas on the `supportZoneA` plate, 16:9 / 16:11 / 2:1 desktop,
+  4:3 or 1:1 on phones; P1/P5 5:2, P6 2:1) in the reading column, scrubbed by its
+  own scroll position: it starts only once the whole plate is inside the readable
+  window (below the header, or below the pinned strip on phones) and finishes as its
+  top is about to leave, over at least 200px of scroll, so every frame plays fully
+  in view. Figures are drawn in the map's grammar: `--text` for what is current
+  or resulting, `--secondary` for references, `supportTrackAhead` for ghosts and
+  what is not yet reached, dashed only for the SDR branch, dotted only for fallback,
+  and `supportFocus` only for the playhead, in-flight work and the current step.
+  Hue appears in figures only where colour is the data: the C1 horseshoe fill (36%
+  over the plate), the C5 sample dots and the C6 edges coloured by RGB position, all
+  computed as sRGB approximations (out-of-gamut chromaticities desaturated toward
+  white at full brightness) and labelled as such in their captions. Coloured marks
+  (dots, edges) also get a luminance floor mixed toward white so even sRGB blue
+  keeps 3:1 on the plate; grey reference lines over the C1 fill carry a dark casing.
+  Canvas colours read the CSS tokens with identical fallbacks, because WebKit may
+  run the deferred script before custom properties resolve. Where a formula exists
+  it is computed: CIE 1931 xy locus and primaries (C1, C5), ST 2084 and BT.2100
+  HLG with the display-peak system gamma (C4, peak slider), limited/full code-value
+  mapping (C3), and the C6 volume: a BT.2020 RGB cube at 1000 cd/m² in ICtCp,
+  BT.2390 EETF to 100 cd/m² with chroma scaled by I, then a simplified constant-I
+  desaturation into BT.709 (labelled as not libplacebo's mapping), framed so the
+  whole 1000 cd/m² source stays on the plate with a luminance ruler outside the
+  solid; drag or arrow keys rotate it and the canvas is a labelled slider. P4 follows
+  `selectAutomaticMaster`: HDR report, candidate ranking, then first variant and
+  decodingInfo() per candidate until one passes. Upload chunks, probe,
+  packaging cut points, verification layers, decode paths and fallback timelines are
+  illustrations whose captions say so. P4 can run this device's matchMedia and
+  decodingInfo() with example configurations, only on request and without network
+  requests. A figure's status line has a fixed height so scrubbing never shifts the
+  page; reduced motion shows each figure's final frame; without JavaScript the
+  figures stay hidden and the text carries every fact. Native disclosures hold format details and
+  troubleshooting. Home places Support immediately below Info; both About render paths
+  link to it. `data-native-navigation` keeps these document links outside route wipes.
 
 - The `/project` laboratory reuses the reference-room palette and type. Its two-column
   desktop / single-column mobile default remains available alongside six author-owned

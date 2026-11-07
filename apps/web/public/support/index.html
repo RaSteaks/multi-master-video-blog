@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0c0e10">
+  <meta name="description" content="沿一张线路图了解视频从上传、HDR 元数据验证、HLS 封装到浏览器解码和屏幕显示的 12 个站点，以及色彩映射与 SDR 回退。">
+  <title>播放与色彩支持</title>
+  <link rel="stylesheet" href="/support/support.css">
+  <script src="/support/support.js" defer></script>
+  <script src="/support/figures.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="site-header">
+    <a class="identity" href="/support" aria-current="page"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 22h8M12 18v4M9 8l6 3-6 3z"/></svg>播放与色彩支持</a>
+    <nav aria-label="站点导航"><a href="/">首页</a><a href="/about">关于</a></nav>
+  </header>
+  <main id="main" tabindex="-1">
+    <div class="journey">
+      <header class="intro">
+        <h1>从文件，<br>到屏幕。</h1>
+        <p class="lead">一帧画面要走两条线：播放线把文件送到解码器，色彩线让数值获得颜色与亮度的含义。</p>
+        <p>两条线在同一张网上并行，在探测、封装、解码和显示四站换乘；设备不支持时，播放器改走 SDR 支线上的兼容母版。向下滚动沿线乘车，向上回看，也可以点线路图上的站直接到达。</p>
+        <nav class="contents" aria-label="本页目录"><a href="#pipeline">全程 12 站</a><a href="#metadata">元数据</a><a href="#formats">格式与兼容</a><a href="#troubleshooting">播放排查</a></nav>
+      </header>
+
+      <div class="route">
+        <figure class="route-map" aria-labelledby="map-caption">
+          <figcaption id="map-caption" class="visually-hidden">线路图：播放线与色彩线的 12 个站点，按服务器、网页播放器、浏览器与系统三个责任区排列。</figcaption>
+          <div class="map-frame"><svg class="network" viewBox="0 0 600 640" fill="none">
+            <g class="zones" aria-hidden="true">
+              <rect class="zone z1" x="0" y="0" width="600" height="200"/>
+              <rect class="zone z2" x="0" y="200" width="600" height="200"/>
+              <rect class="zone z3" x="0" y="400" width="600" height="200"/>
+              <rect class="zone legend-band" x="0" y="600" width="600" height="40"/>
+              <path class="zone-edge" d="M0 200.5H600M0 400.5H600M0 600.5H600"/>
+              <g class="zone-label" data-zone="1"><text class="zn" x="20" y="34">服务器</text><text class="zs" x="20" y="54">本站代码 · 接收 / FFprobe / FFmpeg</text></g>
+              <g class="zone-label" data-zone="2"><text class="zn" x="20" y="234">网页播放器</text><text class="zs" x="20" y="254">本站代码 · 选源 / Shaka / 回退</text></g>
+              <g class="zone-label" data-zone="3"><text class="zn" x="140" y="458">浏览器与系统</text><text class="zs" x="140" y="478">平台决定 · 解码 / 色彩管理 / 屏幕</text></g>
+            </g>
+            <g class="map-legend" aria-hidden="true">
+              <path class="key-p" d="M20 620H44"/><text class="lgd" x="52" y="625">播放线</text>
+              <path class="key-co" d="M145 620H169"/><path class="key-ci" d="M145 620H169"/><text class="lgd" x="177" y="625">色彩线</text>
+              <path class="key-s" d="M270 620H294"/><text class="lgd" x="302" y="625">SDR 支线</text>
+              <path class="key-f" d="M410 620H434"/><text class="lgd" x="442" y="625">回退</text>
+            </g>
+            <g class="tracks" aria-hidden="true">
+              <path class="term" d="M44 90V110"/>
+              <path class="trk p" data-k="1" d="M44 100H90"/>
+              <path class="trk p" data-k="2" d="M90 100H220"/>
+              <path class="trk p" data-k="4" d="M220 100H360"/>
+              <path class="trk p" data-k="7" d="M360 100H500A58 58 0 0 1 558 158V250A58 58 0 0 1 500 308H360"/>
+              <path class="trk p" data-k="8" d="M360 308H110A30 30 0 0 0 80 338V400"/>
+              <path class="trk p" data-k="12" d="M80 400V470A30 30 0 0 0 110 500H380"/>
+              <path class="trk p" data-k="13" d="M380 500H500"/>
+              <g class="trk c" data-k="4"><path class="co" d="M220 128H360"/><path class="ci" d="M220 128H360"/></g>
+              <g class="trk c" data-k="7"><path class="co" d="M360 128H500A30 30 0 0 1 530 158V250A30 30 0 0 1 500 280H360"/><path class="ci" d="M360 128H500A30 30 0 0 1 530 158V250A30 30 0 0 1 500 280H360"/></g>
+              <g class="trk c" data-k="8"><path class="co" d="M360 280H110A58 58 0 0 0 52 338V400"/><path class="ci" d="M360 280H110A58 58 0 0 0 52 338V400"/></g>
+              <g class="trk c" data-k="10"><path class="co" d="M52 400V470A58 58 0 0 0 110 528H230"/><path class="ci" d="M52 400V470A58 58 0 0 0 110 528H230"/></g>
+              <g class="trk c" data-k="11"><path class="co" d="M230 528H380"/><path class="ci" d="M230 528H380"/></g>
+              <g class="trk c" data-k="13"><path class="co" d="M380 528H500"/><path class="ci" d="M380 528H500"/></g>
+              <path class="halo" d="M360 268V292"/>
+              <path class="trk s" data-k="6" d="M360 128V170"/>
+              <path class="trk s" data-k="7" d="M360 170V308"/>
+              <path class="trk f" data-k="12" d="M380 488V352Q380 328 366 318"/>
+              <text class="note-lbl" x="394" y="380">回退 · 已验证 SDR</text>
+              <path class="term" data-k="13" d="M500 488V540"/>
+              <text class="term-lbl" x="514" y="519">屏幕</text>
+              <rect class="pill" data-hub="I1" x="208" y="88" width="24" height="52" rx="12"/>
+              <rect class="pill" data-hub="I2" x="348" y="88" width="24" height="52" rx="12"/>
+              <rect class="pill" data-hub="I3" x="40" y="388" width="52" height="24" rx="12"/>
+              <rect class="pill" data-hub="I4" x="368" y="488" width="24" height="52" rx="12"/>
+            </g>
+            <path class="trail" d="M90 100" aria-hidden="true"/>
+            <g class="stations">
+              <a class="station" href="#playback-upload" data-i="0" aria-label="P1 上传原片，播放线，服务器"><rect class="hit" rx="8" x="48" y="58" width="86" height="58"/><circle class="dot" cx="90" cy="100" r="7"/><text class="lbl" x="90" y="78" text-anchor="middle"><tspan class="c">P1</tspan><tspan class="n"> 上传原片</tspan></text></a>
+              <a class="station" href="#playback-probe" data-i="1" aria-label="P2 探测验证，播放线，服务器，换乘站"><rect class="hit" rx="8" x="172" y="58" width="96" height="56"/><circle class="seat" cx="220" cy="100" r="4"/><text class="lbl" x="220" y="78" text-anchor="middle"><tspan class="c">P2</tspan><tspan class="n"> 探测验证</tspan></text></a>
+              <a class="station" href="#color-contract" data-i="2" aria-label="C1 色彩描述，色彩线，服务器，换乘站"><rect class="hit" rx="8" x="118" y="114" width="98" height="58"/><circle class="seat" cx="220" cy="128" r="4"/><text class="lbl" x="208" y="162" text-anchor="end"><tspan class="c">C1</tspan><tspan class="n"> 色彩描述</tspan></text></a>
+              <a class="station" href="#playback-package" data-i="3" aria-label="P3 封装发布，播放线，服务器，换乘站"><rect class="hit" rx="8" x="312" y="58" width="96" height="56"/><circle class="seat" cx="360" cy="100" r="4"/><text class="lbl" x="360" y="78" text-anchor="middle"><tspan class="c">P3</tspan><tspan class="n"> 封装发布</tspan></text></a>
+              <a class="station" href="#color-preserve" data-i="4" aria-label="C2 保留与校验，色彩线，服务器，换乘站"><rect class="hit" rx="8" x="240" y="114" width="118" height="40"/><circle class="seat" cx="360" cy="128" r="4"/><text class="lbl" x="346" y="162" text-anchor="end"><tspan class="c">C2</tspan><tspan class="n"> 保留与校验</tspan></text></a>
+              <a class="station" href="#color-sdr" data-i="5" aria-label="C6 SDR 分支，SDR 支线，服务器"><rect class="hit" rx="8" x="346" y="152" width="130" height="40"/><circle class="dot" cx="360" cy="170" r="7"/><text class="lbl" x="376" y="175"><tspan class="c">C6</tspan><tspan class="n"> SDR 分支</tspan></text></a>
+              <a class="station" href="#playback-select" data-i="6" aria-label="P4 设备选源，播放线，网页播放器"><rect class="hit" rx="8" x="240" y="292" width="134" height="58"/><circle class="dot" cx="360" cy="308" r="7"/><text class="lbl" x="346" y="338" text-anchor="end"><tspan class="c">P4</tspan><tspan class="n"> 设备选源</tspan></text></a>
+              <a class="station" href="#playback-decode" data-i="7" aria-label="P5 加载解码，播放线，网页播放器交给浏览器与系统，换乘站"><rect class="hit" rx="8" x="66" y="372" width="118" height="28"/><circle class="seat" cx="80" cy="400" r="4"/><text class="lbl" x="102" y="393"><tspan class="c">P5</tspan><tspan class="n"> 加载解码</tspan></text></a>
+              <a class="station" href="#color-samples" data-i="8" aria-label="C3 重建信号，色彩线，浏览器与系统，换乘站"><rect class="hit" rx="8" x="30" y="400" width="154" height="30"/><circle class="seat" cx="52" cy="400" r="4"/><text class="lbl" x="102" y="421"><tspan class="c">C3</tspan><tspan class="n"> 重建信号</tspan></text></a>
+              <a class="station" href="#color-transfer" data-i="9" aria-label="C4 解释亮度，色彩线，浏览器与系统"><rect class="hit" rx="8" x="184" y="512" width="92" height="58"/><circle class="dot" cx="230" cy="528" r="7"/><text class="lbl" x="230" y="560" text-anchor="middle"><tspan class="c">C4</tspan><tspan class="n"> 解释亮度</tspan></text></a>
+              <a class="station" href="#color-display" data-i="10" aria-label="C5 映射显示，色彩线，浏览器与系统，换乘站"><rect class="hit" rx="8" x="330" y="516" width="100" height="56"/><circle class="seat" cx="380" cy="528" r="4"/><text class="lbl" x="380" y="566" text-anchor="middle"><tspan class="c">C5</tspan><tspan class="n"> 映射显示</tspan></text></a>
+              <a class="station" href="#playback-recover" data-i="11" aria-label="P6 显示与回退，播放线，浏览器与系统，换乘站"><rect class="hit" rx="8" x="368" y="458" width="132" height="42"/><circle class="seat" cx="380" cy="500" r="4"/><text class="lbl" x="398" y="480"><tspan class="c">P6</tspan><tspan class="n"> 显示与回退</tspan></text></a>
+            </g>
+            <circle class="ring" cx="90" cy="100" r="13" aria-hidden="true"/>
+            <circle class="marker" cx="90" cy="100" r="6" aria-hidden="true"/>
+          </svg></div>
+        </figure>
+
+        <div class="readout" hidden>
+          <div class="readout-now">
+            <span class="readout-label">本站</span>
+            <span class="sign" data-readout="sign">P1</span>
+            <strong class="readout-name" data-readout="name">上传原片</strong>
+            <span class="readout-where" data-readout="where">播放线 · 服务器</span>
+            <span class="readout-count" data-readout="count">01 / 12</span>
+          </div>
+          <ol class="ticks" aria-hidden="true"></ol>
+          <div class="readout-next">
+            <p><span class="readout-label">下一站</span><span data-readout="next">P2 探测验证</span></p>
+            <div class="readout-controls">
+              <button type="button" id="previous" aria-label="上一站"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg><span>上一站</span></button>
+              <button type="button" id="next" aria-label="下一站"><span>下一站</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <section class="stops" id="pipeline" aria-labelledby="stops-title">
+        <h2 id="stops-title" class="visually-hidden">全程 12 站</h2>
+        <!-- Ride order interleaves both lines at their shared stations. Every
+             explanation stays in HTML so anchors and reading work without JS. -->
+        <article class="stage" id="playback-upload" tabindex="-1" data-line="p" data-zone="1" data-code="P1" data-name="上传原片" data-where="播放线 · 服务器">
+          <h3><span class="sign sign-p">P1</span><span>原始文件先完整抵达</span></h3>
+          <p class="stop-meta"><span>播放线 · 服务器</span><span>上传端 / 接收服务</span></p>
+          <p>浏览器按 1 MiB 分块传输，支持断点续传。所有分块确认后，任务进入后台处理队列；上传传输本身不重压视频。</p>
+          <p>单文件按所选母版类型进行后续验证。一次加入 HDR 与 SDR 两份视频时，服务端根据流元数据识别两者，无需按文件顺序选择。</p>
+          <figure class="fig" data-fig="p1">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <div class="fig-controls"><button type="button" data-toggle="interrupt" aria-pressed="true">演示断线</button></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>示意：48 MiB 示例文件按 1 MiB 分块上传。断线后，已确认的分块留在服务器，续传从下一块开始；全部确认后才进入处理队列。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>视频文件、母版包或 HLS 包</dd></div><div><dt>输出</dt><dd>保存的源文件与后台处理任务</dd></div></dl>
+        </article>
+        <article class="stage" id="playback-probe" tabindex="-1" data-line="p" data-zone="1" data-hub="I1" data-code="P2" data-name="探测验证" data-where="播放线 · 服务器">
+          <h3><span class="sign sign-p">P2</span><span>从媒体内部确认 HDR 信息</span></h3>
+          <p class="stop-meta"><span>播放线 · 服务器</span><span>FFprobe / 色彩校验</span><a class="transfer" href="#color-contract">与 C1 同站换乘</a></p>
+          <p>读取编码配置、像素格式、原色、传递函数、矩阵和范围。对 PQ、HLG 或 Dolby 视频，再抽样解码开头 32 个 packet 范围内的帧，补查静态 HDR 与 Dolby 帧元数据。</p>
+          <p>Dolby Vision 还扫描完整 HEVC 码流中的 RPU，记录数量与 SHA-256。只有 sidecar 文件或“存在 RPU”的标志，不能通过验证。</p>
+          <figure class="fig fig-tall-m" data-fig="p2">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>示意，字段与数值为示例：先读流信息，再抽样解码开头 32 个 packet 查找帧附加信息；Dolby Vision 再扫描完整码流中的全部 RPU，记录数量与 SHA-256。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>源文件与嵌入式元数据</dd></div><div><dt>输出</dt><dd>源色彩信息、RPU 完整性记录</dd></div></dl>
+        </article>
+        <article class="stage" id="color-contract" tabindex="-1" data-line="c" data-zone="1" data-hub="I1" data-code="C1" data-name="色彩描述" data-where="色彩线 · 服务器">
+          <h3><span class="sign sign-c">C1</span><span>先确定数字代表什么</span></h3>
+          <p class="stop-meta"><span>色彩线 · 服务器</span><span>源文件 / 色彩描述</span><a class="transfer" href="#playback-probe">与 P2 同站换乘</a></p>
+          <p>原色定义色域，传递函数定义信号与光的关系，矩阵和 full / limited 范围定义分量如何解释。HEVC 或 10-bit 本身不足以确认 HDR；宽色域也可以用于 SDR。</p>
+          <p>HDR10 的 Mastering Display 描述母版监视器的原色、白点与亮度范围；MaxCLL / MaxFALL 描述内容峰值与最大帧平均亮度。它们与视频编码原色是不同的信息。</p>
+          <figure class="fig fig-tall" data-fig="c1">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <div class="fig-controls"><span class="fig-label">编码原色</span><button type="button" data-pick="gamut" value="rec709" aria-pressed="false">BT.709</button><button type="button" data-pick="gamut" value="p3" aria-pressed="false">P3-D65</button><button type="button" data-pick="gamut" value="rec2020" aria-pressed="true">BT.2020</button></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>CIE 1931 xy 色度图（2° 观察者），按标准坐标绘制。粗线三角是编码原色定义的色域，可切换；带端点的细线是示例的母版监视器原色，它与编码原色是两份不同的信息。填色按 sRGB 计算：sRGB 之外的区域只能画出近似色，越靠近光谱轨迹越不准确。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>像素格式、色彩标记与 HDR 元数据</dd></div><div><dt>输出</dt><dd>可验证的信号解释规则</dd></div></dl>
+        </article>
+        <article class="stage" id="playback-package" tabindex="-1" data-line="p" data-zone="1" data-hub="I2" data-code="P3" data-name="封装发布" data-where="播放线 · 服务器">
+          <h3><span class="sign sign-p">P3</span><span>保留 HDR 视频，整理成 HLS</span></h3>
+          <p class="stop-meta"><span>播放线 · 服务器</span><span>FFmpeg / 媒体发布</span><a class="transfer" href="#color-preserve">与 C2 同站换乘</a></p>
+          <p>普通 HDR 母版使用 <code>-c:v copy</code> 复制视频码流，音频转 AAC。生成 <code>master.m3u8</code>、媒体列表、<code>init.mp4</code> 和 fMP4 分段；分段目标 4 秒，实际切点受关键帧约束。</p>
+          <p>输出会重新探测，对照色彩字段、静态元数据及 Dolby RPU 数量与哈希。验证通过并完成媒体发布后，母版才标记为 <code>ready</code>。每份 HDR / SDR 母版拥有独立的播放地址。</p>
+          <figure class="fig fig-tall-m" data-fig="p3">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>示意，关键帧位置为示例：每 4 秒一个目标切点，实际切在目标之后的第一个关键帧，因此分段时长不完全相等。文件名与本站封装产物一致。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>已验证的 HDR 母版</dd></div><div><dt>输出</dt><dd>HLS 文件、播放声明与验证报告</dd></div></dl>
+        </article>
+        <article class="stage" id="color-preserve" tabindex="-1" data-line="c" data-zone="1" data-hub="I2" data-code="C2" data-name="保留与校验" data-where="色彩线 · 服务器" data-next-note="进入 SDR 支线">
+          <h3><span class="sign sign-c">C2</span><span>让色彩信息随码流抵达播放器</span></h3>
+          <p class="stop-meta"><span>色彩线 · 服务器</span><span>封装 / 信号完整性</span><a class="transfer" href="#playback-package">与 P3 同站换乘</a></p>
+          <p>HDR 复制封装会比较输入与输出的色彩字段和静态元数据。Dolby Vision 还要求 RPU 的数量与哈希保持一致。</p>
+          <p>信息有三层：数据库用于展示和选源；HLS 的 CODECS / VIDEO-RANGE 用于声明播放要求；媒体内部的配置、色彩标记、SEI 或 RPU 才随视频进入解码和显示链路。数据库标签不会替代文件中的元数据。</p>
+          <figure class="fig" data-fig="c2">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>示意，数值为示例：输入与输出逐项对照；三层信息中，只有媒体内部的配置、色彩标记、SEI 或 RPU 随视频进入解码。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>源色彩信息与 HDR 码流</dd></div><div><dt>输出</dt><dd>保留色彩信息的 HLS 媒体</dd></div></dl>
+        </article>
+        <article class="stage" id="color-sdr" tabindex="-1" data-line="s" data-zone="1" data-code="C6" data-name="SDR 分支" data-where="SDR 支线 · 服务器" data-next-note="回到主线 · SDR 版本作为选源候选">
+          <h3><span class="sign sign-s">C6</span><span>生成经过映射的 SDR 母版</span></h3>
+          <p class="stop-meta"><span>SDR 支线 · 服务器</span><span>上传后处理 / 独立兼容版本</span></p>
+          <p>新项目上传 HDR 且未随附 SDR 时，会尝试使用 libplacebo / Vulkan：动态峰值检测、BT.2390 tone mapping 与 perceptual gamut mapping，将亮度和宽色域映射到 BT.709 limited、8-bit H.264 / AAC。</p>
+          <p>支持的单层 Dolby Vision 会启用 <code>apply_dolbyvision=true</code> 使用嵌入 RPU。转换后去除 HDR 元数据，并分别验证 SDR 文件与 HLS。生成失败仍保留 HDR；已有项目不自动补生成，手动 SDR 也不会被替换。</p>
+          <figure class="fig fig-tall" data-fig="c6">
+            <div class="fig-plate"><canvas tabindex="0" role="slider" aria-label="色体积旋转角度" aria-valuemin="0" aria-valuemax="359" aria-valuenow="34" aria-valuetext="旋转 34°"></canvas></div>
+            <div class="fig-controls"><button type="button" data-toggle="target" aria-pressed="true">BT.709 目标体积</button><button type="button" data-toggle="source" aria-pressed="true">源体积轮廓</button></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>按公式计算：BT.2020 RGB 立方体以 1000 cd/m² 峰值（示例）放进 ICtCp 空间；亮度按 BT.2390 EETF 压到 100 cd/m²，色度随 I 按 BT.2390 的建议缩放；最后一步沿恒定 I 去饱和收进 BT.709，只是简化示意，不等于本站 libplacebo 的 perceptual gamut mapping。棱线按各点的 RGB 位置着色（sRGB 近似）。拖动图形或用左右方向键旋转。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>已验证 HDR 或 IMF 转出的 HDR10</dd></div><div><dt>输出</dt><dd>独立、已验证的 SDR 播放版本</dd></div></dl>
+        </article>
+        <article class="stage" id="playback-select" tabindex="-1" data-line="p" data-zone="2" data-code="P4" data-name="设备选源" data-where="播放线 · 网页播放器">
+          <h3><span class="sign sign-p">P4</span><span>按具体配置选择可用母版</span></h3>
+          <p class="stop-meta"><span>播放线 · 网页播放器</span><span>前端播放器 / MediaCapabilities</span></p>
+          <p>先检查显示环境是否报告 HDR，再读取候选母版首个 HLS variant 的 CODECS、VIDEO-RANGE、分辨率、帧率和带宽，连同色域及传递函数查询 <code>decodingInfo()</code>。</p>
+          <p>只有 <code>supported</code> 与 <code>smooth</code> 同时为真才自动选 HDR。支持的 HDR 中优先指定默认母版，再按 Dolby Vision、HDR10、HLG 排序。单次能力查询限时 1.5 秒，整体选源限时 5 秒；未知或超时选择已验证 SDR。手动选择优先。</p>
+          <figure class="fig fig-tall" data-fig="p4">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <div class="fig-controls"><button type="button" data-action="probe">用这台设备试一下</button></div>
+            <dl class="fig-results" aria-live="polite" hidden></dl>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>判定顺序与本站播放器代码一致：显示环境未报告 HDR 时直接选择已验证 SDR，不再查询。点按钮后，本机用示例编码配置（3840×2160 · 24 fps · 20 Mbps）运行 matchMedia 与 decodingInfo()；结果只反映这些示例配置，不代表某个具体作品。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>ready 母版、HLS 声明、设备能力报告</dd></div><div><dt>输出</dt><dd>适合当前播放环境的母版地址</dd></div></dl>
+        </article>
+        <article class="stage" id="playback-decode" tabindex="-1" data-line="p" data-zone="2 3" data-hub="I3" data-code="P5" data-name="加载解码" data-where="播放线 · 网页播放器交给浏览器与系统">
+          <h3><span class="sign sign-p">P5</span><span>把压缩样本解码为视频帧</span></h3>
+          <p class="stop-meta"><span>播放线 · 网页播放器 → 浏览器与系统</span><span>Shaka / 浏览器 / 操作系统</span><a class="transfer" href="#color-samples">与 C3 同站换乘</a></p>
+          <p>HDR 播放在支持原生 HLS 的浏览器上优先走原生路径。其他情况下，Shaka 获取并缓冲分段，经 MediaSource Extensions（MSE）交给浏览器媒体管线。</p>
+          <p>浏览器读取初始化信息和视频样本，调用平台解码器。是否使用硬件加速由浏览器、系统与设备决定；通用 HEVC 解码能力不能直接证明支持 Dolby Vision。</p>
+          <figure class="fig" data-fig="p5">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <div class="fig-controls"><span class="fig-label">路径</span><button type="button" data-pick="path" value="native" aria-pressed="false">原生 HLS</button><button type="button" data-pick="path" value="mse" aria-pressed="false">Shaka + MSE</button></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>示意：原生 HLS 由浏览器直接读取分段；Shaka 路径先获取并缓冲分段，再经 MSE 的 SourceBuffer 交给浏览器媒体管线。默认显示本机播放 HDR 时会走的路径。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>初始化分段、压缩视频样本和时间戳</dd></div><div><dt>输出</dt><dd>视频帧及后续色彩处理所需信息</dd></div></dl>
+        </article>
+        <article class="stage" id="color-samples" tabindex="-1" data-line="c" data-zone="3" data-hub="I3" data-code="C3" data-name="重建信号" data-where="色彩线 · 浏览器与系统">
+          <h3><span class="sign sign-c">C3</span><span>恢复图像样本，正确解释电平</span></h3>
+          <p class="stop-meta"><span>色彩线 · 浏览器与系统</span><span>解码 / 分量重建</span><a class="transfer" href="#playback-decode">与 P5 同站换乘</a></p>
+          <p>解码器恢复视频样本。对典型 Y′CbCr HDR10 / HLG 视频，色度采样位置、矩阵系数以及 limited / full 范围参与后续重建和转换。错误解释范围可能造成黑位抬高或高光裁切。</p>
+          <p>这些是概念上的处理环节，平台可能合并执行。Dolby Vision Profile 5 需要对应的 Dolby 处理路径，不能直接套用普通 HDR10 的解释方式。</p>
+          <figure class="fig" data-fig="c3">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <div class="fig-controls"><button type="button" data-pick="case" value="auto" aria-pressed="true">随滚动</button><button type="button" data-pick="case" value="a" aria-pressed="false">正确解释</button><button type="button" data-pick="case" value="b" aria-pressed="false">limited 误作 full</button><button type="button" data-pick="case" value="c" aria-pressed="false">full 误作 limited</button></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>按公式计算：10-bit limited 范围以码值 64 为黑、940 为白。下方灰阶是同一组源码值经当前解释后的 SDR 示意。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>解码后的分量样本、矩阵与范围</dd></div><div><dt>输出</dt><dd>进入亮度与色彩处理的图像信号</dd></div></dl>
+        </article>
+        <article class="stage" id="color-transfer" tabindex="-1" data-line="c" data-zone="3" data-code="C4" data-name="解释亮度" data-where="色彩线 · 浏览器与系统">
+          <h3><span class="sign sign-c">C4</span><span>PQ 与 HLG 使用不同的光信号关系</span></h3>
+          <p class="stop-meta"><span>色彩线 · 浏览器与系统</span><span>传递函数 / 亮度解释</span></p>
+          <p>PQ（SMPTE ST 2084）使用绝对显示亮度的编码关系；码值对应的目标亮度不等于当前屏幕必然达到的亮度。HLG（ARIB STD-B67）使用相对场景信号关系，最终显示还涉及系统变换与显示条件。</p>
+          <p>播放器查询能力时会明确传入 <code>pq</code> 或 <code>hlg</code>。网站没有在 JavaScript 中逐帧施加自定义 LUT；这些媒体处理由浏览器与平台管线承担。</p>
+          <figure class="fig" data-fig="c4">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <div class="fig-controls"><label class="fig-range" for="peak-range">屏幕峰值<input id="peak-range" type="range" min="400" max="2000" step="50" value="1000" data-input="peak"><output for="peak-range">1000 cd/m²</output></label></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>按 SMPTE ST 2084 与 BT.2100 HLG（系统伽马 1.2 + 0.42·log₁₀(峰值 / 1000)）计算，按中性灰绘制。拖动屏幕峰值：PQ 曲线不动，超过屏幕能力的部分（暗线）需要映射；HLG 随峰值整体缩放。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>视频信号及 PQ / HLG 标记</dd></div><div><dt>输出</dt><dd>具有正确亮度含义的图像</dd></div></dl>
+        </article>
+        <article class="stage" id="color-display" tabindex="-1" data-line="c" data-zone="3" data-hub="I4" data-code="C5" data-name="映射显示" data-where="色彩线 · 浏览器与系统">
+          <h3><span class="sign sign-c">C5</span><span>适配屏幕可呈现的色彩与亮度</span></h3>
+          <p class="stop-meta"><span>色彩线 · 浏览器与系统</span><span>系统色彩管理 / 显示设备</span><a class="transfer" href="#playback-recover">与 P6 同站换乘</a></p>
+          <p>浏览器与系统结合源色域、HDR 信息和目标显示能力，执行所需的色域与亮度映射。支持 Dolby Vision 时，平台需要正确处理其动态元数据。</p>
+          <p>屏幕峰值亮度、系统 HDR 设置、显示配置和连接方式都可能影响结果。能力 API 是选择信号，<code>ready</code> 是服务端验证状态；两者都不代表亮度实测、显示校准或 Dolby 参考渲染认证。</p>
+          <figure class="fig fig-tall" data-fig="c5">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <div class="fig-controls"><span class="fig-label">屏幕色域</span><button type="button" data-pick="display" value="rec709" aria-pressed="false">BT.709</button><button type="button" data-pick="display" value="p3" aria-pressed="true">P3-D65</button></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>示意：九个样本色位于 BT.2020 边界，沿白点方向收进屏幕色域。实际的色域与亮度映射由浏览器与系统决定，各平台不同。样本点颜色为 sRGB 近似。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>图像、HDR 元数据与目标显示条件</dd></div><div><dt>输出</dt><dd>经过平台处理的屏幕画面</dd></div></dl>
+        </article>
+        <article class="stage" id="playback-recover" tabindex="-1" data-line="p" data-zone="3 2" data-hub="I4" data-code="P6" data-name="显示与回退" data-where="播放线 · 浏览器与系统，回退由网页播放器执行" data-next-note="终点 · 屏幕">
+          <h3><span class="sign sign-p">P6</span><span>输出画面，保留可用的退路</span></h3>
+          <p class="stop-meta"><span>播放线 · 浏览器与系统</span><span>显示管线 / 播放器恢复</span><a class="transfer" href="#color-display">与 C5 同站换乘</a></p>
+          <p>系统结合色彩信息、显示能力和当前设置完成合成与输出。HDR 加载或解码出现致命错误时，播放器优先选择与该母版关联的 SDR，其次选择其他已验证 SDR，并保留播放位置和播放意图。</p>
+          <p>SDR 再失败时显示错误与重试入口，避免在 HDR / SDR 间循环。没有可用 SDR 时，自动选源可能无法继续；可手动尝试已有母版，或由作者补充 SDR。</p>
+          <figure class="fig fig-short" data-fig="p6">
+            <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
+            <div class="fig-controls"><button type="button" data-pick="scenario" value="hdr" aria-pressed="true">HDR 失败</button><button type="button" data-pick="scenario" value="both" aria-pressed="false">SDR 也失败</button><button type="button" data-pick="scenario" value="none" aria-pressed="false">没有 SDR</button></div>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>示意：一次播放中的回退顺序。切换时保留播放位置与播放意图；SDR 也失败时停在错误与重试，不在 HDR 与 SDR 之间循环。</figcaption>
+          </figure>
+          <dl class="io"><div><dt>输入</dt><dd>解码帧、显示能力或播放错误</dd></div><div><dt>输出</dt><dd>显示画面，或切换 SDR / 提示重试</dd></div></dl>
+        </article>
+        <p class="terminus">终点：屏幕。<span>线路图只示意处理顺序与责任范围，不代表真实视频输出、耗时或亮度。</span></p>
+      </section>
+    </div>
+
+    <section id="metadata" aria-labelledby="metadata-title">
+      <div class="section-heading"><h2 id="metadata-title">读懂元数据</h2><p>编码、色域和动态范围，分别回答不同的问题。右侧站号标出这个字段在哪些站被读取、校验或使用。</p></div>
+      <dl class="metadata-list">
+        <div><dt><code>codec / profile / level</code></dt><dd><p>定义压缩编码及解码要求。HLS 的 CODECS 从实际输出配置生成，不只填写一个笼统的“HEVC”。</p></dd><dd class="seen"><span class="visually-hidden">相关站点：</span><a class="sign sign-p" href="#playback-probe" aria-label="P2 探测验证">P2</a><a class="sign sign-p" href="#playback-package" aria-label="P3 封装发布">P3</a><a class="sign sign-p" href="#playback-select" aria-label="P4 设备选源">P4</a></dd></div>
+        <div><dt><code>pix_fmt / bit_depth</code></dt><dd><p>描述像素格式、色度采样和位深。当前实现优先读取显式位深，再从像素格式推断；未识别时使用母版类型默认值，因此并非独立的逐像素位深测量。</p></dd><dd class="seen"><span class="visually-hidden">相关站点：</span><a class="sign sign-p" href="#playback-probe" aria-label="P2 探测验证">P2</a><a class="sign sign-c" href="#color-contract" aria-label="C1 色彩描述">C1</a></dd></div>
+        <div><dt><code>color_primaries</code></dt><dd><p>编码原色，例如 BT.709、BT.2020 或 P3-D65。它定义信号的色域，不证明显示器能覆盖全部颜色。</p></dd><dd class="seen"><span class="visually-hidden">相关站点：</span><a class="sign sign-p" href="#playback-probe" aria-label="P2 探测验证">P2</a><a class="sign sign-c" href="#color-contract" aria-label="C1 色彩描述">C1</a><a class="sign sign-p" href="#playback-select" aria-label="P4 设备选源">P4</a><a class="sign sign-c" href="#color-display" aria-label="C5 映射显示">C5</a></dd></div>
+        <div><dt><code>color_transfer</code></dt><dd><p><code>smpte2084</code> 对应 PQ，<code>arib-std-b67</code> 对应 HLG。它决定亮度信号如何被解释。</p></dd><dd class="seen"><span class="visually-hidden">相关站点：</span><a class="sign sign-p" href="#playback-probe" aria-label="P2 探测验证">P2</a><a class="sign sign-c" href="#color-contract" aria-label="C1 色彩描述">C1</a><a class="sign sign-p" href="#playback-select" aria-label="P4 设备选源">P4</a><a class="sign sign-c" href="#color-transfer" aria-label="C4 解释亮度">C4</a></dd></div>
+        <div><dt><code>matrix / range / chroma_location</code></dt><dd><p>矩阵系数、编码范围和色度位置共同影响分量重建。相同码值在不同范围与矩阵下会得到不同结果。</p></dd><dd class="seen"><span class="visually-hidden">相关站点：</span><a class="sign sign-p" href="#playback-probe" aria-label="P2 探测验证">P2</a><a class="sign sign-c" href="#color-contract" aria-label="C1 色彩描述">C1</a><a class="sign sign-c" href="#color-samples" aria-label="C3 重建信号">C3</a></dd></div>
+        <div><dt><code>SEI / DOVI / RPU</code></dt><dd><p>HDR 静态信息、Dolby 配置与动态元数据。抽样解码检查帧附加信息；完整 RPU 扫描检查负载数量和哈希。</p></dd><dd class="seen"><span class="visually-hidden">相关站点：</span><a class="sign sign-p" href="#playback-probe" aria-label="P2 探测验证">P2</a><a class="sign sign-c" href="#color-preserve" aria-label="C2 保留与校验">C2</a><a class="sign sign-s" href="#color-sdr" aria-label="C6 SDR 分支">C6</a><a class="sign sign-c" href="#color-display" aria-label="C5 映射显示">C5</a></dd></div>
+      </dl>
+    </section>
+
+    <section id="formats" aria-labelledby="formats-title">
+      <div class="section-heading"><h2 id="formats-title">格式与兼容</h2><p>展开查看本站的接收、播放与转换条件。</p></div>
+      <details open><summary>HDR10 <span>PQ / 静态元数据</span></summary><div class="disclosure"><p>当前上传校验要求 PQ、至少 10-bit、支持的 HDR 原色，以及 Mastering Display、MaxCLL / MaxFALL。普通 HDR10 视频复制封装，HLS 声明 VIDEO-RANGE=PQ。</p><p>“至少 10-bit”是当前代码根据探测与推断值执行的规则；静态元数据存在且被保留，也不等于已验证原始调色与实际画面一致。</p><p class="seen"><span>相关站点</span><a class="sign sign-p" href="#playback-probe" aria-label="P2 探测验证">P2</a><a class="sign sign-p" href="#playback-package" aria-label="P3 封装发布">P3</a></p></div></details>
+      <details><summary>HLG <span>相对场景信号</span></summary><div class="disclosure"><p>当前校验要求 arib-std-b67、至少 10-bit 和支持的 HDR 原色，HLS 声明 VIDEO-RANGE=HLG。HLG 不采用与 HDR10 相同的静态元数据门槛，仍需要正确的色彩标记与显示处理。</p><p class="seen"><span>相关站点</span><a class="sign sign-p" href="#playback-probe" aria-label="P2 探测验证">P2</a><a class="sign sign-c" href="#color-transfer" aria-label="C4 解释亮度">C4</a></p></div></details>
+      <details><summary>Dolby Vision <span>嵌入式 RPU</span></summary><div class="disclosure"><p>当前浏览器交付路径接受单层 HEVC Profile 5、8.1（PQ / compatibility ID 1）及 8.4（HLG / ID 4），要求有效的嵌入式配置、基础层和可解析 RPU。增强层 / FEL 重建、Profile 7 与独立 sidecar 注入不在这条管线的支持范围内。</p><p>Profile 5 使用 dvh1 标记；Profile 8 的 HLS 还提供 SUPPLEMENTAL-CODECS。自动检测必须得到具体 Dolby 编码配置的支持结果，普通 HEVC 支持不能代替。</p><p class="seen"><span>相关站点</span><a class="sign sign-p" href="#playback-probe" aria-label="P2 探测验证">P2</a><a class="sign sign-c" href="#color-preserve" aria-label="C2 保留与校验">C2</a><a class="sign sign-p" href="#playback-select" aria-label="P4 设备选源">P4</a></p></div></details>
+      <details><summary>SDR 与 IMF <span>兼容版本 / 归档转换</span></summary><div class="disclosure"><p>可以上传配对的 BT.709 SDR，或在符合条件的新项目中自动生成 SDR。自动转换为网页适配版本，不代表 Dolby 参考渲染或调色 trim 认证。</p><p>支持的 RGB/PQ IMF 包通过 CPL / ASSETMAP 解析，转换为 HDR10 HEVC/AAC 播放版。原始包被保留；独立 Dolby 动态元数据只留在归档中，不应用到这个 HDR10 或由它生成的 SDR。</p><p class="seen"><span>相关站点</span><a class="sign sign-p" href="#playback-upload" aria-label="P1 上传原片">P1</a><a class="sign sign-s" href="#color-sdr" aria-label="C6 SDR 分支">C6</a></p></div></details>
+      <p class="note">当前自动 HDR 能力查询读取每份母版的第一个 variant，并接受 BT.2020 / P3-D65 原色。上传端也接受 DCI-P3，但前端不会据此自动选择 HDR。实际播放仍取决于设备与浏览器。</p>
+    </section>
+
+    <section id="troubleshooting" aria-labelledby="troubleshooting-title">
+      <div class="section-heading"><h2 id="troubleshooting-title">播放遇到问题时</h2><p>从当前选中的母版开始排查。每条都标出线路上对应的站。</p></div>
+      <details><summary>HDR 屏幕为什么自动播放 SDR？</summary><div class="disclosure"><p>检查系统是否启用 HDR、当前显示连接和浏览器是否支持该视频的具体编码配置。显示媒体查询只是一项前提，能力查询不支持、不流畅、不可用或超时，都会优先选择已验证 SDR。</p><p>在视频页面展开播放信息（Show Info），查看当前母版、色彩标记和设备能力。也可手动尝试 HDR，但手动选择无法给设备增加解码能力。</p><p class="seen"><span>相关站点</span><a class="sign sign-p" href="#playback-select" aria-label="P4 设备选源">P4</a></p></div></details>
+      <details><summary>画面偏灰、偏色或高光异常，先看什么？</summary><div class="disclosure"><p>核对当前是否已回退 SDR，再检查源文件的传递函数、矩阵与 full / limited 标记，以及系统显示设置。确认比较的是同一版本，并避免把普通截图当作 HDR 亮度证据。</p><p>如果标签与原片信号不符，需要从导出与媒体校验环节修正。修改页面上的格式名称不会改变浏览器对码流的解释。</p><p class="seen"><span>相关站点</span><a class="sign sign-c" href="#color-samples" aria-label="C3 重建信号">C3</a><a class="sign sign-c" href="#color-transfer" aria-label="C4 解释亮度">C4</a><a class="sign sign-c" href="#color-display" aria-label="C5 映射显示">C5</a></p></div></details>
+      <details><summary>Dolby Vision 失败后发生了什么？</summary><div class="disclosure"><p>播放器会尝试关联的已验证 SDR，或其他已验证 SDR，并保留位置和播放状态。若 SDR 也失败，使用重试入口；若没有 SDR，需要作者补充兼容母版。</p><p class="seen"><span>相关站点</span><a class="sign sign-p" href="#playback-recover" aria-label="P6 显示与回退">P6</a></p></div></details>
+      <details><summary>切换母版会重新从头播放吗？</summary><div class="disclosure"><p>播放器保存当前时间与播放 / 暂停意图，加载新母版后校正位置。切换完成以新画面到达为依据。HDR 画面不会被转换成 SDR 截图用作过渡，也不会把两个母版混合显示。</p><p class="seen"><span>相关站点</span><a class="sign sign-p" href="#playback-recover" aria-label="P6 显示与回退">P6</a></p></div></details>
+    </section>
+
+    <footer>
+      <p>说明对应本站当前实现。服务端验证关注媒体结构与元数据；屏幕亮度、色彩准确性和 Dolby 显示状态需要在目标设备确认。</p>
+      <nav aria-label="技术参考"><a href="https://www.w3.org/TR/media-capabilities/">Media Capabilities 标准</a><a href="https://developer.apple.com/streaming/hls-authoring-specification-for-apple-devices.html">Apple HLS 规范</a><a href="https://github.com/shaka-project/shaka-player">Shaka Player</a></nav>
+      <a class="back-top" href="#main">回到顶部</a>
+    </footer>
+  </main>
+</body>
+</html>

@@ -1,0 +1,352 @@
+/* Standalone snapshot of the Reference Room tokens; no app CSS or remote fonts. */
+:root {
+  color-scheme: dark;
+  --background: #0c0e10;
+  --surface: #161a1e;
+  --raised: #1e2328;
+  --overlay: #252c34;
+  --text: #e2e8ee;
+  --body: #c4ced8;
+  --secondary: #9aaabb;
+  --line: #222a32;
+  --line-light: #2c3840;
+  --focus: #86b8dc;
+  /* Line identity, as on a transit map: the playback line is amber, the colour line
+     green. Form still carries the same meaning, so hue is never the only cue. */
+  --line-play: #d9a35e;
+  --line-color: #74c290;
+  /* Route-map states: passed spans use --text, spans ahead use --track-ahead. */
+  --track-ahead: #5d6b7b;
+  --label-ahead: #8a98a6;
+  --zone-a: #13171c;
+  --zone-b: #0c0e10;
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --header-h: 60px;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  scrollbar-color: #536070 var(--background);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--background); color: var(--text); font-family: var(--sans); line-height: 1.8; }
+[hidden] { display: none !important; }
+::selection { background: #374c5e; color: #fff; }
+/* Classic scrollbars only where a fine pointer uses them; touch keeps overlays. */
+@media (hover: hover) and (pointer: fine) {
+  html { scrollbar-gutter: stable; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--background); }
+  ::-webkit-scrollbar-thumb { background: #536070; border: 2px solid var(--background); border-radius: 6px; }
+  ::-webkit-scrollbar-thumb:hover { background: #718297; }
+}
+a { color: inherit; text-decoration: none; cursor: pointer; }
+button { font: inherit; color: inherit; cursor: pointer; }
+a, button, summary { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: 4px; }
+h1, h2, h3, p, ol, ul, dl, figure { margin: 0; }
+p + p { margin-top: 16px; }
+code { font-family: var(--mono); font-size: .86em; overflow-wrap: anywhere; color: var(--text); }
+section, main { scroll-margin-top: calc(var(--header-h) + 28px); }
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.skip-link { position: fixed; z-index: 5; left: 20px; top: -80px; padding: 10px 20px; background: var(--text); color: var(--background); }
+.skip-link:focus { top: 12px; }
+.skip-link:hover { color: var(--background); }
+
+.site-header { position: sticky; z-index: 3; top: 0; height: var(--header-h); display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 0 max(24px, calc((100% - 1240px) / 2)); background: var(--background); border-bottom: 1px solid var(--line-light); }
+.identity { display: inline-flex; align-items: center; gap: 12px; min-height: 40px; font-size: .9rem; font-weight: 600; }
+.site-header nav { display: flex; gap: 24px; font-size: .88rem; color: var(--secondary); }
+.site-header nav a { display: inline-flex; align-items: center; min-height: 40px; }
+main { max-width: 1240px; width: calc(100% - 48px); margin: auto; }
+
+/* Station signs are the page-wide numbering system: playback is a solid line,
+   colour a hollow double rail, the SDR branch dashed. Form, never hue. */
+.sign { display: inline-grid; place-items: center; flex: none; min-width: 2.6em; height: 2em; padding: 0 .45em; border: 2px solid var(--sign-line, currentColor); border-radius: .6em; font: 600 .74rem/1 var(--mono); letter-spacing: .02em; color: var(--text); }
+.sign-p { --sign-line: var(--line-play); }
+.sign-c { --sign-line: var(--line-color); border: 4px double var(--sign-line); }
+.sign-s { --sign-line: var(--line-color); border-style: dashed; }
+a.sign { transition: background-color 130ms, color 130ms; }
+
+/* Journey: intro and twelve stops on the left, the pinned network on the right. */
+.journey { display: grid; grid-template-columns: minmax(0, 620px) minmax(0, 1fr); grid-template-areas: "intro route" "stops route"; column-gap: clamp(40px, 5.5vw, 88px); }
+.intro { grid-area: intro; padding: 76px 0 60px; }
+h1 { font-size: clamp(2.8rem, 5.4vw, 4.5rem); font-weight: 650; line-height: 1.16; letter-spacing: -.04em; margin-bottom: 28px; }
+.intro .lead { font-size: 1.22rem; line-height: 1.75; color: var(--text); margin-bottom: 14px; }
+.intro p:not(.lead) { color: var(--secondary); max-width: 36em; }
+.contents { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 28px; font-size: .86rem; }
+.contents a { display: inline-flex; align-items: center; min-height: 36px; border-bottom: 1px solid var(--line-light); }
+
+.route { grid-area: route; position: sticky; top: calc(var(--header-h) + 16px); align-self: start; height: calc(100svh - var(--header-h) - 32px); min-height: 0; display: flex; flex-direction: column; gap: 16px; padding-bottom: 4px; }
+.route-map { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+/* Legend swatches use the track widths, so the key reads as the map does. */
+.key-p { stroke: var(--line-play); stroke-width: 4; }
+.key-co { stroke: var(--line-color); stroke-width: 8; }
+.key-ci { stroke: var(--background); stroke-width: 3.4; }
+.key-s { stroke: var(--line-color); stroke-width: 3; stroke-dasharray: 7 6; }
+.key-f { stroke: var(--text); stroke-width: 2.2; stroke-dasharray: .1 6; stroke-linecap: round; }
+/* Full-size while the column allows it, shrinking with short windows so the
+   in-car display always follows the map directly. */
+.map-frame { flex: 0 1 auto; min-height: 0; aspect-ratio: 600 / 640; container-type: size; display: flex; justify-content: flex-start; }
+.network { display: block; width: min(100cqw, 100cqh * .9375); height: min(100cqw * 1.0667, 100cqh); border: 1px solid var(--line-light); border-radius: 10px; overflow: hidden; }
+
+.zone { fill: var(--zone-a); }
+.zone.z2, .zone.legend-band { fill: var(--zone-b); }
+.zone-edge { stroke: var(--line-light); stroke-width: 1; }
+.zn { font: 600 calc(16px * var(--k, 1)) var(--sans); fill: var(--secondary); transition: fill 130ms; }
+.zs { font: calc(13.5px * var(--k, 1)) var(--sans); fill: var(--label-ahead); }
+.zone-label.is-here .zn { fill: var(--text); }
+.trk { stroke-linecap: round; stroke-linejoin: round; transition: stroke 130ms; }
+.trk.p { stroke: var(--line-play); stroke-width: 4; }
+.trk.c .co { stroke: var(--line-color); stroke-width: 8; transition: stroke 130ms; }
+.trk.c .ci { stroke: var(--background); stroke-width: 3.4; }
+.trk.s { stroke: var(--line-color); stroke-width: 3; stroke-dasharray: 7 6; stroke-linecap: butt; }
+.trk.f { stroke: var(--text); stroke-width: 2.2; stroke-dasharray: .1 6; }
+.halo { stroke: var(--background); stroke-width: 12; }
+.term { stroke: var(--text); stroke-width: 4; stroke-linecap: round; }
+.term-lbl { font: 600 calc(16px * var(--k, 1)) var(--sans); fill: var(--text); }
+.note-lbl { font: calc(13.5px * var(--k, 1)) var(--sans); fill: var(--secondary); }
+.pill { fill: var(--background); stroke: var(--secondary); stroke-width: 2; transition: stroke 130ms; }
+.enhanced .pill.is-crossing { stroke: var(--focus); }
+.dot { fill: var(--background); stroke: var(--text); stroke-width: 3; transition: stroke 130ms; }
+.seat { fill: var(--text); transition: fill 130ms; }
+.lbl { font: calc(15px * var(--k, 1)) var(--sans); fill: var(--body); transition: fill 130ms; }
+.lbl .c { font: 600 calc(14px * var(--k, 1)) var(--mono); fill: var(--text); }
+.hit { fill: transparent; }
+/* The legend band is the plate's footer, set at the station-label size. */
+.lgd { font: calc(15px * var(--k, 1)) var(--sans); fill: var(--body); }
+.station { outline: none; }
+.station:focus-visible .hit { stroke: var(--focus); stroke-width: 2; }
+.ring, .marker, .trail { display: none; }
+
+.enhanced .trk.p:not(.is-on), .enhanced .term:not(.is-on) { stroke: var(--track-ahead); }
+.enhanced .trk.c:not(.is-on) .co { stroke: var(--track-ahead); }
+.enhanced .trk.s:not(.is-on), .enhanced .trk.f:not(.is-on) { stroke: var(--track-ahead); }
+.enhanced .pill:not(.is-on) { stroke: var(--track-ahead); }
+.enhanced .station:not(.is-passed) .dot { stroke: var(--track-ahead); }
+.enhanced .station:not(.is-passed) .seat { fill: var(--track-ahead); }
+.enhanced .station:not(.is-passed) .lbl, .enhanced .station:not(.is-passed) .lbl .c { fill: var(--label-ahead); }
+.enhanced .station.is-current .lbl, .enhanced .station.is-current .lbl .c { fill: #fff; font-weight: 600; }
+.enhanced .station.is-current .dot { stroke: var(--focus); }
+.enhanced .station.is-current .seat { fill: var(--focus); }
+.enhanced .term-lbl:not(.is-on) { fill: var(--label-ahead); }
+.enhanced .ring, .enhanced .marker, .enhanced .trail { display: inline; }
+.ring { fill: none; stroke: var(--focus); stroke-width: 1.5; pointer-events: none; }
+.marker { fill: var(--focus); stroke: var(--background); stroke-width: 3; pointer-events: none; }
+.trail { fill: none; stroke: var(--focus); stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+
+/* The in-car display: where the ride is now and what comes next. */
+.readout { flex: none; border-top: 1px solid var(--line-light); padding-top: 14px; }
+.readout-now { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "label label count" "sign name name" "sign where where"; column-gap: 14px; align-items: center; }
+.readout-label { color: var(--secondary); font-size: .75rem; }
+.readout-now > .readout-label { grid-area: label; margin-bottom: 6px; }
+.readout-now .sign { grid-area: sign; font-size: .9rem; color: var(--focus); --sign-line: var(--focus); }
+.readout-name { grid-area: name; font-size: 1.45rem; font-weight: 600; line-height: 1.3; letter-spacing: -.02em; min-width: 0; }
+.readout-where { grid-area: where; color: var(--secondary); font-size: .8rem; line-height: 1.5; }
+.readout-count { grid-area: count; justify-self: end; align-self: start; white-space: nowrap; font: .8rem var(--mono); color: var(--secondary); font-variant-numeric: tabular-nums; }
+/* Each tick takes its stop's line form, so the strip is the route in miniature. */
+.ticks { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); align-items: center; gap: 4px; list-style: none; padding: 0; margin: 14px 0 12px; }
+.ticks li { position: relative; height: 4px; border-radius: 1px; background: var(--line-light); overflow: hidden; }
+.ticks li[data-line="c"] { height: 7px; background: none; box-shadow: inset 0 2px var(--line-light), inset 0 -2px var(--line-light); }
+.ticks li[data-line="s"] { background: repeating-linear-gradient(90deg, var(--line-light) 0 5px, transparent 5px 9px); }
+.ticks li::after { content: ""; position: absolute; inset: 0; background: var(--line-play); transform: scaleX(var(--fill, 0)); transform-origin: left; }
+.ticks li[data-line="c"]::after { background: none; box-shadow: inset 0 2px var(--line-color), inset 0 -2px var(--line-color); }
+.ticks li[data-line="s"]::after { background: repeating-linear-gradient(90deg, var(--line-color) 0 5px, transparent 5px 9px); }
+.ticks li.is-current { background: var(--focus); }
+.ticks li.is-current[data-line="c"] { background: none; box-shadow: inset 0 2px var(--focus), inset 0 -2px var(--focus); }
+.ticks li.is-current[data-line="s"] { background: repeating-linear-gradient(90deg, var(--focus) 0 5px, transparent 5px 9px); }
+.ticks li.is-current::after { opacity: 0; }
+.readout-next { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.readout-next p { min-width: 0; font-size: .85rem; line-height: 1.5; }
+.readout-next .readout-label { margin-right: 10px; }
+.readout-controls { display: flex; gap: 6px; flex: none; }
+.readout-controls button { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 4px 12px; border: 1px solid var(--line-light); border-radius: 6px; background: var(--surface); font-size: .8rem; transition: background-color 130ms, border-color 130ms; }
+.readout-controls svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.readout-controls button:disabled { color: var(--secondary); opacity: .45; cursor: default; }
+
+/* Stops */
+.stops { grid-area: stops; min-width: 0; }
+.stage { padding: 40px 0 64px; border-top: 1px solid var(--line-light); scroll-margin-top: var(--reading-offset, calc(var(--header-h) + 28px)); }
+.stage:focus { outline: none; }
+.stop-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin-bottom: 22px; color: var(--secondary); font-size: .8rem; line-height: 1.6; }
+.transfer { text-decoration: underline; text-decoration-color: var(--line-light); text-underline-offset: 5px; }
+/* The station sign leads the heading on its baseline; line, owner and transfer follow it. */
+.stage h3 > span:last-child { text-wrap: balance; }
+h1, h2 { text-wrap: balance; }
+.stage h3 { display: flex; align-items: baseline; gap: .55em; font-size: clamp(1.5rem, 2.3vw, 2rem); font-weight: 600; line-height: 1.38; letter-spacing: -.03em; margin: 0 0 10px; transition: color 130ms; }
+.stage h3 .sign { letter-spacing: .02em; transition: color 130ms; }
+.stage > p:not(.stop-meta) { color: var(--body); max-width: 38em; }
+.io { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 28px; border-top: 1px solid var(--line); padding-top: 16px; margin-top: 28px; max-width: 38em; }
+.io div { display: flex; gap: 14px; align-items: baseline; }
+.io dt { color: var(--secondary); font-size: .75rem; white-space: nowrap; }
+.io dd { margin: 0; font-size: .88rem; }
+.terminus { padding: 40px 0 96px; border-top: 1px solid var(--line-light); font-size: 1.35rem; font-weight: 600; letter-spacing: -.02em; }
+.terminus span { display: block; margin-top: 10px; font-size: .85rem; font-weight: 400; letter-spacing: 0; color: var(--secondary); }
+/* Runway after the last stop: the train reaches the screen while the map is pinned. */
+.enhanced .terminus { min-height: calc(100svh - var(--reading-offset, 200px)); }
+.enhanced .stage { min-height: max(500px, 66svh); padding-bottom: 96px; }
+.enhanced .stage[data-active] h3 { color: #fff; }
+.enhanced .stage[data-active] h3 .sign { color: var(--focus); --sign-line: var(--focus); }
+
+/* Station figures: one drawing per stop, inside the reading column. Hidden
+   until figures.js prepares them, so JS-disabled readers get the full text. */
+.fig { display: none; margin: 30px 0 4px; max-width: 38em; }
+.fig[data-ready] { display: block; }
+.fig-plate { aspect-ratio: 16 / 9; border: 1px solid var(--line-light); border-radius: 10px; background: var(--zone-a); overflow: hidden; }
+.fig-tall .fig-plate { aspect-ratio: 16 / 11; }
+.fig-short .fig-plate { aspect-ratio: 2 / 1; }
+/* Per-figure plates sized to their drawings. */
+.fig[data-fig="p1"] .fig-plate, .fig[data-fig="p5"] .fig-plate { aspect-ratio: 5 / 2; }
+.fig-plate canvas { display: block; width: 100%; height: 100%; touch-action: pan-y; }
+.fig-plate canvas[tabindex] { cursor: grab; }
+.fig-plate canvas:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 10px; }
+.fig-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.fig-controls button { min-height: 32px; padding: 3px 11px; border: 1px solid var(--line-light); border-radius: 6px; background: var(--surface); color: var(--secondary); font-size: .76rem; transition: color 130ms, border-color 130ms, background-color 130ms; }
+.fig-controls button[aria-pressed="true"] { color: var(--text); border-color: var(--focus); }
+.fig-controls button:disabled { opacity: .6; cursor: progress; }
+.fig-label { margin-right: 4px; color: var(--secondary); font-size: .76rem; }
+.fig-range { display: inline-flex; align-items: center; gap: 10px; color: var(--secondary); font-size: .76rem; }
+.fig-range input { width: min(240px, 48vw); accent-color: var(--focus); }
+.fig-range output { min-width: 9ch; font: .76rem var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
+.fig figcaption { margin-top: 10px; color: var(--secondary); font-size: .78rem; line-height: 1.65; }
+/* Fixed height: a status that changes while scrolling must never move the page. */
+.fig-state { display: block; height: 1.65em; margin-bottom: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: .76rem/1.65 var(--mono); color: var(--focus); }
+.fig-results { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 16px; margin: 12px 0 0; padding: 12px 14px; border: 1px solid var(--line-light); border-radius: 6px; font-size: .8rem; }
+.fig-results dt { font: .74rem/1.7 var(--mono); color: var(--secondary); }
+.fig-results dd { margin: 0; color: var(--text); }
+
+/* Reference sections */
+main > section { padding: 48px 0 56px; border-top: 1px solid var(--line-light); }
+.section-heading { margin-bottom: 30px; max-width: 46em; }
+h2 { font-size: clamp(1.35rem, 3vw, 1.7rem); font-weight: 600; line-height: 1.4; margin-bottom: 8px; letter-spacing: -.02em; }
+.section-heading p, .note { color: var(--secondary); font-size: .9rem; }
+.note { margin-top: 24px; max-width: 70em; }
+.metadata-list > div { display: grid; grid-template-columns: 260px minmax(0, 1fr) 180px; gap: 28px; padding: 22px 0; border-bottom: 1px solid var(--line-light); }
+.metadata-list > div:first-child { padding-top: 0; }
+.metadata-list > div:last-child { border-bottom: 0; padding-bottom: 0; }
+.metadata-list dt { font-size: .96rem; }
+.metadata-list dd { margin: 0; color: var(--body); font-size: .95rem; max-width: 46em; }
+.seen { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.metadata-list .seen { align-content: flex-start; justify-content: flex-end; }
+.seen .sign { font-size: .7rem; height: 2.1em; }
+.disclosure .seen { margin-top: 18px; font-size: .78rem; color: var(--secondary); }
+.disclosure .seen > span { margin-right: 6px; }
+details { border-bottom: 1px solid var(--line-light); }
+summary { position: relative; cursor: pointer; padding: 18px 40px 18px 4px; font-size: 1.05rem; list-style: none; transition: background-color 130ms; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: ""; position: absolute; right: 12px; top: 50%; width: 10px; height: 10px; margin-top: -7px; border-right: 1.5px solid var(--secondary); border-bottom: 1.5px solid var(--secondary); transform: rotate(45deg); transition: transform 180ms var(--ease-out); }
+details[open] > summary::after { transform: translateY(4px) rotate(-135deg); }
+summary span { font-size: .85rem; color: var(--secondary); margin-left: 20px; }
+.disclosure { max-width: 58em; padding: 4px 32px 26px 4px; color: var(--body); }
+footer { padding: 44px 0 56px; border-top: 1px solid var(--line-light); color: var(--secondary); font-size: .85rem; }
+footer p { max-width: 65em; }
+footer nav { display: flex; flex-wrap: wrap; gap: 12px 26px; margin: 24px 0; }
+footer a { text-decoration: underline; text-decoration-color: var(--line-light); text-underline-offset: 5px; }
+.back-top { display: inline-block; padding: 8px 0; }
+
+@media (hover: hover) {
+  a:hover, summary:hover { color: #fff; }
+  .contents a:hover, .transfer:hover, footer a:hover { text-decoration-color: currentColor; border-color: currentColor; }
+  a.sign:hover { background: var(--raised); color: #fff; }
+  summary:hover { background: var(--surface); }
+  .station:hover .lbl, .station:hover .lbl .c { fill: #fff; }
+  .station:hover .dot { stroke: var(--text); }
+  .readout-controls button:not(:disabled):hover { background: var(--raised); border-color: var(--secondary); }
+  .fig-controls button:not(:disabled):hover { background: var(--raised); color: var(--text); }
+}
+@media (max-width: 1100px) {
+  .metadata-list > div { grid-template-columns: 200px minmax(0, 1fr); }
+  .metadata-list .seen { grid-column: 2; justify-content: flex-start; }
+}
+
+/* Medium-height desktops: fold the readout label into the name row so the
+   map keeps its station labels at a legible size. */
+@media (min-width: 861px) and (max-height: 860px) {
+  .readout-now { grid-template-areas: "sign name count" "sign where where"; }
+  .readout-now > .readout-label { display: none; }
+  .readout-count { align-self: center; }
+  .ticks { margin: 10px 0 8px; }
+}
+/* Laptop windows (about 560–760px tall) keep the pinned map: tighter insets and
+   a two-line readout give the drawing the height; labels scale up in JS. */
+@media (min-width: 861px) and (max-height: 760px) {
+  .route { top: calc(var(--header-h) + 8px); height: calc(100svh - var(--header-h) - 16px); gap: 10px; }
+  .readout { padding-top: 10px; }
+  .readout-now { grid-template-areas: "sign name count"; }
+  .readout-where { display: none; }
+  .readout-name { font-size: 1.2rem; }
+  .ticks { margin: 8px 0 6px; }
+}
+/* Phones, tablets in portrait and short windows: the whole map sits once in the
+   flow, then the in-car display pins under the header as a route strip. */
+@media (max-width: 860px), (max-height: 560px) {
+  .journey { display: block; }
+  .intro { padding: 48px 0 32px; }
+  .route { display: contents; }
+  .route-map { margin-bottom: 28px; }
+  .map-frame { container-type: normal; display: block; aspect-ratio: auto; }
+  .network { width: 100%; height: auto; }
+  .lbl .n, .zs, .note-lbl { display: none; }
+  .lgd { font-size: 22px; }
+  .lbl .c { font-size: 21px; }
+  .zn { font-size: 21px; }
+  .term-lbl { font-size: 20px; }
+  .readout { position: sticky; z-index: 2; top: var(--header-h); margin: 0 -24px; padding: 10px 24px; background: var(--background); border-top: 0; border-bottom: 1px solid var(--line-light); display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "now ctrl" "ticks ticks" "next next"; column-gap: 12px; }
+  .readout-now { grid-area: now; grid-template-areas: "sign name count" "sign where where"; column-gap: 10px; }
+  .readout-now > .readout-label { display: none; }
+  .readout-now .sign { font-size: .72rem; }
+  .readout-name { font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .readout-where { font-size: .72rem; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .readout-count { align-self: center; font-size: .72rem; }
+  .ticks { grid-area: ticks; margin: 10px 0 8px; gap: 3px; }
+  .readout-next { display: contents; }
+  .readout-next p { grid-area: next; font-size: .75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .readout-controls { grid-area: ctrl; align-self: center; }
+  .readout-controls button { width: 40px; height: 40px; padding: 0; justify-content: center; }
+  .readout-controls button span { display: none; }
+  .readout-controls svg { width: 16px; height: 16px; }
+  .enhanced .stage { min-height: 72svh; padding: 28px 0 72px; }
+  .stage h3 { font-size: 1.55rem; }
+  .enhanced .terminus { padding-bottom: 40px; }
+}
+/* Wide but very short windows use the strip too, centred at a reading measure. */
+@media (min-width: 861px) and (max-height: 560px) {
+  .intro, .route-map, .stops { max-width: 720px; margin-inline: auto; }
+  .readout { max-width: 720px; margin-inline: auto; padding-inline: 0; }
+}
+@media (max-width: 600px) {
+  :root { --header-h: 56px; }
+  main { width: calc(100% - 32px); }
+  .site-header { padding: 0 16px; gap: 10px; }
+  .site-header nav { gap: 18px; }
+  .identity { gap: 8px; font-size: .85rem; }
+  .intro { padding: 40px 0 28px; }
+  h1 br { display: none; }
+  h1 { font-size: 2.6rem; }
+  .readout { margin: 0 -16px; padding: 10px 16px; }
+  .io { grid-template-columns: 1fr; gap: 10px; }
+  main > section { padding: 36px 0 40px; }
+  .metadata-list > div { grid-template-columns: 1fr; gap: 10px; }
+  .metadata-list .seen { grid-column: auto; }
+  summary span { display: block; margin: 4px 0 0; }
+  .disclosure { padding-right: 8px; }
+  .fig-plate, .fig-short .fig-plate, .fig[data-fig="p1"] .fig-plate, .fig[data-fig="p5"] .fig-plate { aspect-ratio: 4 / 3; }
+  .fig-tall .fig-plate, .fig-tall-m .fig-plate { aspect-ratio: 1 / 1; }
+  .fig-state { display: -webkit-box; height: 3.3em; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .fig-results { grid-template-columns: 1fr; gap: 0; }
+  .fig-results dd { margin-bottom: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { transition-duration: 0ms !important; }
+}
+@media (forced-colors: active) {
+  :root { scrollbar-color: auto; }
+  .trk.p, .term, .trk.s, .trk.f, .trk.c .co, .key-p, .key-co, .key-s, .key-f { stroke: CanvasText !important; }
+  .trk.c .ci, .key-ci, .halo { stroke: Canvas !important; }
+  .sign { --sign-line: CanvasText; }
+  .enhanced .trk:not(.is-on), .enhanced .trk.c:not(.is-on) .co { stroke: GrayText !important; }
+  .ring, .trail, .marker { stroke: Highlight !important; }
+  .marker { fill: Highlight !important; }
+  .lbl, .lbl .c, .zn, .zs, .term-lbl, .note-lbl { fill: CanvasText !important; }
+  .station:focus-visible .hit { stroke: Highlight; }
+  .stage[data-active] .sign { outline: 2px solid Highlight; }
+}

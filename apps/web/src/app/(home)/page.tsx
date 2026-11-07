@@ -130,6 +130,10 @@ function CollectionCard({
           <span>{siteConfig.home.collectionAboutLabel}</span>
           <strong>{siteConfig.home.collectionAboutValue}</strong>
         </Link>
+        <a href="/support" data-native-navigation>
+          <span>播放与色彩支持</span>
+          <strong>Support</strong>
+        </a>
       </div>
     </section>
   );

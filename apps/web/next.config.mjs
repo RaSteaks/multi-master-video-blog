@@ -83,6 +83,8 @@ const nextConfig = {
   } : {}),
   async rewrites() {
     return [
+      // Standalone documentation bypasses the App Router layout and CMS reads.
+      { source: "/support", destination: "/support/index.html" },
       ...directusAdminRoutes.map((route) => ({
         source: `/${route}/:path*`,
         destination: `${directusUrl}/${route}/:path*`

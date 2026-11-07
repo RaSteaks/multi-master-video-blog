@@ -61,6 +61,7 @@ export default async function AboutPage() {
                 {cmsPost.category || siteConfig.about.eyebrow}
               </p>
               <h1>{cmsPost.title}</h1>
+              <a className="profile-about-link" href="/support" data-native-navigation>播放与色彩支持</a>
             </header>
 
             {coverUrl ? (
@@ -97,6 +98,7 @@ export default async function AboutPage() {
           <p className="eyebrow">{about.eyebrow}</p>
           <h1>{about.title}</h1>
           {about.summary ? <p className="summary">{about.summary}</p> : null}
+          <a className="profile-about-link" href="/support" data-native-navigation>播放与色彩支持</a>
         </header>
 
         <article className="markdown-body">

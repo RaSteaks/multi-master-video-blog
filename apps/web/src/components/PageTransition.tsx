@@ -624,6 +624,8 @@ function shouldIgnoreClick(event: MouseEvent) {
 }
 
 function isInternalPageNavigation(anchor: HTMLAnchorElement) {
+  // Static documents must use a document request, not an App Router transition.
+  if (anchor.hasAttribute("data-native-navigation")) return false;
   const url = new URL(anchor.href);
 
   if (url.origin !== window.location.origin) {
