@@ -10,6 +10,7 @@ const { spawn } = require("node:child_process");
 const { loadEnvironment, resolveResourceProfile } = require("../config/resource-profile.cjs");
 const { createTaskLimiter } = require("../apps/api/src/task-limiter.cjs");
 const { downloadToFile, mediaThreadArgs } = require("../apps/api/src/resource-io.cjs");
+const { createAssetCache } = require("../apps/api/src/asset-cache.cjs");
 
 async function directory(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "blog-resources-"));
@@ -185,15 +186,16 @@ test("asset proxy cancellation propagates to the upstream fetch before headers a
     authorizeAsset: async () => true, PUBLIC_ASSET_IDS: new Set(),
     assetBudget: { consume() {} }, assetSlots: { acquire: async () => () => {} },
     requestAddress: () => "fixture", TRUST_PROXY: false, AbortSignal,
-    fetchDirectusAsset: (...args) => new Promise((resolve, reject) => {
+    assetCache: createAssetCache({ maxBytes: 0, fetchAsset: (...args) => new Promise((resolve, reject) => {
       upstreamSignal = args[5]; upstreamSignal.addEventListener("abort", () => reject(upstreamSignal.reason));
       requestStarted();
-    })
+    }) })
   });
   const response = new EventEmitter();
   response.setHeader = () => {};
   const work = api.handleAsset({ method: "GET", headers: {} }, new URL("http://api.invalid/assets/abc"), response);
-  await started; response.emit("close"); await work;
+  await Promise.race([started, work.then(() => assert.fail("Asset handler ended before contacting upstream"))]);
+  response.emit("close"); await work;
   assert.equal(upstreamSignal.aborted, true);
   assert.equal(response.listenerCount("close"), 0);
 });

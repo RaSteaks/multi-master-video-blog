@@ -63,6 +63,7 @@ const { createVideoStorage } = require("./video-storage.cjs");
 const { createContentArchive } = require("./content-archive.cjs");
 const { createCachedProbe } = require("./cached-probe.cjs");
 const { createAssetAuthorizer } = require("./asset-access.cjs");
+const { createAssetCache } = require("./asset-cache.cjs");
 const { createExternalProjects, EXTERNAL_PROJECT_FIELDS } = require("./external-projects.cjs");
 const { createContentOrder } = require("./content-order.cjs");
 const { canReadMedia } = require("./media-access.cjs");
@@ -221,6 +222,19 @@ const ARTICLE_IMAGE_TARGET_PATTERN =
 const ASSET_PRESETS = new Set(
   require("../../../config/directus-asset-presets.json").map((preset) => preset.key)
 );
+const assetCache = createAssetCache({
+  request: directusRequest,
+  fetchAsset: (fileId, preset, token, headers, method, signal) => {
+    const url = new URL(`${DIRECTUS_URL}/assets/${encodeURIComponent(fileId)}`);
+    if (preset) url.searchParams.set("key", preset);
+    return fetchDirectusAsset(url, token, headers, method, false, signal);
+  },
+  presets: require("../../../config/directus-asset-presets.json"),
+  maxBytes: env.ASSET_CACHE_ENABLED === "false" ? 0
+    : positiveInteger(env.ASSET_CACHE_MAX_BYTES, (resourceLimits.enabled ? 8 : 16) * 1024 ** 2),
+  maxEntryBytes: positiveInteger(env.ASSET_CACHE_MAX_ENTRY_BYTES, 2 * 1024 ** 2),
+  ttlMs: positiveInteger(env.ASSET_CACHE_TTL_MS, 300_000)
+});
 const PUBLIC_ASSET_IDS = new Set(String(env.PUBLIC_ASSET_IDS || "")
   .split(",").map(value => value.trim()).filter(Boolean));
 // Limits are process-wide as well as per client; spoofed visitor IDs cannot evade them.
@@ -8666,23 +8680,17 @@ async function handleAsset(req, url, res) {
     if (!await authorizeAsset(fileId, access)) {
       throw httpError(404, "Asset not found.");
     }
-    const assetUrl = new URL(
-      `${DIRECTUS_URL}/assets/${encodeURIComponent(fileId)}`
-    );
-    if (preset) {
-      assetUrl.searchParams.set("key", preset);
-    }
-    const response = await fetchDirectusAsset(
-      assetUrl,
-      token,
-      req.headers,
-      req.method,
-      false,
-      AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)])
-    );
+    // Cache bytes only after current ownership is authorized. The cache separately
+    // checks CMS file versions, so replacement/deletion cannot reuse an old image.
+    const { response, cacheStatus } = await assetCache.get({
+      fileId, preset, token, headers: req.headers, method: req.method,
+      privateRequest: access.media || access.article,
+      onWait: () => { release?.(); release = null; },
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)])
+    });
     // Bound authorization/upstream setup, not the client's download speed.
     // A slow reader must not occupy every slot needed by other images or HLS checks.
-    release();
+    release?.();
     release = null;
 
     // Even a conditional request must recheck publication before emitting 304.
@@ -8690,7 +8698,8 @@ async function handleAsset(req, url, res) {
       ? "private, no-store" : "public, no-cache, must-revalidate";
     const validatorHeaders = {
       "Cache-Control": cacheHeader,
-      Vary: "Authorization, X-Upload-Token, X-Article-Token",
+      Vary: "Authorization, X-Upload-Token, X-Article-Token, X-Author-CSRF",
+      "X-Asset-Cache": cacheStatus,
       ...assetSafetyHeaders(response.headers.get("content-type")),
       ...(response.headers.get("etag")
         ? { ETag: response.headers.get("etag") }
@@ -8705,7 +8714,7 @@ async function handleAsset(req, url, res) {
     );
     if (
       response.status === 304 ||
-      (responseEtag &&
+      (response.ok && responseEtag &&
         requestIsFresh(req.headers, responseEtag, responseModifiedAt))
     ) {
       if (response.body) {

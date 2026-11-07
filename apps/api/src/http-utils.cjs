@@ -39,7 +39,8 @@ function requestIsFresh(headers, etag, mtimeMs) {
       ifNoneMatch
         .split(",")
         .map((value) => value.trim())
-        .includes(etag)
+        // If-None-Match uses weak comparison for GET/HEAD, unlike If-Range.
+        .some(value => value.replace(/^W\//, "") === String(etag).replace(/^W\//, ""))
     );
   }
 

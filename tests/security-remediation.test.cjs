@@ -24,6 +24,9 @@ function apiFixture(names, extra = {}) {
     videoStorage: { enabled: false },
     fs, fsp, path, ...require("../apps/api/src/http-utils.cjs"),
     ...require("../apps/api/src/media-security.cjs"), ...extra });
+  context.assetCache = extra.assetCache || require("../apps/api/src/asset-cache.cjs").createAssetCache({ maxBytes: 0,
+    fetchAsset: (id, preset, token, headers, method, signal) => context.fetchDirectusAsset(
+      new URL(`/assets/${id}${preset ? `?key=${preset}` : ""}`, context.DIRECTUS_URL), token, headers, method, false, signal) });
   vm.runInContext(names.map(name => {
     const match = apiSource.match(new RegExp("^(?:async )?function " + name + "\\([\\s\\S]*?^}", "m"));
     assert.ok(match, name); return match[0];

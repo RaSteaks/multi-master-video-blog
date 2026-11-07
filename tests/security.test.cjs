@@ -30,6 +30,10 @@ function apiFixture(names, extra = {}) {
     assetAccess: () => ({}), canReadMedia: async () => true, PUBLIC_MEDIA_FILES: new Set(), ...media, ...require("../apps/api/src/http-utils.cjs"), ...extra });
   context.authorizeAsset = async (id, access) => (extra.canReadAsset || canReadAsset)(id, access,
     route => context.directusRequest(route, "service-token"), context.PUBLIC_ASSET_IDS);
+  // These policy fixtures exercise uncached transport; the cache suite covers hits/revalidation.
+  context.assetCache = extra.assetCache || require("../apps/api/src/asset-cache.cjs").createAssetCache({ maxBytes: 0,
+    fetchAsset: (id, preset, token, headers, method, signal) => context.fetchDirectusAsset(
+      new URL(`/assets/${id}${preset ? `?key=${preset}` : ""}`, context.DIRECTUS_URL), token, headers, method, false, signal) });
   vm.runInContext(names.map(name => {
     const match = apiSource.match(new RegExp("^(?:async )?function " + name + "\\([\\s\\S]*?^}", "m"));
     assert.ok(match, name);

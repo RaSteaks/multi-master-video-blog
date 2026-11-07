@@ -190,6 +190,52 @@ published content, site backgrounds, or explicit operator `PUBLIC_ASSET_IDS`
 use their corresponding publishing token in a header and receive private,
 non-cacheable responses; unrelated CMS files remain inaccessible. Public asset
 requests recheck publication even when conditional cache headers are present.
+Public image responses also use a bounded, process-local byte cache. Every access
+still checks publication and reads current CMS file metadata; neither permission
+grants nor file versions are retained between requests. File metadata and the managed
+preset define a weak ETag. Matching browser requests return 304 without reading the
+asset from Directus/OSS, even after the in-process bytes have expired. Unconditional
+hits reuse the bytes; simultaneous misses share a streaming fill. The first response
+continues streaming while the cache captures it, rather than waiting for the whole image.
+
+The cache retains at most 16 MiB (8 MiB with a low-resource profile), 256 entries,
+and 2 MiB per image, for five minutes. Up to four fills can additionally buffer
+one image each. Larger originals, authenticated previews, non-images, incomplete
+file metadata, and failed/incomplete downloads are not retained. CMS outages do
+not serve stale cached images. Set `ASSET_CACHE_ENABLED=false` to disable it;
+`ASSET_CACHE_MAX_BYTES`, `ASSET_CACHE_MAX_ENTRY_BYTES`, and `ASSET_CACHE_TTL_MS`
+override the limits. It uses no shared Redis, disk cache, CDN, or schema migration.
+
+Replacements/deletions must go through Directus so file metadata changes. Direct
+OSS overwrites without updating CMS metadata are outside the version contract.
+Deploy managed preset changes together with CMS setup and restart the API so its
+validator includes the new preset definition. A narrowly scoped service account
+must be able to read the file fields in `src/asset-cache.cjs` to use caching;
+missing version data or denied metadata fields fall back to the existing asset
+transport. `X-Asset-Cache` reports `MISS`, `HIT`, `COALESCED`,
+`REVALIDATED`, or `BYPASS` for diagnostics. Browser responses retain mandatory
+revalidation, and all authorization variants (including `X-Author-CSRF`) are in `Vary`.
+
+Author preview downloads only share in-flight browser requests with the same URL
+and resolved credential/session. Each consumer cancels independently; the upstream
+download is aborted when the last consumer leaves. Completed blobs, failures and
+credentials are not retained in that request map or persisted in browser storage;
+later visits reauthorize. Private responses remain `private, no-store`.
+
+Verification, from the repository root (focused API checks can also run as
+`node --test test/asset-cache.test.cjs` from `apps/api`):
+
+```sh
+npm run test:api
+npm run test:web
+node --test tests/security.test.cjs tests/security-remediation.test.cjs
+node tests/asset-cache-browser.cjs
+```
+
+The browser check builds an isolated production frontend and runs headless WebKit
+against disposable API/CMS fixtures. Reports, service logs and a screenshot are
+saved under `test-results/asset-cache/`.
+
 Inline article files require service-written provenance in addition to their
 Markdown reference; see `docs/deployment.md` for the one-time review of legacy
 inline images without provenance. Merely writing another file's ID into a draft
