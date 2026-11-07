@@ -15,8 +15,9 @@ node scripts/setup-directus-schema.cjs --external-projects-only
 ```
 
 The normal `npm run setup:cms-schema` also includes this collection. The narrow
-flag changes only the new collection, fields and cover relation; it does not
-rewrite unrelated CMS settings. `external_projects` is included in the private
+flag installs the website collection, fields, cover relation and its layout setting.
+It also repairs the legacy theme-color validation rule that prevents layout saves;
+custom validation and unrelated CMS settings are preserved. `external_projects` is included in the private
 CMS collection policy. No anonymous Directus collection permissions are needed.
 
 If production shows “实验室暂时无法载入” while local development shows an empty
@@ -29,12 +30,68 @@ the listed fields; the authoring API account also needs create/update access.
 Keep anonymous Directus access disabled. Manager's Update API + Web installs
 dependencies and updates services; it does not run database schema migrations.
 
-Fields: `title`, `description`, `url`, `preview_url`, `preview_enabled`,
+Fields: `title`, `description`, `group_name`, `url`, `preview_url`, `preview_enabled`,
 `open_mode` (`iframe` or `external`), `cover_image`, `published`, `sort_order`,
 `created_at`, and `updated_at`. Lower sort values appear first. Drafts are the
 default. Website addresses must be HTTPS without embedded credentials; local
 HTTP loopback URLs are accepted only in development for isolated verification.
 The API stores URLs and never fetches them or proxies arbitrary website HTML.
+
+Existing installations add the layout fields with:
+
+```sh
+node scripts/setup-directus-schema.cjs --project-layouts-only
+```
+
+This adds `external_projects.group_name` and `site_settings.project_layout` without
+changing the active layout or publishing projects. It also repairs the legacy
+bare theme-color regex into Directus's field-keyed validation format; that old
+format causes recursive validation failures on all site-settings writes.
+Custom validation rules are preserved. The normal setup and
+`--external-projects-only` also include these fields and the same validation repair.
+If the color field has not been installed, there is no legacy rule to repair.
+API service permissions must
+allow reading/writing the singleton layout field; the Web service only needs read
+access. Anonymous Directus access stays disabled. Run the migration on the intended
+installation before using the new author controls; deployment is a separate step.
+
+## Author-owned layout templates
+
+**管理网站 → 展示布局** offers the original **双列展示** plus six templates:
+
+- **目录与展台** (`catalogue`): select a project from the directory, then use its
+  large card to view/open it. At widths up to 700px, selection scrolls directly to
+  the exhibit and focuses its view/open card; desktop selection keeps focus in
+  the directory. Only the selected project can run a preview.
+- **拼贴展墙** (`mosaic`): repeating wide/narrow card compositions.
+- **图文交替** (`alternating`): pictures and descriptions alternate sides.
+- **错落瀑布** (`masonry`): varying picture ratios with measured grid row spans;
+  DOM order, keyboard sorting and pointer sorting use the shared sortable grid.
+- **分组陈列** (`groups`): use **编辑网站 → 展示分组** (at most 60 characters).
+  Groups follow their first appearance in author order; blank names join
+  **其他作品**. Sorting within a group rearranges only that group's loaded rows.
+  Change a project's group in the editor to move it to another section.
+- **双主推** (`dual`): the first two projects get large cards; remaining cards
+  use compact horizontal entries. Existing author ordering determines the leads.
+
+Selecting a template previews it locally. **保存布局** persists it for all visitors;
+**取消预览** or returning to public display restores the saved choice. Save failure
+keeps the selection and leaves the public layout unchanged. A save does not discard
+already-loaded pages. Visitors have no layout controls and cannot override the
+choice with local storage or URL parameters. Responsive reflow is part of each
+template. Empty lists and single projects remain supported.
+
+- `GET /api/external-projects/layout`: public `{ layout }`, with `Cache-Control: no-store`.
+- `PATCH /api/external-projects/layout`: `{ layout }`, protected by the existing
+  author session + CSRF (or explicit upload token), with a strict field allowlist.
+
+The API and server-rendered page read the CMS choice without caching; new visits
+and refreshes observe the saved value without requiring a Directus webhook. An
+unset choice retains the original `grid`. If settings cannot be read, the public
+page keeps the original layout and the author panel explains the unavailable
+setting. An unmigrated grouping field is omitted from read queries so public cards
+remain available; writes require the schema update. No production migration is
+performed automatically by the application.
 
 ## Author workflow and endpoints
 
@@ -75,16 +132,20 @@ list and clears `dialog` without racing a second route refresh.
 
 The home contact strip reuses this preview for a preview-enabled site that has no
 cover. There a cover wins, because it is cheaper than a running page, and only the
-newest three on-screen frames run at once. A site that refuses embedding gives a
+newest three on-screen frames run at once (one at widths up to 700px). A site that refuses embedding can give a
 blank frame, so give it a cover or a `preview_url` that can be framed.
 
-A preview takes priority over the cover: every preview-enabled card on screen
-starts its frame once scrolling settles, without hover or focus. The cover shows
-until the frame has loaded, and remains the fallback when it fails to load within
+A preview takes priority over the cover: up to three preview-enabled cards on screen
+start their frames once scrolling settles, without hover or focus; at widths up to
+700px the budget is one. Visible cards are selected in stable list order. The cover shows
+until the frame fires `load`, and remains the fallback when no load event arrives within
 12 seconds. Reduced motion keeps posters, and a card without one shows the ◇
 placeholder. Preview frames are inert and pointer-transparent, rendered at a
-1280×800 desktop viewport and scaled into a 16:10 picture. All on-screen previews
-run at once, so a heavy site should set a lighter `preview_url`. Leaving the
+1280px-wide desktop viewport and scaled into the picture. The default 16:10 picture
+uses 800px height; mosaic/masonry ratios adjust the frame height rather than stretch
+the webpage. Cards waiting for a slot
+keep their cover/placeholder and never hold the route wipe. A heavy site can set
+a lighter `preview_url`. Leaving the
 viewport, hiding the page or opening a dialog unmounts the frames rather than
 pretending a hidden frame is paused. On arrival, on-screen frames start at once,
 without the scroll settle: a route wipe holds up to 300ms for a coverless card,
@@ -109,20 +170,35 @@ Third-party storage/login and some browser features may differ from standalone u
 An iframe `load` event is **not** evidence that its picture rendered successfully:
 cross-origin frame failures cannot be reliably detected without target cooperation.
 Admin testing is visual confirmation, not an automated compatibility certificate.
-The toolbar and independent-open fallback always remain reachable. Escape works
+The compatibility state after `load` is explicitly `unverified`, never success.
+No readiness script or handshake is required of target websites. Observable error
+events also restore the cover, but browsers commonly suppress iframe errors: CSP,
+X-Frame-Options and network failures can still display a browser error page after
+`load`. A timeout only says no load event arrived; it does not prove embedding is
+forbidden. Authors should disable the preview and choose independent opening for
+known blocked sites. The viewer keeps a **重新加载** action available even after
+`load`, alongside the reachable toolbar and independent-open fallback. Escape works
 when delivered to the blog; it is not the only exit from a focused cross-origin
 frame. No generic cross-origin pause, audio mute, screenshot or DOM access is claimed.
+
+An ordinary iframe has no per-frame User-Agent override. Browser-side previews use
+the visitor's browser; changing UA does not override frame policy. A future server-side
+Firefox/WebKit screenshot worker could set UA and viewport together, but its cached
+images would be snapshots rather than an interactive iframe. No such worker or proxy
+is part of this implementation.
 
 ## Verification
 
 ```sh
-npm run test:external-projects
+node --test apps/api/test/external-projects.test.cjs
 npm run test:web
-npm run test:project-browser
+node tests/project-browser.cjs
+node tests/project-layouts-browser.cjs
+PROJECT_BROWSER=firefox node tests/project-browser.cjs
 npm run build:web
 ```
 
-The browser script uses headless WebKit, an isolated CMS fixture, the real API and
+The browser script uses headless WebKit (or Firefox via `PROJECT_BROWSER`), an isolated CMS fixture, the real API and
 Next rewrites, and a second local origin for animated/blocked embeds. It never
 uses personal browser sessions or writes production CMS data. Reports, screenshots
-and service logs are retained in `test-results/project/`.
+and service logs are retained in `test-results/project/` (or `test-results/project-firefox/`).

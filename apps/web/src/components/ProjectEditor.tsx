@@ -14,7 +14,7 @@ export function ProjectEditor({ project, onClose, onSaved }: {
 }) {
   const session = useAuthorSession();
   const [values, setValues] = useState(() => ({
-    title: project?.title || "", description: project?.description || "", url: project?.url || "",
+    title: project?.title || "", description: project?.description || "", group_name: project?.group_name || "", url: project?.url || "",
     preview_url: project?.preview_url || "", preview_enabled: project?.preview_enabled ?? true,
     open_mode: project?.open_mode || "iframe", sort_order: project?.sort_order || 0,
   }));
@@ -62,6 +62,7 @@ export function ProjectEditor({ project, onClose, onSaved }: {
     if (!isWebsiteUrl(values.url.trim())) next.url = "请输入完整的 HTTPS 网站地址。";
     if (values.preview_enabled && values.preview_url.trim() && !isWebsiteUrl(values.preview_url.trim())) next.preview_url = "请输入完整的 HTTPS 预览地址，或留空。";
     if (values.description.trim().length > 300) next.description = "简介最多 300 字符。";
+    if (values.group_name.trim().length > 60) next.group_name = "展示分组最多 60 字符。";
     if (!Number.isSafeInteger(values.sort_order) || Math.abs(values.sort_order) > 1_000_000) next.sort_order = "请输入 -1000000 至 1000000 之间的整数。";
     setErrors(next);
     const first = Object.keys(next)[0];
@@ -126,6 +127,13 @@ export function ProjectEditor({ project, onClose, onSaved }: {
                 <textarea name="description" aria-labelledby="project-description-label" rows={3} className={styles["resize-none"]} value={values.description} maxLength={300} onChange={e => change("description", e.target.value)}
                   aria-invalid={Boolean(errors.description)} aria-describedby={errors.description ? "project-description-error" : undefined} />
                 {errors.description ? <small id="project-description-error" className={styles.error}>{errors.description}</small> : null}
+              </label>
+              <label className="album-field"><span id="project-group-label">展示分组</span>
+                <input name="group_name" aria-labelledby="project-group-label" maxLength={60} value={values.group_name}
+                  onChange={e => change("group_name", e.target.value)} aria-invalid={Boolean(errors.group_name)}
+                  aria-describedby={errors.group_name ? "project-group-error" : "project-group-help"} />
+                <small id="project-group-help">用于分组陈列和项目目录。同名分组放在一起，留空归入“其他作品”。</small>
+                {errors.group_name ? <small id="project-group-error" className={styles.error}>{errors.group_name}</small> : null}
               </label>
               <label className="album-field"><span id="project-cover-label">封面图片</span>
                 <input type="file" aria-labelledby="project-cover-label" aria-describedby="project-cover-help" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" onChange={e => {

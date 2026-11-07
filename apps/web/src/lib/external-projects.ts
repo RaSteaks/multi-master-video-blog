@@ -1,9 +1,17 @@
 import { authorHeaders, observeAuthorResponse } from "./author-session";
+import { isProjectLayout } from "../../../../shared/project-layouts.cjs";
+
+// A live thumbnail runs a complete website, even when its pixels are scaled down.
+export const WEBSITE_PREVIEW_LIMIT = 3;
+export const WEBSITE_PREVIEW_MOBILE_QUERY = "(max-width: 700px)";
+// Cross-origin load events cannot distinguish a rendered site from a browser error page.
+export type WebsiteFrameStatus = "loading" | "unverified" | "timeout" | "error";
 
 export type WebsiteProject = {
   id: number;
   title: string;
   description: string;
+  group_name: string;
   url: string;
   preview_url: string | null;
   preview_enabled: boolean;
@@ -32,6 +40,7 @@ export function readWebsiteProject(value: unknown): WebsiteProject {
   if (!Number.isSafeInteger(item.id) || Number(item.id) < 1 || typeof item.title !== "string"
     || !item.title.trim() || typeof item.url !== "string" || !isWebsiteUrl(item.url)
     || (item.description != null && typeof item.description !== "string")
+    || (item.group_name != null && (typeof item.group_name !== "string" || item.group_name.trim().length > 60))
     || (item.preview_url != null && item.preview_url !== "" && (typeof item.preview_url !== "string" || !isWebsiteUrl(item.preview_url)))
     || ![true, false, 0, 1].includes(item.preview_enabled as boolean)
     || ![true, false, 0, 1].includes(item.published as boolean)
@@ -40,6 +49,7 @@ export function readWebsiteProject(value: unknown): WebsiteProject {
     || (item.sort_order != null && !Number.isSafeInteger(item.sort_order))) throw new Error("网站数据格式无效，请检查 CMS 配置。");
   return {
     id: Number(item.id), title: item.title, description: (item.description as string | null) || "",
+    group_name: typeof item.group_name === "string" ? item.group_name.trim() : "",
     url: item.url, preview_url: (item.preview_url as string | null) || null,
     preview_enabled: Boolean(item.preview_enabled), published: Boolean(item.published),
     open_mode: item.open_mode as WebsiteProject["open_mode"], cover_image: (item.cover_image as string | null) || null,
@@ -74,4 +84,22 @@ export async function projectRequest(path: string, options: RequestInit = {}, ma
 export function readSavedProject(value: unknown) {
   if (!value || typeof value !== "object" || !("project" in value)) throw new Error("保存结果尚未确认，请刷新项目列表核对。");
   return readWebsiteProject(value.project);
+}
+
+export function readSavedLayout(value: unknown) {
+  if (!value || typeof value !== "object" || !("layout" in value) || !isProjectLayout(value.layout)) {
+    throw new Error("布局保存结果未确认，请刷新后核对。");
+  }
+  return value.layout;
+}
+
+/** Groups follow the first occurrence in the author's order; each row appears once. */
+export function groupWebsiteProjects(projects: WebsiteProject[]) {
+  const groups = new Map<string, WebsiteProject[]>();
+  for (const project of projects) {
+    const name = project.group_name || "其他作品";
+    const group = groups.get(name);
+    if (group) group.push(project); else groups.set(name, [project]);
+  }
+  return [...groups].map(([name, projects]) => ({ name, projects }));
 }

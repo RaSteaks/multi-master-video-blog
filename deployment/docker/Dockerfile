@@ -74,6 +74,8 @@ WORKDIR /app
 COPY --from=cms-deps --chown=node:node /app/node_modules node_modules
 COPY --from=cms-deps --chown=node:node /app/apps/cms/directus apps/cms/directus
 COPY --chown=node:node config config
+# Schema setup imports the same layout vocabulary as the API and web app.
+COPY --chown=node:node shared shared
 COPY --chown=node:node scripts/run-service.cjs scripts/setup-directus-schema.cjs scripts/directus-db-utils.cjs scripts/directus-asset-presets.cjs scripts/directus-health.cjs scripts/directus-public-access.cjs scripts/
 RUN mkdir -p /directus/uploads /directus/extensions && chown -R node:node /directus
 ENV DIRECTUS_CLI=/app/node_modules/directus/cli.js NODE_PATH=/app/node_modules EXTENSIONS_PATH=/directus/extensions NODE_ENV=production

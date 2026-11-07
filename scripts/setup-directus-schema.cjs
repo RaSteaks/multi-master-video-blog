@@ -6,6 +6,7 @@ const {
   quoteIdent
 } = require("./directus-db-utils.cjs");
 const { managedAssetPresets, assetPresetMatches } = require("./directus-asset-presets.cjs");
+const { PROJECT_LAYOUTS } = require("../shared/project-layouts.cjs");
 
 const cmsEnvPath = path.join(
   __dirname,
@@ -367,7 +368,7 @@ function colorField(field, defaultValue) {
       required: true,
       note: "sRGB color in #RRGGBB format.",
       validation: {
-        _regex: "^#[0-9A-Fa-f]{6}$"
+        [field]: { _regex: "^#[0-9A-Fa-f]{6}$" }
       },
       validation_message: "Use a six-digit sRGB value such as #7A7A7A."
     },
@@ -743,6 +744,7 @@ const fields = {
   external_projects: [
     stringField("title", true, { maxLength: 120 }),
     stringField("description", false, { maxLength: 300 }),
+    stringField("group_name", false, { maxLength: 60 }),
     stringField("url", true, { maxLength: 2048 }),
     stringField("preview_url", false, { maxLength: 2048 }),
     booleanField("preview_enabled", true),
@@ -753,6 +755,7 @@ const fields = {
     dateTimeField("created_at"), dateTimeField("updated_at")
   ],
   site_settings: [
+    selectField("project_layout", PROJECT_LAYOUTS.map(layout => ({ text: layout.label, value: layout.value }))),
     fileField("background_image"),
     integerField("background_blur", { defaultValue: 8 }),
     colorField("accent_color", "#7A7A7A"),
@@ -1637,19 +1640,46 @@ async function verifyVideoSourceFormat(token) {
   console.log("video_masters.source_format is ready for video detail requests.");
 }
 
+// Older schemas stored a bare operator. Directus expects a field-keyed filter;
+// the bare regex recurses into string characters during every singleton update.
+async function repairSiteColorValidation(token) {
+  const endpoint = "/fields/site_settings/accent_color";
+  const response = await request(endpoint, { token }).catch(error => {
+    // A fresh, narrow installation may have only the layout field so far.
+    if (error.status === 404) return null;
+    throw error;
+  });
+  const validation = response?.data?.meta?.validation;
+  if (validation && Object.keys(validation).length === 1 && validation._regex === "^#[0-9A-Fa-f]{6}$") {
+    await request(endpoint, { method: "PATCH", token,
+      body: { meta: { validation: { accent_color: validation } } } });
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
-  const narrow = ["--video-source-format-only", "--external-projects-only", "--content-order-only"];
+  const narrow = ["--video-source-format-only", "--external-projects-only", "--content-order-only", "--project-layouts-only"];
   if (args.length > 1 || args.some((arg) => !narrow.includes(arg))) {
-    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only | --external-projects-only | --content-order-only]");
+    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only | --external-projects-only | --content-order-only | --project-layouts-only]");
   }
   const token = await login();
 
-  // An additive rollout for this feature must not rewrite unrelated CMS settings.
+  if (args.includes("--project-layouts-only")) {
+    await ensureField(token, "external_projects", fields.external_projects.find(field => field.field === "group_name"));
+    await ensureField(token, "site_settings", fields.site_settings.find(field => field.field === "project_layout"));
+    await repairSiteColorValidation(token);
+    console.log("Project layout and grouping fields are ready.");
+    return;
+  }
+
+  // Keep the rollout additive, apart from the legacy rule that blocks layout writes.
   if (args.includes("--external-projects-only")) {
     await ensureCollection(token, collections.find(item => item.collection === "external_projects"));
     for (const field of fields.external_projects) await ensureField(token, "external_projects", field);
     await ensureRelation(token, fileRelation("external_projects", "cover_image"));
+    await ensureCollection(token, collections.find(item => item.collection === "site_settings"));
+    await ensureField(token, "site_settings", fields.site_settings.find(field => field.field === "project_layout"));
+    await repairSiteColorValidation(token);
     console.log("External project schema is ready.");
     return;
   }
@@ -1685,6 +1715,7 @@ async function main() {
     await ensureRelation(token, relation);
   }
 
+  await repairSiteColorValidation(token);
   await verifyVideoSourceFormat(token);
   await ensureAlbumFieldDefaults(token);
   await ensureAssetPresets(token);

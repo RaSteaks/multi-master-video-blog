@@ -1,6 +1,7 @@
-const FIELDS = "id,title,description,url,preview_url,preview_enabled,open_mode,cover_image,published,sort_order,created_at,updated_at";
+const { isProjectLayout, readProjectLayout } = require("../../../shared/project-layouts.cjs");
+const FIELDS = "id,title,description,group_name,url,preview_url,preview_enabled,open_mode,cover_image,published,sort_order,created_at,updated_at";
 const PAGE_SIZE = 24;
-const EXTERNAL_PROJECT_FIELDS = ["title", "description", "url", "preview_url", "preview_enabled", "open_mode", "published", "sort_order"];
+const EXTERNAL_PROJECT_FIELDS = ["title", "description", "group_name", "url", "preview_url", "preview_enabled", "open_mode", "published", "sort_order"];
 
 function invalid(message, statusCode = 400) {
   return Object.assign(new Error(message), { statusCode });
@@ -30,10 +31,10 @@ function normalizeProject(input, { partial = false, allowLocal = false } = {}) {
   for (const field of Object.keys(input)) {
     if (!EXTERNAL_PROJECT_FIELDS.includes(field)) throw invalid(`不支持的网站字段：${field}`);
     const value = input[field];
-    if (field === "title" || field === "description") {
-      const limit = field === "title" ? 120 : 300;
+    if (field === "title" || field === "description" || field === "group_name") {
+      const limit = { title: 120, description: 300, group_name: 60 }[field];
       if (typeof value !== "string" || value.trim().length > limit || (field === "title" && !value.trim())) {
-        throw invalid(field === "title" ? "请填写网站名称，最多 120 字符。" : "简介最多 300 字符。");
+        throw invalid({ title: "请填写网站名称，最多 120 字符。", description: "简介最多 300 字符。", group_name: "展示分组最多 60 字符。" }[field]);
       }
       result[field] = value.trim();
     } else if (field === "url") result.url = websiteUrl(value, "网站地址", allowLocal);
@@ -57,7 +58,14 @@ function createExternalProjects({ request, uploadCover, removeUploadedCover, all
     if (!Number.isSafeInteger(page) || page < 1 || page > 10000) throw invalid("页码无效。");
     const params = new URLSearchParams({ fields: FIELDS, sort: "sort_order,-id", limit: String(PAGE_SIZE + 1), offset: String((page - 1) * PAGE_SIZE) });
     if (!managed) params.set("filter[published][_eq]", "true");
-    const response = await request(`/items/external_projects?${params}`);
+    let response;
+    try { response = await request(`/items/external_projects?${params}`); }
+    catch (error) {
+      if (error.directusHttpStatus !== 403) throw error;
+      // An additive rollout must keep old public projects readable before migration.
+      params.set("fields", FIELDS.replace(",group_name", ""));
+      response = await request(`/items/external_projects?${params}`);
+    }
     return { projects: response.data.slice(0, PAGE_SIZE), hasMore: response.data.length > PAGE_SIZE };
   }
 
@@ -88,7 +96,23 @@ function createExternalProjects({ request, uploadCover, removeUploadedCover, all
       throw error;
     }
   }
-  return { list, save };
+  async function getLayout() {
+    const response = await request("/items/site_settings?fields=project_layout");
+    return { layout: readProjectLayout(response.data?.project_layout) };
+  }
+
+  async function saveLayout(input) {
+    if (!input || typeof input !== "object" || Array.isArray(input)
+      || Object.keys(input).some(key => key !== "layout") || !isProjectLayout(input.layout)) {
+      throw invalid("请选择有效的实验室布局。");
+    }
+    const response = await request("/items/site_settings?fields=project_layout", {
+      method: "PATCH", body: { project_layout: input.layout },
+    });
+    if (response.data?.project_layout !== input.layout) throw invalid("布局保存结果未确认，请刷新后核对。", 502);
+    return { layout: input.layout };
+  }
+  return { list, save, getLayout, saveLayout };
 }
 
 module.exports = { createExternalProjects, normalizeProject, EXTERNAL_PROJECT_FIELDS, FIELDS, PAGE_SIZE };

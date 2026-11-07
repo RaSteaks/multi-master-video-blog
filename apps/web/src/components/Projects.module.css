@@ -3,7 +3,7 @@
 .cardCopy { padding: 22px 24px 24px; }
 .cardCopy h2, .cardCopy h3 { margin: 0; font-size: 1.25rem; line-height: 1.35; font-weight: 600; overflow-wrap: anywhere; }
 .cardCopy p { margin-top: 8px; color: var(--text-secondary); line-height: 1.6; overflow-wrap: anywhere; white-space: pre-line; }
-.preview { position: relative; overflow: hidden; aspect-ratio: 16 / 10; background: var(--background); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+.preview { position: relative; overflow: hidden; aspect-ratio: var(--project-preview-ratio, 16 / 10); background: var(--background); border-radius: var(--project-preview-radius, var(--radius-lg) var(--radius-lg) 0 0); }
 .preview > img { width: 100%; height: 100%; object-fit: cover; }
 .placeholder { height: 100%; display: grid; place-items: center; color: var(--muted); background: var(--surface-strong); }
 .placeholder span { font-size: 3rem; font-weight: 200; }
@@ -65,8 +65,9 @@
 .viewerBody { position: relative; flex: 1; min-height: 0; background: var(--background); }
 .viewerBody > iframe { display: block; width: 100%; height: 100%; border: 0; }
 .viewerLoading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: var(--background); color: var(--text-secondary); padding: 24px; text-align: center; pointer-events: none; }
-.viewerLoading button { pointer-events: auto; }
-.viewerHint { flex: 0 0 auto; margin: 0; padding: 5px 16px max(5px, env(safe-area-inset-bottom)); text-align: center; color: var(--text-secondary); font-size: .75rem; background: var(--surface); }
+.viewerHint { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0; padding: 5px 16px max(5px, env(safe-area-inset-bottom)); color: var(--text-secondary); font-size: .75rem; background: var(--surface); }
+.viewerHint p { margin: 0; }
+.viewerHint button { flex-shrink: 0; }
 @media (max-width: 700px) {
   .manageButton { padding-inline: 10px; white-space: nowrap; }
   .cardCopy { padding: 18px 20px 20px; }

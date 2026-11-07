@@ -7,19 +7,18 @@ import { requestAuthorSignIn, useAuthorDevice, useAuthorSession } from "@/lib/au
 import { projectRequest, readProjectList, readSavedProject, type WebsiteProject } from "@/lib/external-projects";
 import { ActionMenu } from "./ActionMenu";
 import { ListHeader } from "./ListHeader";
-import { MediaCard } from "./MediaCard";
+import { ProjectCollection } from "./ProjectCollection";
+import { ProjectLayoutSettings } from "./ProjectLayoutSettings";
+import type { ProjectLayout } from "../../../../shared/project-layouts.cjs";
 import { ProjectEditor } from "./ProjectEditor";
-import { ProjectPreview } from "./ProjectPreview";
 import { ProjectViewer } from "./ProjectViewer";
-import { SortableGrid } from "./SortableGrid";
 import styles from "./Projects.module.css";
 
 type ProjectList = { projects: WebsiteProject[]; hasMore: boolean; unavailable: boolean; missingProject?: boolean };
 
-/** Cards only passing through the viewport during a scroll should not load their frames. */
-const PREVIEW_SETTLE_MS = 250;
-
-export function ProjectGallery({ initial, createRequested, linkedProject }: { initial: ProjectList; createRequested: boolean; linkedProject?: number }) {
+export function ProjectGallery({ initial, presentation, createRequested, linkedProject }: {
+  initial: ProjectList; presentation: { layout: ProjectLayout; unavailable: boolean }; createRequested: boolean; linkedProject?: number;
+}) {
   const router = useRouter();
   const session = useAuthorSession();
   const device = useAuthorDevice();
@@ -42,8 +41,8 @@ export function ProjectGallery({ initial, createRequested, linkedProject }: { in
   // Holds a route wipe back until the viewer below is on screen, so the visitor
   // lands inside the site rather than on a list that a dialog then covers.
   const [linkOpening, setLinkOpening] = useState(Boolean(linked));
-  const [live, setLive] = useState<number[]>([]);
-  const galleryRef = useRef<HTMLOListElement>(null);
+  const [layoutState, setLayoutState] = useState({ saved: presentation.layout, preview: presentation.layout, unavailable: presentation.unavailable });
+  const galleryRef = useRef<HTMLDivElement>(null);
   const listRequest = useRef<AbortController | null>(null);
   const loadingMore = useRef(false);
   const locked = useRef(false);
@@ -77,35 +76,16 @@ export function ProjectGallery({ initial, createRequested, linkedProject }: { in
   }, [linked]);
 
   useEffect(() => {
-    const reduced = matchMedia("(prefers-reduced-motion: reduce)");
-    const visible = new Set<number>();
-    let settle: ReturnType<typeof setTimeout>;
-    function update() {
-      clearTimeout(settle);
-      if (blocked || reduced.matches || document.hidden) { setLive([]); return; }
-      settle = setTimeout(() => setLive([...visible]), PREVIEW_SETTLE_MS);
-    }
-    const observer = new IntersectionObserver(entries => {
-      for (const entry of entries) {
-        const id = Number((entry.target as HTMLElement).dataset.previewId);
-        if (entry.isIntersecting) visible.add(id); else visible.delete(id);
-      }
-      update();
-    });
-    galleryRef.current?.querySelectorAll<HTMLElement>("[data-preview-id]").forEach(card => {
-      observer.observe(card);
-      const box = card.getBoundingClientRect();
-      if (box.bottom > 0 && box.top < innerHeight) visible.add(Number(card.dataset.previewId));
-    });
-    document.addEventListener("visibilitychange", update); reduced.addEventListener("change", update);
-    // Rendering is paused while a route wipe waits for this page, which silences
-    // observers. Start on-screen frames now; they are the page's first impression.
-    setLive(blocked || reduced.matches || document.hidden ? [] : [...visible]);
-    return () => {
-      clearTimeout(settle); observer.disconnect();
-      document.removeEventListener("visibilitychange", update); reduced.removeEventListener("change", update);
-    };
-  }, [blocked, list.projects]);
+    // Sorting/editor refreshes may deliver the last saved choice while the author
+    // is already previewing another template. Preserve that unsaved preview.
+    setLayoutState(current => ({ saved: presentation.layout,
+      preview: current.preview === current.saved ? presentation.layout : current.preview,
+      unavailable: presentation.unavailable }));
+  }, [presentation.layout, presentation.unavailable]);
+
+  function previewLayout(layout: ProjectLayout) {
+    setLayoutState(current => ({ ...current, preview: layout }));
+  }
 
   async function more() {
     if (loadingMore.current) return;
@@ -157,9 +137,14 @@ export function ProjectGallery({ initial, createRequested, linkedProject }: { in
 
   return <>
     <ListHeader eyebrow="我制作的一些网页与视觉实验" title="实验室">
-      {device ? <button type="button" className={styles.manageButton} aria-pressed={management} onClick={() => session.author ? setManaged(value => !value) : requestAuthorSignIn(() => setManaged(true))}>{management ? "返回公开展示" : "管理网站"}</button> : null}
+      {device ? <button type="button" className={styles.manageButton} aria-pressed={management} onClick={() => { previewLayout(layoutState.saved); if (session.author) setManaged(value => !value); else requestAuthorSignIn(() => setManaged(true)); }}>{management ? "返回公开展示" : "管理网站"}</button> : null}
     </ListHeader>
     {management ? <p className={styles.note}>草稿仅作者可见。通过页头工具中的“添加网站”创建，编辑网站可调整排序。</p> : null}
+    {management ? <ProjectLayoutSettings layout={layoutState.preview} saved={layoutState.saved} unavailable={layoutState.unavailable}
+      onChange={previewLayout} onSaved={layout => {
+        setLayoutState({ saved: layout, preview: layout, unavailable: false });
+        setNotice("布局已保存，访客下次访问或刷新时生效。");
+      }} /> : null}
     <p className={styles.notice} role="status">{notice}</p>
     {initial.missingProject ? <p className={styles.note} role="status">此网站已下架或不存在，以下为其他已发布作品。</p> : null}
     {error || list.unavailable ? <div className={styles.failure} role="alert">
@@ -171,28 +156,16 @@ export function ProjectGallery({ initial, createRequested, linkedProject }: { in
       <span aria-hidden="true">◇</span><h2>{management ? "还没有网站项目" : "作品整理中"}</h2>
       <p>{session.author ? "从页头工具添加第一个网站。" : "新的网页实验将在这里展出。"}</p>
     </div> : null}
-    {/* Refreshing would collapse rows fetched by Load more back to the first page. */}
-    <SortableGrid section="projects" label="网站作品" className="content-grid content-grid--wide" listRef={galleryRef} refreshes={page === 1}
-      listProps={{ "data-media-pending": linkOpening ? "" : undefined }}
-      items={projects.map(project => ({ id: project.id, title: project.title,
-        props: { id: `project-${project.id}`, "data-preview-id": project.preview_enabled ? project.id : undefined }, content: <>
-        {project.open_mode === "external" ? <a className={`content-card ${styles.cardEntry}`} href={project.url} target="_blank" rel="noopener noreferrer"
-          aria-label={`独立打开${project.title}（新标签页）`}>
-          <MediaCard meta="独立打开 ↗" title={project.title} description={project.description}
-            media={<ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />} />
-        </a> : <button type="button" className={`content-card ${styles.cardEntry}`} aria-label={`查看${project.title}`}
-          onClick={event => { event.currentTarget.focus(); setViewing(project); }}>
-          <MediaCard title={project.title} description={project.description}
-            media={<ProjectPreview project={project} active={live.includes(project.id) && !blocked} auto />} />
-        </button>}
-        {management ? <div className={styles.cardManagement}>
-          <span>{project.published ? "已发布" : "草稿"}</span>
-          {mutation === project.id ? <span role="status">正在保存…</span> : <ActionMenu label={`管理${project.title}`} trigger="管理" groups={[{ items: [
-            { label: "编辑网站", icon: <span aria-hidden="true">✎</span>, onSelect: () => setEditor(project) },
-            { label: project.published ? "取消发布" : "发布到实验室", icon: <span aria-hidden="true">◇</span>, onSelect: () => void publication(project) },
-          ] }]} />}
-        </div> : null}
-      </> }))} />
+    {/* Layout saves do not refresh the list or discard pages already loaded. */}
+    <ProjectCollection projects={projects} layout={management ? layoutState.preview : layoutState.saved} blocked={blocked}
+      linkedProject={linkedProject} pending={linkOpening} collectionRef={galleryRef} refreshes={page === 1} onView={setViewing}
+      renderManagement={project => management ? <div className={styles.cardManagement}>
+        <span>{project.published ? "已发布" : "草稿"}</span>
+        {mutation === project.id ? <span role="status">正在保存…</span> : <ActionMenu label={`管理${project.title}`} trigger="管理" groups={[{ items: [
+          { label: "编辑网站", icon: <span aria-hidden="true">✎</span>, onSelect: () => setEditor(project) },
+          { label: project.published ? "取消发布" : "发布到实验室", icon: <span aria-hidden="true">◇</span>, onSelect: () => void publication(project) },
+        ] }]} />}
+      </div> : null} />
     {list.hasMore ? <button type="button" className={styles.more} onClick={() => void more()} disabled={busy} aria-busy={busy}>{busy ? "正在加载…" : "加载更多"}</button> : busy ? <p role="status" className={styles.note}>正在加载网站…</p> : null}
     {editor ? <ProjectEditor project={editor === "create" ? null : editor} onClose={closeEditor} onSaved={saved => {
       setNotice(saved.published ? "网站已发布到实验室。" : "草稿已保存，可在管理网站中继续编辑。");

@@ -8404,6 +8404,16 @@ async function handleRequest(req, res) {
 
   if (url.pathname === "/external-projects" || url.pathname.startsWith("/external-projects/")) {
     res.setHeader("Cache-Control", "no-store");
+    if (url.pathname === "/external-projects/layout") {
+      if (req.method === "GET") {
+        sendJson(res, 200, await externalProjects.getLayout());
+        return;
+      }
+      requireUploadAuth(req);
+      if (req.method !== "PATCH") throw httpError(405, "不支持此请求方法。");
+      sendJson(res, 200, await externalProjects.saveLayout(await readJsonBody(req, 1024)));
+      return;
+    }
     const managed = url.pathname === "/external-projects/manage";
     if (req.method === "GET" && (managed || url.pathname === "/external-projects")) {
       if (managed) requireUploadAuth(req);

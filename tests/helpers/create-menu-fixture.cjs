@@ -29,6 +29,7 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
   const unmigratedCollections = new Set();
   const failedReads = new Map();
   const collections = {
+    site_settings: [{ id: 1, project_layout: null }],
     albums: [{ id: 1, title: "验收相簿", slug: "fixture-album", description: "隔离测试数据", published: true, photos: [] }],
     album_photos: [], album_photo_renditions: [], video_projects: [], video_masters: [], external_projects: [], files: [], film_scan_jobs: [], film_scan_sources: [], film_scan_frames: [],
     posts: [{ id: 1, title: "验收文章", slug: "fixture-post", published: true,
@@ -71,10 +72,19 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
       const parts = url.pathname.split("/");
       const collection = parts[1] === "files" ? "files" : parts[2];
       const id = parts[1] === "files" ? parts[2] : parts[3];
-      if (collection === "site_settings") return json(res, { data: null });
       if (unavailableCollections.has(collection)) {
         failedReads.set(collection, (failedReads.get(collection) || 0) + 1);
         return json(res, { error: "Fixture CMS unavailable" }, 503);
+      }
+      if (collection === "site_settings") {
+        if (unmigratedCollections.has(collection) && url.searchParams.get("fields")?.includes("project_layout")) {
+          return json(res, { errors: [{ message: "project_layout does not exist" }] }, 403);
+        }
+        if (req.method === "PATCH") {
+          let body = ""; for await (const chunk of req) body += chunk;
+          Object.assign(collections.site_settings[0], JSON.parse(body));
+        }
+        return json(res, { data: collections.site_settings[0] });
       }
       const rows = collections[collection] || [];
       if (req.method === "GET") {

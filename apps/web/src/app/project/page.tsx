@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { ProjectGallery } from "@/components/ProjectGallery";
-import { getExternalProjects } from "@/lib/directus";
+import { getExternalProjects, getProjectLayout } from "@/lib/directus";
 import { siteConfig } from "@/lib/site-config";
 
 export const metadata: Metadata = {
@@ -13,8 +13,10 @@ export default async function ProjectPage({ searchParams }: {
 }) {
   const query = await searchParams;
   const projectId = typeof query.project === "string" && /^[1-9]\d*$/.test(query.project) ? Number(query.project) : undefined;
-  const result = await getExternalProjects(Number.isSafeInteger(projectId) ? projectId : undefined);
+  const [result, presentation] = await Promise.all([
+    getExternalProjects(Number.isSafeInteger(projectId) ? projectId : undefined), getProjectLayout(),
+  ]);
   return <main className="shell page-stack project-index">
-    <ProjectGallery initial={result} createRequested={query.dialog === "create"} linkedProject={projectId} />
+    <ProjectGallery initial={result} presentation={presentation} createRequested={query.dialog === "create"} linkedProject={projectId} />
   </main>;
 }

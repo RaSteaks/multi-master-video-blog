@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { contactFrames, type ContactWork } from "./contact-sheet";
 import { isWebsiteUrl, readWebsiteProject } from "./external-projects";
+import { readProjectLayout } from "../../../../shared/project-layouts.cjs";
 import {
   assetUrl as publicAssetUrl,
   type AssetPreset,
@@ -34,7 +35,7 @@ export async function getExternalProjects(projectId?: number) {
   await connection();
   try {
     const params = new URLSearchParams({
-      fields: "id,title,description,url,preview_url,preview_enabled,open_mode,cover_image,published,sort_order",
+      fields: "id,title,description,group_name,url,preview_url,preview_enabled,open_mode,cover_image,published,sort_order",
       "filter[published][_eq]": "true", sort: "sort_order,-id", limit: "25",
     });
     const rows = await fetchWebsiteProjects(params);
@@ -54,11 +55,32 @@ export async function getExternalProjects(projectId?: number) {
 }
 
 async function fetchWebsiteProjects(params: URLSearchParams) {
-  const response = await fetchDirectusPreview(`/items/external_projects?${params}`);
+  let response = await fetchDirectusPreview(`/items/external_projects?${params}`);
+  if (response.status === 403 && params.get("fields")?.includes("group_name")) {
+    // Keep public cards available while the additive group field is being installed.
+    params.set("fields", params.get("fields")!.replace(",group_name", ""));
+    response = await fetchDirectusPreview(`/items/external_projects?${params}`);
+  }
   if (!response.ok) throw new Error(`CMS project request failed: ${response.status}`);
   const result: unknown = await response.json();
   if (!result || typeof result !== "object" || !("data" in result) || !Array.isArray(result.data)) throw new Error("Invalid CMS project list");
   return result.data.map(readWebsiteProject);
+}
+
+export async function getProjectLayout() {
+  await connection();
+  try {
+    // Read without caching, like the project list: saving applies on the next visit/refresh.
+    const response = await fetchDirectusPreview("/items/site_settings?fields=project_layout");
+    if (!response.ok) throw new Error("Layout settings unavailable");
+    const result: unknown = await response.json();
+    if (!result || typeof result !== "object" || !("data" in result)) throw new Error("Invalid layout settings");
+    const data = result.data;
+    if (data !== null && (typeof data !== "object" || Array.isArray(data))) throw new Error("Invalid layout settings");
+    return { layout: readProjectLayout(data && "project_layout" in data ? data.project_layout : null), unavailable: false };
+  } catch {
+    return { layout: readProjectLayout(null), unavailable: true };
+  }
 }
 
 export type Post = {

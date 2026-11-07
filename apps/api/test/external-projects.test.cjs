@@ -15,6 +15,45 @@ test("website metadata is bounded, typed and never promotes arbitrary CMS files"
   assert.equal(normalizeProject({ url: "http://127.0.0.1:18080" }, { partial: true, allowLocal: true }).url, "http://127.0.0.1:18080/");
   assert.throws(() => normalizeProject({ url: "http://127.0.0.1:18080" }, { partial: true }), /HTTPS/);
   assert.deepEqual(normalizeProject({ published: false }, { partial: true }), { published: false });
+  assert.deepEqual(normalizeProject({ group_name: " 光与颜色 " }, { partial: true }), { group_name: "光与颜色" });
+  assert.throws(() => normalizeProject({ group_name: "x".repeat(61) }, { partial: true }), /60/);
+  assert.throws(() => normalizeProject({ group_name: null }, { partial: true }), /60/);
+});
+
+test("layout writes only the singleton's layout, validates choices and confirms persistence", async () => {
+  let settings = { accent_color: "#123456", project_layout: null };
+  const writes = [];
+  const store = createExternalProjects({ request: async (route, options) => {
+    assert.equal(route, "/items/site_settings?fields=project_layout");
+    if (options) { writes.push(options); settings = { ...settings, ...options.body }; }
+    return { data: settings };
+  } });
+  assert.deepEqual(await store.getLayout(), { layout: "grid" });
+  for (const layout of ["catalogue", "mosaic", "alternating", "masonry", "groups", "dual", "grid"]) {
+    assert.deepEqual(await store.saveLayout({ layout }), { layout });
+    assert.deepEqual(await store.getLayout(), { layout });
+  }
+  assert.equal(settings.accent_color, "#123456");
+  assert.deepEqual(writes[0], { method: "PATCH", body: { project_layout: "catalogue" } });
+  for (const input of [null, [], {}, { layout: "unknown" }, { layout: "grid", accent_color: "red" }]) {
+    await assert.rejects(store.saveLayout(input), error => error.statusCode === 400);
+  }
+  assert.equal(writes.length, 7);
+  const unconfirmed = createExternalProjects({ request: async () => ({ data: null }) });
+  await assert.rejects(unconfirmed.saveLayout({ layout: "dual" }), error => error.statusCode === 502);
+});
+
+test("listing an unmigrated CMS drops only the new group field and keeps publication filters", async () => {
+  const calls = [];
+  const store = createExternalProjects({ request: async route => {
+    const url = new URL(route, "https://cms.invalid"); calls.push(url);
+    if (calls.length === 1) throw Object.assign(new Error("field missing"), { directusHttpStatus: 403 });
+    return { data: [] };
+  } });
+  await store.list({ page: 2 });
+  assert.equal(calls[1].searchParams.get("fields").includes("group_name"), false);
+  assert.equal(calls[1].searchParams.get("filter[published][_eq]"), "true");
+  assert.equal(calls[1].searchParams.get("offset"), "24");
 });
 
 test("public listing filters publication and uses bounded pages; management is separate", async () => {

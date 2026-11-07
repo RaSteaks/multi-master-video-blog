@@ -3,15 +3,20 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const http = require("node:http");
 const sharp = require("sharp");
-const { webkit } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
+const { webkit, firefox } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const { startFixture } = require("./helpers/create-menu-fixture.cjs");
 
 async function main() {
-  const fixture = await startFixture({ name: "project", cmsPort: 18097, apiPort: 18096, webPort: 13006 });
-  const report = { browser: "headless WebKit", checks: [], errors: [], errorDetails: [], failedRequests: [], passed: false };
+  const engine = process.env.PROJECT_BROWSER === "firefox" ? firefox : webkit;
+  const fixture = await startFixture({ name: engine === firefox ? "project-firefox" : "project", cmsPort: 18097, apiPort: 18096, webPort: 13006 });
+  const report = { browser: `headless ${engine.name()}`, checks: [], errors: [], errorDetails: [], failedRequests: [], passed: false };
   const pass = name => { report.checks.push(name); console.log(`PASS ${name}`); };
+  let blockedRequests = 0;
   // A real second origin with a continuously changing picture; no target-site modifications.
   const exhibit = http.createServer((req, res) => {
+    // Leave a real navigation pending to exercise timeout without synthetic iframe events.
+    if (req.url === "/slow") return;
+    if (req.url === "/blocked") blockedRequests++;
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...(req.url === "/blocked" ? { "X-Frame-Options": "DENY" } : {}) });
     res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
       *{box-sizing:border-box}body{margin:0;background:#090b10;color:#cdd5dd;font:16px system-ui;height:100vh;display:grid;place-content:center;text-align:center;overflow:hidden}
@@ -24,7 +29,7 @@ async function main() {
   let page;
   try {
     await new Promise((resolve, reject) => { exhibit.once("error", reject); exhibit.listen(18098, "127.0.0.1", resolve); });
-    browser = await webkit.launch({ headless: true, executablePath: process.env.WEBKIT_EXECUTABLE || undefined });
+    browser = await engine.launch({ headless: true, executablePath: engine === webkit ? process.env.WEBKIT_EXECUTABLE || undefined : undefined });
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     page = await context.newPage();
     page.on("pageerror", error => { report.errors.push(error.message); report.errorDetails.push({ message: error.message, stack: error.stack, after: report.checks.at(-1) || "initialization" }); });
@@ -156,6 +161,12 @@ async function main() {
     await page.getByRole("button", { name: "查看禁止嵌入的作品", exact: true }).click();
     const denied = page.getByRole("dialog", { name: "禁止嵌入的作品", exact: true });
     assert.equal(await denied.getByRole("link", { name: "独立打开 ↗" }).getAttribute("href"), "http://127.0.0.1:18098/blocked");
+    await denied.locator('[data-preview-state="unverified"]').waitFor();
+    const requestsBeforeRetry = blockedRequests;
+    await denied.getByRole("button", { name: "重新加载", exact: true }).click();
+    await denied.locator('[data-preview-state="unverified"]').waitFor();
+    assert.ok(blockedRequests > requestsBeforeRetry, "Retry must navigate again even after a blocked iframe fires load.");
+    await page.screenshot({ path: path.join(fixture.output, "blocked-retry.png") });
     await denied.getByRole("button", { name: "← 返回实验室", exact: true }).click();
     pass("a frame-denied website cannot trap the reader or hide the independent-open fallback");
 
@@ -168,15 +179,15 @@ async function main() {
     const lowerScroll = await page.evaluate(() => scrollY);
     assert.ok(lowerScroll > 0, "Exercise a genuinely scrolled list, not only its first row.");
     const lowerItem = page.locator("li", { has: lowerCard });
-    const glyph = lowerItem.locator("[data-waiting] span");
-    assert.equal(await glyph.evaluate(element => getComputedStyle(element).visibility), "hidden");
+    const glyph = lowerItem.locator('[aria-hidden="true"] > span');
     await lowerItem.locator("iframe").waitFor();
+    await lowerItem.locator('[data-preview-state="unverified"]').waitFor();
     await page.emulateMedia({ reducedMotion: "reduce" });
     await lowerItem.locator("iframe").waitFor({ state: "detached" });
     assert.equal(await glyph.evaluate(element => getComputedStyle(element).visibility), "visible");
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await lowerItem.locator("iframe").waitFor();
-    pass("a coverless card previews directly without flashing its placeholder; reduced motion keeps the placeholder");
+    pass("a coverless card previews after scheduling; reduced motion keeps the placeholder");
     await lowerCard.click();
     await page.getByRole("dialog", { name: "下方展品", exact: true }).getByRole("button", { name: "← 返回实验室", exact: true }).click();
     assert.equal(await page.evaluate(() => scrollY), lowerScroll);
@@ -203,14 +214,66 @@ async function main() {
     await page.screenshot({ path: path.join(fixture.output, "discard-restores-scroll.png") });
     pass("discarding nested dialogs releases the page scroll lock while continuing edits keeps it");
 
-    const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    for (const title of ["并发展品甲", "并发展品乙"]) {
+      const response = await context.request.post(`${fixture.url}/api/external-projects`, { headers, data: {
+        title, url: "http://127.0.0.1:18098/site", published: true, sort_order: 3,
+      } });
+      assert.equal(response.status(), 201);
+    }
+    // A tall viewport makes more than three real cards visible without changing production CSS.
+    await page.setViewportSize({ width: 1280, height: 2600 });
+    await page.goto(`${fixture.url}/project`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => document.querySelectorAll('ol[aria-label="网站作品"] iframe').length === 3);
+    assert.equal(await page.locator("[data-preview-id]").evaluateAll(cards => cards.filter(card => {
+      const box = card.getBoundingClientRect(); return box.bottom > 0 && box.top < innerHeight;
+    }).length), 5);
+    const idleCards = page.locator('ol[aria-label="网站作品"] [data-preview-state="idle"]');
+    assert.equal(await idleCards.count(), 2);
+    assert.equal(await idleCards.locator("[data-waiting], [data-media-pending]").count(), 0);
+    assert.equal(await idleCards.locator('[aria-hidden="true"] > span').first().isVisible(), true);
+    await page.screenshot({ path: path.join(fixture.output, "preview-budget-desktop.png") });
+    await page.setViewportSize({ width: 390, height: 2600 });
+    await page.waitForFunction(() => document.querySelectorAll('ol[aria-label="网站作品"] iframe').length === 1);
+    await page.setViewportSize({ width: 1280, height: 2600 });
+    await page.waitForFunction(() => document.querySelectorAll('ol[aria-label="网站作品"] iframe').length === 3);
+    pass("desktop budget is three, mobile resize budget is one, and unscheduled cards retain visible fallbacks");
+
+    const slowResponse = await context.request.post(`${fixture.url}/api/external-projects`, { headers, multipart: {
+      title: "超时展品", url: "http://127.0.0.1:18098/site", preview_url: "http://127.0.0.1:18098/slow",
+      published: "true", sort_order: "-1", cover: { name: "timeout-cover.png", mimeType: "image/png", buffer: png },
+    } });
+    assert.equal(slowResponse.status(), 201);
+    const slowProject = (await slowResponse.json()).project;
+    await page.goto(`${fixture.url}/project`, { waitUntil: "domcontentloaded" });
+    const slowCard = page.getByRole("button", { name: "查看超时展品", exact: true });
+    await slowCard.locator('[data-preview-state="timeout"]').waitFor({ timeout: 20_000 });
+    assert.equal(await slowCard.locator("iframe").count(), 0);
+    assert.equal(await slowCard.locator("img").isVisible(), true);
+    assert.equal(await slowCard.locator("[data-media-pending]").count(), 0);
+    // A normal non-cooperating website stays live past the same timeout budget.
+    assert.equal(await card.locator('[data-preview-state="unverified"] iframe').count(), 1);
+    await page.screenshot({ path: path.join(fixture.output, "preview-timeout-fallback.png") });
+    await context.request.patch(`${fixture.url}/api/external-projects/${slowProject.id}`, { headers, data: { published: false } });
+    pass("an unanswered frame returns to its cover after 12 seconds while ordinary sites stay compatible without a handshake");
+
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.goto(fixture.url, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => document.querySelectorAll(".contact-strip iframe").length === 3);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => document.querySelectorAll(".contact-strip iframe").length === 1);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.waitForFunction(() => document.querySelectorAll(".contact-strip iframe").length === 0);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.waitForFunction(() => document.querySelectorAll(".contact-strip iframe").length === 1);
+    await page.screenshot({ path: path.join(fixture.output, "home-budget-mobile.png") });
+    pass("home contact strip shares desktop/mobile budgets and reduced-motion behavior");
+
+    const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: engine === webkit, hasTouch: true });
     const phone = await mobile.newPage();
     await phone.goto(`${fixture.url}/project`, { waitUntil: "networkidle" });
     const phoneFrames = phone.locator('ol[aria-label="网站作品"] iframe');
     await phoneFrames.first().waitFor();
-    assert.equal(await phoneFrames.count(), await phone.locator("[data-preview-id]").evaluateAll(cards =>
-      cards.filter(card => { const box = card.getBoundingClientRect(); return box.bottom > 0 && box.top < innerHeight; }).length),
-      "Only on-screen cards run a frame.");
+    assert.equal(await phoneFrames.count(), 1, "Mobile runs at most one on-screen frame.");
     assert.ok(await phoneFrames.count() < await phone.locator("[data-preview-id]").count(), "Exercise a card below the fold.");
     assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await phone.screenshot({ path: path.join(fixture.output, "gallery-mobile.png") });

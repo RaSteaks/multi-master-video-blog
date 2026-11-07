@@ -4,10 +4,9 @@ import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { ContactFrame } from "@/lib/contact-sheet";
+import { WEBSITE_PREVIEW_LIMIT, WEBSITE_PREVIEW_MOBILE_QUERY } from "@/lib/external-projects";
 import { ProjectPreview } from "./ProjectPreview";
 
-// Each live frame is a full desktop page. A wide window could otherwise run a dozen.
-const MAX_LIVE_PREVIEWS = 3;
 /** Frames only passing through the viewport during a scroll should not load. */
 const PREVIEW_SETTLE_MS = 250;
 /** A pointer travelling along the strip should not fetch every frame it crosses. */
@@ -66,14 +65,24 @@ export function ContactStrip({ frames }: { frames: ContactFrame[] }) {
 
   useEffect(() => {
     const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+    const mobile = matchMedia(WEBSITE_PREVIEW_MOBILE_QUERY);
     const visible = new Set<string>();
     let settle: ReturnType<typeof setTimeout>;
+    function selectPreviews() {
+      if (reduced.matches || document.hidden) return [];
+      return frames.filter(frame => visible.has(frame.key))
+        .slice(-(mobile.matches ? 1 : WEBSITE_PREVIEW_LIMIT)).map(frame => frame.key);
+    }
     function update() {
       clearTimeout(settle);
       if (reduced.matches || document.hidden) { setLive([]); return; }
       settle = setTimeout(() => {
-        setLive(frames.filter(frame => visible.has(frame.key)).slice(-MAX_LIVE_PREVIEWS).map(frame => frame.key));
+        setLive(selectPreviews());
       }, PREVIEW_SETTLE_MS);
+    }
+    function resize() {
+      clearTimeout(settle);
+      setLive(selectPreviews());
     }
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
@@ -85,11 +94,13 @@ export function ContactStrip({ frames }: { frames: ContactFrame[] }) {
     trackRef.current?.querySelectorAll("[data-preview-key]").forEach(frame => observer.observe(frame));
     document.addEventListener("visibilitychange", update);
     reduced.addEventListener("change", update);
+    mobile.addEventListener("change", resize);
     return () => {
       clearTimeout(settle);
       observer.disconnect();
       document.removeEventListener("visibilitychange", update);
       reduced.removeEventListener("change", update);
+      mobile.removeEventListener("change", resize);
     };
   }, [frames]);
 

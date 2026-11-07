@@ -68,12 +68,28 @@ corners and inset preview chips use 4px corners.
 ## Components
 
 - The `/project` laboratory reuses the reference-room palette and type. Its two-column
-  desktop / single-column mobile cards contain only a 16:10 unfiltered website picture,
-  title and description. `AuthorMenu` owns global creation; its device hint controls visibility and
+  desktop / single-column mobile default remains available alongside six author-owned
+  templates: catalogue/exhibit, mosaic, alternating, masonry, groups and dual feature.
+  `site_settings.project_layout` is the shared persisted choice; only verified author
+  management shows the native radio options and explicit save/cancel-preview actions.
+  Unsaved choices affect the author's preview only; visitors have no layout selector,
+  local preference or URL override. `ProjectLayoutSettings` owns selection/save feedback,
+  `ProjectCollection` owns rendering, and `SortableGrid` continues to own ordering.
+  In the catalogue at widths up to 700px, selecting a directory item immediately
+  scrolls to the exhibit and focuses its view/open card; desktop focus stays in the directory.
+  Group names are author-entered, with first-occurrence ordering and an ungrouped fallback.
+  Pictures are unfiltered; variable picture ratios reveal more/less of the same 1280px
+  website viewport without stretching it. Cards contain a title and description.
+  `AuthorMenu` owns global creation; its device hint controls visibility and
   verified author sessions own management. `SiteDialog` reuses native modal geometry and focus
   behavior for the editor/viewer. The full-window viewer reserves a neutral toolbar
-  outside the target pixels. `Projects.module.css` consumes existing runtime tokens,
+  outside the target pixels. `Projects.module.css` and `ProjectLayouts.module.css` consume existing runtime tokens,
   not a separate palette. See `docs/external-projects.md` for lifecycle and permissions.
+  Automatic website pictures share a budget of three on desktop and one at widths
+  up to 700px; unscheduled cards keep their cover/placeholder. Frame `load` is an
+  unverified compatibility signal, never proof of a rendered picture. Targets need
+  no custom script. The viewer keeps retry and independent opening reachable after
+  that signal, and unanswered thumbnail loads return to their fallback after 12s.
 
 - `ActionMenu` owns the shared disclosure panel, keyboard focus and the same
   circular reveal/conceal as `AppearanceControl`; its radius follows live panel
@@ -201,7 +217,8 @@ corners and inset preview chips use 4px corners.
   the frame, with the MM-DD added date above the title,
   and a work with no cover shows its title in the frame. A coverless laboratory site
   runs the shared `ProjectPreview` instead: on-screen frames only, the newest three
-  at most, never under reduced motion, with its title beneath until the page loads.
+  at most (one up to 700px), never under reduced motion, with its title beneath until
+  the frame fires its unverified load event.
   If the CMS fails the strip is omitted and the page still renders.
   A frame prefetches its full destination only when a pointer rests on it for 90 ms,
   is pressed or takes focus, so a low-memory host never fetches the whole strip. On

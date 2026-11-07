@@ -10,8 +10,10 @@ const expectedTables = {
     "id",
     "background_image",
     "background_blur",
+    "project_layout",
     "accent_color"
   ],
+  external_projects: ["id", "title", "description", "group_name", "url", "preview_url", "preview_enabled", "open_mode", "cover_image", "published", "sort_order", "created_at", "updated_at"],
   site_settings_files: [
     "id",
     "site_settings_id",

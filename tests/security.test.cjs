@@ -615,7 +615,10 @@ test("explicit site preview preserves draft images without making unrelated CMS 
   const assetHelpers = loadTs(path.join(root, "apps/web/src/lib/asset-url.ts"));
   const authorSession = loadTs(path.join(root, "apps/web/src/lib/author-session.ts"));
   const projectHelpers = loadTs(path.join(root, "apps/web/src/lib/external-projects.ts"), { "./author-session": authorSession });
-  const directus = loadTs(path.join(root, "apps/web/src/lib/directus.ts"), { "./asset-url": assetHelpers, "./external-projects": projectHelpers }, { process: { env } });
+  const contactHelpers = loadTs(path.join(root, "apps/web/src/lib/contact-sheet.ts"));
+  const directus = loadTs(path.join(root, "apps/web/src/lib/directus.ts"), {
+    "./asset-url": assetHelpers, "./external-projects": projectHelpers, "./contact-sheet": contactHelpers,
+  }, { process: { env } });
   assert.equal(directus.assetUrl("cover"), "/api/assets/cover");
   env.DIRECTUS_SHOW_DRAFTS = "true";
   assert.equal(directus.assetUrl("cover", "content-card"), "/internal/preview/assets/cover?key=content-card");
