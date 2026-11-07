@@ -17,33 +17,7 @@ const cmsEnvPath = path.join(
   ".env"
 );
 
-function readEnv(filePath) {
-  const values = {};
-
-  if (!fs.existsSync(filePath)) {
-    // Containers receive settings directly from their process environment.
-    return {};
-  }
-
-  for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
-    const trimmed = line.trim();
-
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-
-    const separator = trimmed.indexOf("=");
-    if (separator === -1) {
-      continue;
-    }
-
-    values[trimmed.slice(0, separator)] = trimmed.slice(separator + 1);
-  }
-
-  return values;
-}
-
-const env = { ...readEnv(cmsEnvPath), ...process.env };
+const env = loadDirectusEnv(process.env.CMS_ENV_FILE || cmsEnvPath);
 const baseUrl = (env.DIRECTUS_URL || env.PUBLIC_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8055"}`).replace(/\/$/, "");
 
 async function request(pathname, options = {}) {
@@ -1658,9 +1632,9 @@ async function repairSiteColorValidation(token) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const narrow = ["--video-source-format-only", "--external-projects-only", "--content-order-only", "--project-layouts-only"];
+  const narrow = ["--video-source-format-only", "--external-projects-only", "--content-order-only", "--project-layouts-only", "--upgrade-only"];
   if (args.length > 1 || args.some((arg) => !narrow.includes(arg))) {
-    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only | --external-projects-only | --content-order-only | --project-layouts-only]");
+    throw new Error("Usage: node scripts/setup-directus-schema.cjs [--video-source-format-only | --external-projects-only | --content-order-only | --project-layouts-only | --upgrade-only]");
   }
   const token = await login();
 
@@ -1717,6 +1691,13 @@ async function main() {
 
   await repairSiteColorValidation(token);
   await verifyVideoSourceFormat(token);
+  if (args.includes("--upgrade-only")) {
+    // Manager upgrades structure and application-owned presets, not site content,
+    // access policies, editor defaults, film-stock seeds or analytics dashboards.
+    await ensureAssetPresets(token);
+    console.log("Required CMS schema upgrades are ready.");
+    return;
+  }
   await ensureAlbumFieldDefaults(token);
   await ensureAssetPresets(token);
   await ensureBuiltInFilmStockPresets(token);

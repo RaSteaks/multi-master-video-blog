@@ -340,7 +340,11 @@ sudo -u admin sudo -n -l /usr/bin/systemctl start video-blog-web-build.service
 
 - **直接从 Git clone 目录运行**：拉取成功后，Manager 自动重启受影响且原先运行的服务。只有 API 改动时只重启 API。Web 为 Development 时直接重启；Production 时先检查构建单元，再停 Web、构建并启动。按上一节配置与 Web 同账号、同工作目录的 `video-blog-web-build.service`。构建失败会显示失败步骤，修复后再启动服务。已停止的服务不会被启动。
 - **依赖改动**：受影响的工作区会在启动前安装依赖，根 `package.json` 或共享锁文件变化会影响全部工作区。请以有权写入 checkout 及其 `node_modules` 的非 root 账号运行 Manager。
+- **自动 schema 升级**：CMS、API、Web 都使用当前 checkout 时，Pull 会检查 schema 定义的内容指纹。首次启用、定义变化或上次升级未完成时，在 CMS 就绪后运行新代码的 `setup-directus-schema.cjs --upgrade-only`，成功后才启动 API、构建并启动 Production Web。该模式补齐集合、字段、关系和应用管理的图片预设，执行已明确的字段兼容修复；不修改站点内容、自定义校验、匿名访问策略、编辑器默认值或 Insights 面板。迁移需要 CMS 管理员凭据，沿用项目 CMS `.env` 和 Manager 已注入的环境；外置配置可在 Manager 环境设置 `CMS_ENV_FILE=/etc/video-blog/cms.env`。
+- **升级状态与重试**：`logs/schema-update.json` 保存已完成的 schema 指纹和未完成更新的服务状态，不保存凭据。任务面板显示 Schema 阶段，日志查看器的 **Schema** 标签显示输出。失败后 API/Web 不越过迁移继续启动；修正日志中的问题后点击 **Retry update**，即使 Git 已是最新也能继续，并恢复此前运行的服务。定义未变化且更新完成时不重复迁移。首次加载新版 Manager 后，若代码已更新但 schema 尚未确认，面板会提供 **Apply schema**，无需终端迁移命令。
 - **独立 release**：运行在 `/opt/video-blog/current` 等其他目录的单元仍使用原 release。面板提供 `update-native.sh` 对应目标提交的部署命令。Manager 代码变动后仍通过 **Restart Manager** 单独加载。
+
+四个服务卡片出现错误时会显示 **Copy error**。按钮复制服务名称、定位信息和当前错误详情，使用已有提示条反馈结果；普通 HTTP 页面会使用选择复制回退。错误恢复后按钮隐藏，更新进行中仍可复制诊断信息。
 
 - 预检会拒绝分叉、进行中的 merge/rebase，以及可能覆盖本地修改的更新。未跟踪文件也受保护，包括被 Git 忽略的本机配置。远端发布分支已删除，或预检后切换了本地分支时，Manager 会停止拉取。不冲突的本地修改（例如服务器上定制的部署文件）会保留。
 - 本项目是公开仓库，用 HTTPS 地址克隆时可以匿名拉取，无需任何凭据。只有私有 fork 或 SSH 地址需要凭据（GitHub 通过 SSH 访问时，即使是公开仓库也要求密钥）。Manager 在后台运行，Git 无法弹出输入提示，因此这类凭据必须能免交互使用：为 Manager 账号配置只读部署密钥（预先写入 `known_hosts`）或 credential helper。SSH 默认以 `BatchMode=yes` 运行；已设置的 `core.sshCommand`、`GIT_SSH_COMMAND` 或 `GIT_SSH` 会保留。fetch 超过 120 秒会被终止，不会一直等待输入。可以用 Manager 账号执行 `git remote -v` 和 `GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote origin` 自检：地址是 `https://` 且能列出分支，就无需配置。

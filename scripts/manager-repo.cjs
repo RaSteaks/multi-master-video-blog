@@ -8,6 +8,9 @@ const COMMIT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const COMMIT_FORMAT = "%H%x1f%h%x1f%s%x1f%an%x1f%cI";
 const LISTED = 20;
 const LOCK_WRITE_DENIED = /\.lock': Permission denied/i;
+// These inputs define the automatic, non-destructive CMS upgrade contract.
+const SCHEMA_FILES = ["scripts/setup-directus-schema.cjs", "scripts/directus-db-utils.cjs",
+  "scripts/directus-asset-presets.cjs", "config/directus-asset-presets.json", "shared/project-layouts.cjs"];
 
 function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform, loadedFiles = () => [], fetchTimeoutMs = 120000 }) {
   const outLog = path.join(root, "logs", "git.out.log");
@@ -115,6 +118,7 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
     return {
       manager: any(file => loaded.has(file)),
       dependencies: any(file => ["package.json", "package-lock.json", "apps/api/package.json", "apps/web/package.json", "apps/cms/directus/package.json"].includes(file)),
+      schema: any(file => SCHEMA_FILES.includes(file)),
       api: all || any(file => file.startsWith("apps/api/") || shared(file) || file === "config/storage.cjs"),
       web: all || any(file => file.startsWith("apps/web/") || shared(file)),
       cms: all || any(file => file.startsWith("apps/cms/") || ["config/storage.cjs", "config/directus-runtime.json", "config/private-cms-collections.json",
@@ -351,4 +355,4 @@ const commits = count => count + " commit" + (count === 1 ? "" : "s");
 const conflict = message => Object.assign(new Error(message), { statusCode: 409 });
 const badRequest = message => Object.assign(new Error(message), { statusCode: 400 });
 
-module.exports = { createRepoUpdater, COMMIT_ID };
+module.exports = { createRepoUpdater, COMMIT_ID, SCHEMA_FILES };

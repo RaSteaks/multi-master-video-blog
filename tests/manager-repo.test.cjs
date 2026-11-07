@@ -68,7 +68,7 @@ test("fetch reveals incoming commits and the services they affect without changi
   const status = await repo.status();
   assert.equal(status.behind, 1);
   assert.equal(status.incoming[0].subject, "Change API and Manager");
-  assert.deepEqual(status.impact, { manager: true, dependencies: false, api: true, web: false, cms: false, deployment: false });
+  assert.deepEqual(status.impact, { manager: true, dependencies: false, schema: false, api: true, web: false, cms: false, deployment: false });
   assert.equal(fixture.git(fixture.checkout, "rev-parse", "HEAD"), before);
   assert.match(fs.readFileSync(path.join(fixture.checkout, "logs/git.out.log"), "utf8"), /\$ git fetch/);
 });
@@ -153,7 +153,11 @@ test("checkout impact includes the services consuming storage config and the sha
   await repo.fastForward(storage);
   const lock = await repo.prepare(fixture.publish({ "package-lock.json": "{}\n" }, "Update shared dependencies"));
   assert.equal(lock.rootDependencies, true);
-  assert.deepEqual(lock.impact, { manager:false, dependencies:true, api:true, web:true, cms:true, deployment:false });
+  assert.deepEqual(lock.impact, { manager:false, dependencies:true, schema:false, api:true, web:true, cms:true, deployment:false });
+  await repo.fastForward(lock);
+  const schema = await repo.prepare(fixture.publish({ "shared/project-layouts.cjs": "module.exports = {};\n" }, "Update schema"));
+  assert.equal(schema.impact.schema, true);
+
 });
 
 test("fast-forwards to the exact reviewed commit, even when upstream has moved on", async t => {

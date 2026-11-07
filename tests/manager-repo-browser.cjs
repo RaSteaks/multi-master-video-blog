@@ -32,9 +32,15 @@ async function main() {
   };
   git(dir, "init", "--bare", "--quiet", remote);
   git(dir, "clone", "--quiet", remote, author);
+  for (const file of require("../scripts/manager-repo.cjs").SCHEMA_FILES) {
+    await write(author, file, await fs.readFile(path.resolve(__dirname, "..", file), "utf8"));
+  }
   await publish({ "apps/api/src/server.cjs": "v1\n", "apps/web/src/page.tsx": "v1\n", "scripts/manager-dashboard.cjs": "v1\n", "deployment/docker/compose.yaml": "v1\n" }, "Initial");
   git(dir, "clone", "--quiet", remote, checkout);
 
+  const cmsEnv = path.join(dir, "cms.env");
+  await fs.writeFile(cmsEnv, "ADMIN_EMAIL=fixture@example.invalid\nADMIN_PASSWORD=fixture\n");
+  env.CMS_ENV_FILE = cmsEnv;
   const fixture = await startAuthFixture({ root: checkout, env, platform: linux ? "linux" : "win32" });
   const report = { browser: "headless WebKit", checks: [], errors: [], passed: false };
   let browser, page;
@@ -63,6 +69,9 @@ async function main() {
       controlSystemd = async (service, action) => { calls.push(service.id + ":" + action); };
       checkWebBuildUnit = async () => { calls.push("check-build"); };
       buildSystemdWeb = async () => { calls.push("build"); };
+      waitForProcessHealth = async () => {};
+      var schemaFails = false;
+      upgradeCmsSchema = async () => { calls.push("schema"); if (schemaFails) throw new Error("fixture schema failure"); return { message:"Schema applied" }; };
       const initialStatus = allStatus;
       allStatus = async () => {
         const status = await initialStatus();
@@ -70,6 +79,7 @@ async function main() {
         return status;
       };
     `, fixture.context);
+    if (linux) await vm.runInContext('readSchemaUpdate().then(state => saveSchemaUpdate(state.signature, null))', fixture.context);
     const calls = () => vm.runInContext('calls.splice(0).join(",")', fixture.context);
     const notice = page => page.locator("#repoNotice");
     const waitForNotice = text => page.waitForFunction(value => document.querySelector("#repoNotice").textContent.includes(value), text);
@@ -132,6 +142,28 @@ async function main() {
       assert.equal(calls(), "verify,check-build,pull,web:stop,build,web:start");
       await page.screenshot({ path: path.join(output, "production-web-updated.png"), fullPage: true });
       report.checks.push("Linux checkout Pull restarts only API, then rebuilds and restarts only production Web for the next commit");
+      await publish({ "shared/project-layouts.cjs": "// fixture new layout schema\n" }, "Upgrade project schema");
+      vm.runInContext('schemaFails=true', fixture.context);
+      await page.getByRole("button", { name: "Check for updates", exact: true }).click();
+      await waitForNotice("1 new commit on origin/main");
+      await pull.click();
+      await dialog.waitFor();
+      assert.match(await dialog.innerText(), /schema upgrades before API\/Web start/);
+      await page.locator("#actionDialogConfirm").click();
+      await waitForResult("fixture schema failure");
+      await waitForNotice("previous update is incomplete");
+      assert.match(calls(), /web:stop,api:stop,schema$/);
+      assert.equal(await pull.textContent(), "Retry update");
+      await page.screenshot({ path: path.join(output, "schema-failed.png"), fullPage: true });
+      vm.runInContext('schemaFails=false', fixture.context);
+      await pull.click();
+      await page.locator("#actionDialogConfirm").click();
+      await waitForResult("Applied required CMS schema upgrades");
+      await waitForNotice("main matches origin/main");
+      assert.equal(calls(), "verify,check-build,web:stop,api:stop,schema,api:start,build,web:start");
+      assert.equal(await pull.isDisabled(), true);
+      await page.screenshot({ path: path.join(output, "schema-completed.png"), fullPage: true });
+      report.checks.push("Schema runs before API/Web and a failed migration retries from the up-to-date checkout without another commit");
       assert.deepEqual(report.errors, []);
       report.passed = true;
       return;

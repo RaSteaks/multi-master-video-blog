@@ -27,8 +27,9 @@ collection or service permissions are missing, not that there are zero projects.
 Run the narrow setup above on the intended deployment if the collection is
 missing. If it already exists, verify the API and Web service accounts can read
 the listed fields; the authoring API account also needs create/update access.
-Keep anonymous Directus access disabled. Manager's Update API + Web installs
-dependencies and updates services; it does not run database schema migrations.
+Keep anonymous Directus access disabled. Linux Manager's Pull applies required
+schema upgrades automatically when CMS, API and Web all run from its checkout.
+Windows Update API + Web and separate release/Docker deployments retain explicit migration steps.
 
 Fields: `title`, `description`, `group_name`, `url`, `preview_url`, `preview_enabled`,
 `open_mode` (`iframe` or `external`), `cover_image`, `published`, `sort_order`,
@@ -37,7 +38,8 @@ default. Website addresses must be HTTPS without embedded credentials; local
 HTTP loopback URLs are accepted only in development for isolated verification.
 The API stores URLs and never fetches them or proxies arbitrary website HTML.
 
-Existing installations add the layout fields with:
+Linux checkout deployments use Manager's Pull (or Apply schema when code is
+already current). Other existing installations add the layout fields with:
 
 ```sh
 node scripts/setup-directus-schema.cjs --project-layouts-only
@@ -90,8 +92,8 @@ and refreshes observe the saved value without requiring a Directus webhook. An
 unset choice retains the original `grid`. If settings cannot be read, the public
 page keeps the original layout and the author panel explains the unavailable
 setting. An unmigrated grouping field is omitted from read queries so public cards
-remain available; writes require the schema update. No production migration is
-performed automatically by the application.
+remain available; writes require the schema update. Public page requests never
+perform migrations; only the authorized Manager update workflow does so automatically.
 
 ## Author workflow and endpoints
 

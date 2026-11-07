@@ -11,6 +11,7 @@ async function startFixture(port = 0) {
     kind: id === "postgres" ? "windows-service" : "process", category: "Fixture",
     port: 3000, pids: [123], status: 200, mode: "development", modeLabel: "Development",
     serviceName: "postgres-fixture", healthUrl: "http://localhost/health", logName: id }));
+  fixture.services = services;
   fixture.web = services.find(service => service.id === "web");
   fixture.begin = label => (fixture.operation = { id: randomUUID(), label, state: "running",
     startedAt: new Date().toISOString(), steps: [] });

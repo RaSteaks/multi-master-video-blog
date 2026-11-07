@@ -102,6 +102,11 @@ test("Git updates name the repository phase in both task panels", () => {
   assert.match(ui.content(), /Git 仓库 · 快进到目标提交/);
   assert.match(ui.nodes.get("operationSummary").textContent, /Git repository \/ Fast-forward/);
   assert.match(html(), /data-log="repo"/);
+  const schema = taskHarness();
+  schema.render(operation("repo:pull", "running", [{ serviceId: "schema", phase: "migrate", state: "running" }]));
+  assert.match(schema.content(), /CMS 数据结构 · 升级数据结构/);
+  assert.match(schema.nodes.get("operationSummary").textContent, /CMS schema \/ Upgrade schema/);
+  assert.match(html(), /data-log="schema"/);
 });
 
 test("a failed step shows its error once while the summary names the step", () => {

@@ -48,6 +48,17 @@ const { startFixture } = require("./helpers/manager-task-fixture.cjs");
     assert.equal(await production.getAttribute("aria-pressed"), "true");
     report.checks.push("Linux legacy setup, keyboard mode switch, pending state after reload, selected production mode and failed switch feedback");
     for (const [id, name] of [["postgres", "PostgreSQL"], ["cms", "CMS"], ["api", "API"], ["web", "web"]]) {
+      const service = fixture.services.find(service => service.id === id);
+      service.healthy = false; service.error = id + ': fixture error <details> "quoted"';
+      const copy = page.locator('[data-copy-error="' + id + '"]');
+      await copy.waitFor();
+      await copy.focus(); await page.keyboard.press("Enter");
+      await page.locator("#toast").filter({ hasText: "已复制 " + service.name + " 错误。" }).waitFor();
+      assert.equal(await copy.isDisabled(), false);
+      await page.locator('[data-card="' + id + '"]').screenshot({ path: path.join(output, id + "-copy-error.png") });
+      service.healthy = true; delete service.error;
+      await copy.waitFor({ state: "detached" });
+      report.checks.push(id + ": keyboard error copy, success feedback and hidden control after recovery");
       await page.locator('[data-id="' + id + '"][data-action="restart"]').click();
       await page.locator("#actionDialogConfirm").click();
       await page.getByText("当前正在重启" + name, { exact: true }).waitFor();

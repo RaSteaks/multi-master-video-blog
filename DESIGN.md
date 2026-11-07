@@ -385,6 +385,11 @@ readout controls and the em-relative station signs use the `support*` radii.
   Application updates show dependency installation as a named journal phase and
   reuse the existing log viewer for Dependencies. Confirmation explains the
   stop/install/build/start order and failure recovery; percentages are not guessed.
+  Linux checkout updates add a named Schema phase and log source before API/Web
+  start. Pending migrations remain actionable through Apply schema / Retry update
+  even when Git is current. Service error cards expose Copy error with keyboard
+  access, clipboard failure feedback and an HTTP-compatible selection fallback;
+  copy remains available during operations and disappears when the error clears.
   `managerStyles()` supplies the same tokens and controls to the dashboard and
   `scripts/manager-login.cjs`. The login is a compact Chinese-language form with
   inline validation, password visibility, and stable pending/error space. Browser

@@ -11,7 +11,7 @@ function harness(root = path.resolve(__dirname, ".."), env = {}, platform = "win
   // execFile alone, or a { execFile, spawn } stand-in for the whole module.
   const childProcess = typeof execFile === "function" ? { execFile } : execFile;
   const context = vm.createContext({ require: id => id === "node:child_process" && childProcess ? childProcess : modules[id] ?? requireModule(id), module: { exports: {} }, __dirname: path.join(root, "scripts"),
-    process: { env: { ...process.env, ...env }, pid: process.pid, platform }, console, Buffer, URL, AbortSignal, fetch, setTimeout, clearTimeout });
+    process: { env: { ...process.env, ...env }, pid: process.pid, execPath: process.execPath, platform }, console, Buffer, URL, AbortSignal, fetch, setTimeout, clearTimeout });
   vm.runInContext(source, context);
   return { context, run: (code) => vm.runInContext(code, context) };
 }
@@ -549,20 +549,34 @@ test("Linux Pull updates only running checkout units and builds Web for its actu
   fs.mkdirSync(path.join(root, "apps/api"), { recursive: true });
   const release = temporaryRoot(t);
   const calls = [];
-  let failBuild = false;
+  let failBuild = false, failSchema = false;
+  for (const file of require("./manager-repo.cjs").SCHEMA_FILES) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.copyFileSync(path.join(__dirname, "..", file), path.join(root, file));
+  }
+  const cmsEnv = path.join(root, "cms.env");
+  fs.writeFileSync(cmsEnv, 'ADMIN_EMAIL="fixture@example.invalid"\nADMIN_PASSWORD="fixture-secret"\nDIRECTUS_URL=http://127.0.0.1:18055\n');
   const execFile = (file, args, options, callback) => {
-    const action = file === "npm" ? "install" : args.at(-2) + ":" + args.at(-1);
+    const action = file === process.execPath ? "schema" : file === "npm" ? "install" : args.at(-2) + ":" + args.at(-1);
+    if (action === "schema") {
+      assert.equal(args.at(-1), "--upgrade-only");
+      assert.equal(options.env.ADMIN_PASSWORD, "fixture-secret");
+      assert.equal(options.env.DIRECTUS_URL, "http://127.0.0.1:18055");
+      assert.equal(args.includes("fixture-secret"), false);
+    }
     calls.push(action);
-    callback(failBuild && action === "start:video-blog-web-build.service" ? Error("build failed") : null, { stdout: "" });
+    callback(failSchema && action === "schema" ? Object.assign(Error("schema failed"), { stderr: "fixture migration error" })
+      : failBuild && action === "start:video-blog-web-build.service" ? Error("build failed") : null, { stdout: "" });
   };
-  const { run } = harness(root, {}, "linux", execFile);
-  run(`var calls = []; var impact = {}, cwd = ROOT, mode = "dev:web", active = "active";
+  const { run } = harness(root, { CMS_ENV_FILE: cmsEnv }, "linux", execFile);
+  run(`var calls = []; var impact = {}, cwd = ROOT, mode = "dev:web", active = "active", upToDate = false;
     process.getuid = () => 1000;
-    readUnit = async name => ({ LoadState:"loaded", ActiveState:active, User:"admin", ExecStart:"npm run "+mode,
+    readUnit = async name => ({ LoadState:"loaded", ActiveState:name === "video-blog-cms.service" ? "active" : active, User:"admin", ExecStart:"npm run "+mode,
       WorkingDirectory:name === "video-blog-api.service" && cwd === ROOT ? ROOT+"/apps/api" : cwd });
     waitForProcessHealth = async () => {}; checkWebBuildUnit = async () => { calls.push("preflight") };
-    repoUpdater.prepare = async () => ({impact, to:"b".repeat(40)});
+    repoUpdater.prepare = async () => ({impact, upToDate, message:"Already current", to:"b".repeat(40)});
     repoUpdater.fastForward = async () => { calls.push("pull"); return {message:"pulled"} };`);
+  await run("readSchemaUpdate().then(state => saveSchemaUpdate(state.signature, null))");
   const pull = async impact => run(`impact=${JSON.stringify(impact)}; handleRepoPull()`);
   await pull({ api:true });
   assert.deepEqual(calls.splice(0), ["stop:video-blog-api.service", "start:video-blog-api.service"]);
@@ -580,6 +594,27 @@ test("Linux Pull updates only running checkout units and builds Web for its actu
   assert.match((await pull({ api:true })).message, /update-native/);
   assert.deepEqual(calls, []);
   run('cwd=ROOT');
+  run('mode="start:web"; active="active"; calls=[]');
+  fs.appendFileSync(path.join(root, "shared/project-layouts.cjs"), "\n// fixture schema revision\n");
+  failSchema = true;
+  await assert.rejects(pull({ schema:true }), /schema upgrade failed.*retry Pull/);
+  assert.deepEqual(calls.splice(0), ["stop:video-blog-web.service", "stop:video-blog-api.service", "schema"]);
+  const failed = await run('readSchemaUpdate()');
+  assert.equal(failed.needed, true);
+  assert.deepEqual(Array.from(failed.pending.running), ["api", "web"]);
+  assert.equal((await run('readServiceLogs("schema")')).stderr, "fixture migration error");
+  failSchema = false;
+  run('active="inactive"; upToDate=true; calls=[]');
+  await pull({});
+  assert.deepEqual(calls.splice(0), ["stop:video-blog-web.service", "stop:video-blog-api.service", "schema",
+    "start:video-blog-api.service", "start:video-blog-web-build.service", "start:video-blog-web.service"]);
+  assert.equal(run('calls.includes("pull")'), false, "Retry after fast-forward does not need another commit");
+  const finished = await run('readSchemaUpdate()');
+  assert.equal(finished.needed, false);
+  assert.equal(finished.pending, null);
+  await pull({});
+  assert.deepEqual(calls, [], "An unchanged, completed schema is not applied again");
+  run('active="active"; upToDate=false; calls=[]');
   failBuild = true;
   await assert.rejects(pull({ web:true }), /pulled.*build failed.*web/);
   assert.deepEqual(calls.splice(0), ["stop:video-blog-web.service", "start:video-blog-web-build.service"]);

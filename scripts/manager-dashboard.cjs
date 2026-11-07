@@ -9,7 +9,7 @@ const { createManagerAuth } = require("./manager-auth.cjs");
 const { loginHtml } = require("./manager-login.cjs");
 const { createOperationJournal } = require("./service-operations.cjs");
 const { MODE_FILE, readWebMode, writeWebMode } = require("./systemd-web-mode.cjs");
-const { createRepoUpdater, COMMIT_ID } = require("./manager-repo.cjs");
+const { createRepoUpdater, COMMIT_ID, SCHEMA_FILES } = require("./manager-repo.cjs");
 const {
   runPowerShell: executePowerShell,
   stopProcessesCommand
@@ -1555,6 +1555,12 @@ async function readRepoStatus() {
   const repo = { ...await repoUpdater.status(), mode: systemd ? "systemd" : "windows" };
   if (systemd && repo.available) {
     repo.checkoutServices = Object.keys(await checkoutUnits(["cms", "api", "web"]));
+    if (repo.checkoutServices.length === 3) {
+      const schema = await readSchemaUpdate();
+      repo.schemaPending = schema.needed;
+      repo.updatePending = Boolean(schema.pending);
+      repo.updateImpact = schema.pending?.impact;
+    }
     const release = await fsp.realpath(RELEASE_LINK).catch(() => null);
     repo.release = release && { path: release, revision: path.basename(release).match(/-([0-9a-f]{12})$/)?.[1] || null };
     if (repo.checkoutServices.length < 3) repo.deployCommand = deployCommand(repo.head.hash);
@@ -1594,8 +1600,8 @@ async function handleRepoFetch() {
 async function handleRepoPull(target) {
   try {
     const plan = await serviceStep(REPO_STEP, "fetch", () => repoUpdater.prepare(target));
-    if (plan.upToDate) return { message: plan.message };
     if (systemd) return await pullSystemdCheckout(plan);
+    if (plan.upToDate) return { message: plan.message };
     const result = await serviceStep(REPO_STEP, "pull", () => repoUpdater.fastForward(plan));
     return { message: result.message + " " + (repoNextSteps(plan.impact, plan.to) || "No service restart is needed for these files.") };
   } finally {
@@ -1603,42 +1609,116 @@ async function handleRepoPull(target) {
   }
 }
 
+async function readSchemaUpdate() {
+  const files = await Promise.all(SCHEMA_FILES.map(file => fsp.readFile(path.join(ROOT, file))));
+  const hash = crypto.createHash("sha256");
+  files.forEach((bytes, index) => { hash.update(SCHEMA_FILES[index] + "\0"); hash.update(bytes); });
+  const signature = hash.digest("hex");
+  const text = await fsp.readFile(path.join(ROOT, "logs", "schema-update.json"), "utf8").catch(error => {
+    if (error.code === "ENOENT") return "{}";
+    throw error;
+  });
+  const saved = JSON.parse(text);
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)
+    || (saved.signature !== undefined && typeof saved.signature !== "string")
+    || (saved.pending && (!Array.isArray(saved.pending.running) || !saved.pending.impact
+      || saved.pending.running.some(id => !["cms", "api", "web"].includes(id))))) {
+    throw new Error("Invalid logs/schema-update.json; restore the Manager update record before retrying.");
+  }
+  return { signature, applied: saved.signature, needed: signature !== saved.signature, pending: saved.pending };
+}
+
+async function saveSchemaUpdate(signature, pending) {
+  const filename = path.join(ROOT, "logs", "schema-update.json");
+  await fsp.mkdir(path.dirname(filename), { recursive: true });
+  await fsp.writeFile(filename + ".tmp", JSON.stringify({ signature, pending }), { mode: 0o600 });
+  await fsp.rename(filename + ".tmp", filename);
+}
+
+async function upgradeCmsSchema(env) {
+  const log = path.join(ROOT, "logs", "schema");
+  await fsp.mkdir(path.dirname(log), { recursive: true });
+  await Promise.all([fsp.writeFile(log + ".out.log", ""), fsp.writeFile(log + ".err.log", "")]);
+  try {
+    // Use a fresh process so a pull runs the new schema code, not Manager's old
+    // require cache. Credentials travel only in the environment, never argv/logs.
+    const result = await execFileAsync(process.execPath, [path.join(ROOT, "scripts/setup-directus-schema.cjs"), "--upgrade-only"], {
+      cwd: ROOT, env, timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024,
+    });
+    await Promise.all([fsp.writeFile(log + ".out.log", result.stdout || ""), fsp.writeFile(log + ".err.log", result.stderr || "")]);
+    return { message: "Required CMS schema upgrades completed." };
+  } catch (error) {
+    await Promise.all([fsp.writeFile(log + ".out.log", error.stdout || ""), fsp.writeFile(log + ".err.log", error.stderr || error.message)]);
+    throw new Error("CMS schema upgrade failed. See the Schema log and retry Pull after correcting the reported error.");
+  }
+}
+
 async function pullSystemdCheckout(plan) {
-  const affected = ["cms", "api", "web"].filter(id => plan.impact[id]);
-  const units = await checkoutUnits(affected);
-  const local = Object.keys(units);
-  const running = local.filter(id => units[id].ActiveState === "active");
+  const units = await checkoutUnits(["cms", "api", "web"]);
+  const schema = Object.keys(units).length === 3 ? await readSchemaUpdate() : null;
+  const migrate = Boolean(schema && (schema.needed || plan.impact.schema));
+  const impact = Object.fromEntries(["cms", "api", "web", "dependencies"].map(id => [id,
+    Boolean(plan.impact[id] || schema?.pending?.impact[id] || (migrate && ["api", "web"].includes(id)))]));
+  if (plan.upToDate && !migrate && !schema?.pending) return { message: plan.message };
+  if (plan.impact.schema && !schema && (units.api || units.web)) {
+    throw new Error("Automatic schema upgrades require CMS, API and Web to use this checkout. Use the release deployment workflow for mixed installations.");
+  }
+  const affected = ["cms", "api", "web"].filter(id => impact[id]);
+  const local = affected.filter(id => units[id]);
+  // A retry restores only services running before the failed schema update.
+  const running = local.filter(id => units[id].ActiveState === "active" || schema?.pending?.running.includes(id));
   for (const id of local) {
     if (!["active", "inactive", "failed"].includes(units[id].ActiveState)) throw new Error("Wait for the " + id + " unit operation to finish before pulling.");
   }
   let rebuild = false;
-  if (units.web) {
+  if (local.includes("web")) {
     const { mode } = await systemdWebMode(units.web);
     if (!mode) throw new Error("Cannot determine the Web unit's mode. " + WEB_MODE_SETUP);
     rebuild = mode === "production";
     if (rebuild) await checkWebBuildUnit(units.web);
   }
-  const install = plan.impact.dependencies && local.length > 0;
+  const install = impact.dependencies && local.length > 0;
   if (install && process.getuid() === 0) throw new Error("Run Manager as the checkout's unprivileged owner to install workspace dependencies.");
-  const pulled = await serviceStep(REPO_STEP, "pull", () => repoUpdater.fastForward(plan));
+  const schemaEnv = migrate ? loadDirectusEnv(process.env.CMS_ENV_FILE) : null;
+  if (migrate) {
+    if (units.cms.ActiveState !== "active" && !running.includes("cms")) throw new Error("Start the checkout's CMS before applying schema upgrades.");
+    if (!schemaEnv.ADMIN_EMAIL || !schemaEnv.ADMIN_PASSWORD) throw new Error("CMS schema upgrades need ADMIN_EMAIL and ADMIN_PASSWORD in the CMS configuration. Set CMS_ENV_FILE for an external configuration file.");
+    schemaEnv.DIRECTUS_URL ||= new URL(serviceMap.get("cms").healthUrl).origin;
+  }
+  const pulled = plan.upToDate ? { message: plan.message }
+    : await serviceStep(REPO_STEP, "pull", () => repoUpdater.fastForward(plan));
+  let applied = schema?.applied;
+  const rootDependencies = Boolean(plan.rootDependencies || schema?.pending?.rootDependencies);
+  const pending = migrate || schema?.pending ? { impact, running, rootDependencies } : null;
+  if (pending) await saveSchemaUpdate(applied, pending);
   try {
     // Build with the matching Web unit's identity and production environment.
     // Quiesce affected services before replacing dependencies or the .next tree.
     for (const id of [...running].reverse()) await handleAction(id, "stop");
     if (install) await serviceStep({ id: "app-dependencies" }, "install", () => execFileAsync("npm",
       ["install", ...local.map(id => "--workspace=@multi-master-video-blog/" + id),
-        "--include-workspace-root=" + Boolean(plan.rootDependencies), "--include=dev", "--no-save", "--no-audit", "--no-fund"],
+        "--include-workspace-root=" + rootDependencies, "--include=dev", "--no-save", "--no-audit", "--no-fund"],
       { cwd: ROOT, timeout: 15 * 60_000 }));
-    // Restore CMS/API before a Web build that may read them or take minutes.
-    for (const id of local) {
+    if (local.includes("cms") && running.includes("cms")) await handleAction("cms", "start");
+    if (migrate) {
+      await waitForProcessHealth(serviceMap.get("cms"));
+      await serviceStep({ id: "schema" }, "migrate", () => upgradeCmsSchema(schemaEnv));
+      applied = (await readSchemaUpdate()).signature;
+      await saveSchemaUpdate(applied, pending);
+    }
+    // Start API and build Web only after the new schema is available.
+    for (const id of local.filter(id => id !== "cms")) {
       if (id === "web" && rebuild) await serviceStep(serviceMap.get("web"), "build", buildSystemdWeb);
       if (running.includes(id)) await handleAction(id, "start");
     }
+    if (pending) await saveSchemaUpdate(applied, null);
   } catch (error) {
     throw new Error(pulled.message + " Service update failed: " + error.message
-      + ". After correcting the failed step, restore the previously running services: " + (running.join(", ") || "none") + ".");
+      + (pending ? ". Correct the failed step and retry Pull to finish this update, even if Git is already up to date."
+        : ". After correcting the failed step, restore the previously running services: " + (running.join(", ") || "none") + "."));
   }
   const summary = [pulled.message];
+  if (migrate) summary.push("Applied required CMS schema upgrades.");
   if (rebuild) summary.push("Rebuilt production Web.");
   if (running.length) summary.push("Restarted " + running.join(", ") + ".");
   const outside = affected.filter(id => !units[id]);
@@ -1650,6 +1730,7 @@ async function pullSystemdCheckout(plan) {
 async function readServiceLogs(serviceId) {
   const service = serviceId === "manager"
     ? { id: "manager", name: "Service Manager", logName: "manager" }
+    : serviceId === "schema" ? { id: "schema", name: "CMS schema", logName: "schema" }
     : serviceId === "web-build" ? { id: "web-build", name: "Web build", logName: "web.build" }
     : serviceId === "app-dependencies" ? { id: "app-dependencies", name: "API + Web dependencies", logName: "app.dependencies" }
     : serviceId === "repo" ? { id: "repo", name: "Git repository", logName: "git" }
@@ -2288,6 +2369,10 @@ function managerStyles() {
     .badge.warn i { border-radius: 2px; transform: rotate(45deg); }
     .badge.off { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
     .badge.off i { border-radius: 1px; }
+    .svc-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .svc-error .svc-issue { flex: 1 1 200px; min-width: 0; }
+    .copy-error { flex: none; min-width: 94px; }
+    .clipboard-buffer { position: fixed; left: -9999px; top: 0; }
     .svc-issue {
       padding: 8px 10px;
       border-radius: var(--radius-sm);
@@ -2616,6 +2701,7 @@ function html(csrfToken = "") {
             <button class="chan-tab" type="button" data-log="web-build" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Build</button>
             <button class="chan-tab" type="button" data-log="api" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>API</button>
             <button class="chan-tab" type="button" data-log="cms" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>CMS</button>
+            <button class="chan-tab" type="button" data-log="schema" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Schema</button>
             <button class="chan-tab" type="button" data-log="repo" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Git</button>
             <button class="chan-tab" type="button" data-log="manager" aria-pressed="false"><i class="tab-led" aria-hidden="true"></i>Manager</button>
           </div>
@@ -2657,7 +2743,7 @@ function html(csrfToken = "") {
               <summary>Checkout, how updates work and commands</summary>
               <dl class="ledger" id="repoLocation"></dl>
               <p class="service-help">${systemd
-                ? "Pull updates the reviewed commit and restarts affected running units that use this checkout. Production Web rebuilds before starting. Units running a separate release require deployment."
+                ? "Pull updates the reviewed commit, applies pending CMS schema upgrades and restarts affected running checkout units. Production Web rebuilds before starting. Failed schema updates can be retried without another commit. Separate releases require deployment."
                 : "API, CMS and Web run from this checkout. Pull fast-forwards only to the commit you reviewed and keeps unrelated local edits. Pull + Update API + Web verifies the update while the site still serves, stops Web and API so Windows releases their files, then pulls, installs dependencies, builds Production Web and starts both."}</p>
               <code>node scripts/service-control.cjs repo status</code><code>node scripts/service-control.cjs repo fetch</code><code>node scripts/service-control.cjs repo pull [COMMIT]</code>${systemd ? '<code id="repoDeployCommand"></code>' : "<code>node scripts/service-control.cjs stack pull-update [COMMIT]</code>"}
             </details>
@@ -2840,13 +2926,14 @@ function html(csrfToken = "") {
       web: "Web",
       "web-build": "Web build",
       "app-dependencies": "API + Web dependencies",
+      schema: "CMS schema",
       api: "Upload API",
       cms: "Directus CMS",
       repo: "Git repository",
       manager: "Service Manager"
     });
     const IMPACT_LABELS = Object.freeze({
-      manager: "Manager restart", api: "API", web: "Web", dependencies: "Dependencies", cms: "CMS", deployment: "Deployment files"
+      manager: "Manager restart", api: "API", web: "Web", dependencies: "Dependencies", cms: "CMS", schema: "CMS schema", deployment: "Deployment files"
     });
     const ERROR_PATTERN = /error|fail|exception|fatal|unhandled|refused|traceback|panic|cannot find/i;
     const WARN_PATTERN = /warn|deprecat|retry|slow|pending/i;
@@ -2987,12 +3074,12 @@ function html(csrfToken = "") {
     function renderCurrentTasks(operation) {
       // Use accepted journal records for all four services, including CLI commands
       // and reloads. Completed/interrupted records stay in the detail panel only.
-      const names = { postgres: "PostgreSQL", cms: "CMS", api: "API", web: "web", "app-dependencies": "API 与 Web 依赖", repo: "Git 仓库" };
+      const names = { postgres: "PostgreSQL", cms: "CMS", api: "API", web: "web", "app-dependencies": "API 与 Web 依赖", schema: "CMS 数据结构", repo: "Git 仓库" };
       const actions = { start: "启动", stop: "停止", restart: "重启", "rebuild-restart": "构建并重启" };
       const labels = { "start-all": "启动全部服务", "stop-all": "停止全部服务", "restart-all": "重启全部服务", "refresh-app": "更新 API 和 web", "upload-tokens": "保存令牌并重启 API",
         "repo:fetch": "检查仓库更新", "repo:pull": "拉取仓库更新", "pull-update": "拉取仓库并更新 API 和 web" };
       const phases = { install: "安装依赖", start: "启动并检查健康状态", stop: "停止并等待退出", build: "构建生产版本", "recovery-stop": "停止服务以恢复", "recovery-build": "重新构建原模式", "recovery-start": "恢复原模式",
-        fetch: "获取并检查远程提交", pull: "快进到目标提交" };
+        migrate: "升级数据结构", fetch: "获取并检查远程提交", pull: "快进到目标提交" };
       let markup = '<p>当前没有正在执行的任务</p>';
       if (operation?.state === "running") {
         const [service, action] = operation.label.split(":");
@@ -3024,9 +3111,9 @@ function html(csrfToken = "") {
         finishedOperations.add(operation.id);
         if (finishedOperations.size > 24) finishedOperations.delete(finishedOperations.values().next().value);
       }
-      const names = { postgres: "PostgreSQL", cms: "Directus CMS", api: "Upload API", web: "Frontend Web", "app-dependencies": "API + Web dependencies", repo: "Git repository" };
+      const names = { postgres: "PostgreSQL", cms: "Directus CMS", api: "Upload API", web: "Frontend Web", "app-dependencies": "API + Web dependencies", schema: "CMS schema", repo: "Git repository" };
       const phases = { install: "Install dependencies", start: "Start and verify", stop: "Stop and wait", build: "Build production Web", "recovery-stop": "Stop for recovery", "recovery-build": "Rebuild previous mode", "recovery-start": "Restore previous mode",
-        fetch: "Fetch and check", pull: "Fast-forward" };
+        migrate: "Upgrade schema", fetch: "Fetch and check", pull: "Fast-forward" };
       const labels = { "start-all": "Start all services", "stop-all": "Stop all services", "restart-all": "Restart all services", "refresh-app": "Update API + Web", "upload-tokens": "Save tokens and restart API",
         "repo:fetch": "Check for updates", "repo:pull": "Pull repository updates", "pull-update": "Pull + Update API + Web" };
       const parts = operation.label.split(":");
@@ -3189,6 +3276,38 @@ function html(csrfToken = "") {
       return "Port " + item.port + " is open but the health check failed" + (item.error ? ": " + item.error : ".");
     }
 
+    async function copyServiceError(button) {
+      const item = state?.services.find(service => service.id === button.dataset.copyError);
+      const issue = item && issueText(item);
+      if (!issue) { notify("当前没有可复制的错误。"); return; }
+      const detail = item.error && !issue.includes(item.error) ? "\n" + item.error : "";
+      const text = item.name + "\n" + (item.serviceName || item.healthUrl || "") + "\n" + issue + detail;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      try {
+        let copied = false;
+        if (navigator.clipboard?.writeText) {
+          try { await navigator.clipboard.writeText(text); copied = true; }
+          catch { /* HTTP deployments and denied clipboard access use the selection fallback. */ }
+        }
+        if (!copied) {
+          const input = document.createElement("textarea");
+          input.className = "clipboard-buffer";
+          input.value = text;
+          input.readOnly = true;
+          document.body.append(input);
+          try { input.select(); copied = document.execCommand("copy"); }
+          finally { input.remove(); button.focus({ preventScroll: true }); }
+        }
+        notify(copied ? "已复制 " + item.name + " 错误。" : "复制失败，请选中卡片中的错误文本手动复制。");
+      } catch {
+        notify("复制失败，请选中卡片中的错误文本手动复制。");
+      } finally {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      }
+    }
+
     function badgeHtml(item) {
       const status = serviceState(item);
       return '<span class="badge ' + status.cls + '"><i aria-hidden="true"></i>' + esc(status.label) + '</span>';
@@ -3249,7 +3368,8 @@ function html(csrfToken = "") {
         + '<p class="svc-sub">' + esc(item.category) + " · " + esc(target) + '</p></div>'
         + badgeHtml(item)
         + '</header>'
-        + (issue ? '<p class="svc-issue">' + esc(issue) + '</p>' : "")
+        + (issue ? '<div class="svc-error"><p class="svc-issue">' + esc(issue) + '</p>'
+          + '<button class="button copy-error" type="button" data-copy-error="' + esc(item.id) + '" aria-label="Copy ' + esc(item.name) + ' error">Copy error</button></div>' : "")
         + '<dl class="facts">' + facts.join("") + '</dl>'
         + '<p class="service-help">' + (item.kind === "systemd" && item.id === "web"
           ? (item.modeSwitchAvailable ? "Switching to Production stops Web, builds it, then starts it. Restart reuses the selected mode." : "To enable mode switching, follow the Linux Web setup in docs/linux-deployment.md.")
@@ -3422,6 +3542,8 @@ function html(csrfToken = "") {
       if (repo.inProgress) return ["warn", "A merge, rebase, cherry-pick or revert is in progress. Finish or abort it in a terminal."];
       if (repo.ahead && repo.behind) return ["bad", repo.branch + " has diverged: " + plural(repo.ahead, "local commit") + " and " + plural(repo.behind, "upstream commit") + ". Manager only fast-forwards; reconcile the branch in a terminal."];
       if (repo.conflicts.length) return ["bad", "Local changes to " + repo.conflicts.join(", ") + " conflict with the update. Commit, stash or discard them in a terminal; Manager never discards local work."];
+      if (repo.updatePending) return ["warn", "The previous update is incomplete. Retry Pull to finish schema/build steps and restore its services."];
+      if (repo.schemaPending && !repo.behind) return ["warn", "Code is up to date; required CMS schema upgrades are pending."];
       if (repo.behind) return ["warn", plural(repo.behind, "new commit") + " on " + repo.upstream + "." + (repo.localChanges ? " " + plural(repo.localChanges, "local modification") + " will be kept." : "")];
       if (repo.ahead) return ["ok", repo.branch + " is " + plural(repo.ahead, "commit") + " ahead of " + repo.upstream + "; there is nothing to pull."];
       return ["ok", repo.branch + " matches " + repo.upstream + " as of the last check (" + formatTime(repo.lastFetchedAt) + ")."];
@@ -3432,7 +3554,7 @@ function html(csrfToken = "") {
       repoNoticeLine.dataset.tone = tone;
       if (repoNoticeLine.textContent !== text) repoNoticeLine.textContent = text;
       const pull = document.querySelector('[data-repo="pull"]');
-      pull.textContent = repo?.behind ? "Pull " + plural(repo.behind, "commit") : "Pull";
+      pull.textContent = repo?.updatePending ? "Retry update" : repo?.behind ? "Pull " + plural(repo.behind, "commit") : repo?.schemaPending ? "Apply schema" : "Pull";
       const deploy = document.getElementById("repoDeployCommand");
       if (deploy) deploy.textContent = repo?.deployCommand || "";
       if (!repo?.available) {
@@ -3496,7 +3618,7 @@ function html(csrfToken = "") {
       if (repo.inProgress) return "Finish the merge or rebase in a terminal first.";
       if (repo.ahead && repo.behind) return "The branch has diverged; Manager only fast-forwards.";
       if (repo.conflicts.length) return "Local changes conflict with the incoming commits.";
-      if (!repo.behind) return "Nothing to pull. Use Check for updates first.";
+      if (!repo.behind && !repo.schemaPending && !repo.updatePending) return "Nothing to pull. Use Check for updates first.";
       return "";
     }
 
@@ -3506,15 +3628,18 @@ function html(csrfToken = "") {
         await submitOperation("/api/repo/fetch", "Check for updates");
         return;
       }
-      const target = repo.upstreamHead;
-      const label = action === "pull-update" ? "Pull + Update API + Web" : "Pull";
-      let message = "Fast-forward " + repo.branch + " from " + repo.head.short + " to " + target.short + " (" + plural(repo.behind, "commit") + " from " + repo.upstream + ")?";
+      const target = repo.behind ? repo.upstreamHead : repo.head;
+      const label = action === "pull-update" ? "Pull + Update API + Web" : repo.updatePending ? "Retry update" : repo.behind ? "Pull" : "Apply schema";
+      let message = repo.behind ? "Fast-forward " + repo.branch + " from " + repo.head.short + " to " + target.short + " (" + plural(repo.behind, "commit") + " from " + repo.upstream + ")?"
+        : "Finish the pending update for " + repo.head.short + "?";
       if (action === "pull-update") {
         const production = state?.services?.find(item => item.id === "web")?.mode === "production";
         message += " The update is verified first. Then Web and API stop, the checkout updates, API and Web dependencies install"
           + (production ? ", Production Web rebuilds" : "") + " and both start. A failure after stopping leaves API and Web stopped.";
       } else if (repo.mode === "systemd") {
-        const local = (repo.checkoutServices || []).filter(id => repo.impact?.[id]);
+        const schema = repo.schemaPending || repo.impact?.schema;
+        const local = (repo.checkoutServices || []).filter(id => repo.impact?.[id] || repo.updateImpact?.[id] || (schema && ["api", "web"].includes(id)));
+        if (schema) message += " Apply required CMS schema upgrades before API/Web start; site content, custom validation and access policies are preserved.";
         if (local.length) {
           message += " After pulling, restart affected running checkout services (" + local.join(", ") + ").";
           if (local.includes("api")) message += " Active uploads and conversions may be interrupted.";
@@ -3651,7 +3776,7 @@ function html(csrfToken = "") {
       const cardMarkup = data.services.map(serviceCard).join("");
       if (!confirmationPending && renderedMarkup.get(cards) !== cardMarkup) {
         const focused = cards.contains(document.activeElement) ? document.activeElement : null;
-        const focusKey = focused?.dataset.action ? '[data-id="' + focused.dataset.id + '"][data-action="' + focused.dataset.action + '"]'
+        const focusKey = focused?.dataset.copyError ? '[data-copy-error="' + focused.dataset.copyError + '"]' : focused?.dataset.action ? '[data-id="' + focused.dataset.id + '"][data-action="' + focused.dataset.action + '"]'
           : focused?.dataset.webMode ? '[data-web-mode="' + focused.dataset.webMode + '"]'
           : focused?.dataset.log ? '[data-log="' + focused.dataset.log + '"]'
           : focused?.tagName === 'SUMMARY' ? '[data-card="' + focused.closest('[data-card]').dataset.card + '"] summary' : null;
@@ -4096,6 +4221,8 @@ function html(csrfToken = "") {
     }
 
     document.addEventListener("click", (event) => {
+      const copyError = event.target.closest("[data-copy-error]");
+      if (copyError) { if (!copyError.disabled) void copyServiceError(copyError); return; }
       const actionButton = event.target.closest("[data-action]");
       if (actionButton) {
         runServiceAction(actionButton.dataset.id, actionButton.dataset.action);
