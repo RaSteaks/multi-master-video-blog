@@ -65,12 +65,12 @@ export default async function AboutPage() {
         ) : null}
         <main className="shell article-shell">
           <div className="content-glass">
-            <header className="page-header">
+            <header className="page-header about-header">
               <p className="eyebrow">
                 {cmsPost.category || siteConfig.about.eyebrow}
               </p>
               <h1>{cmsPost.title}</h1>
-              <a className="profile-about-link" href="/support" data-native-navigation>播放与色彩支持</a>
+              <SupportEntry />
             </header>
 
             {cover && (coverSize
@@ -95,11 +95,11 @@ export default async function AboutPage() {
   return (
     <main className="shell article-shell">
       <div className="content-glass">
-        <header className="page-header">
+        <header className="page-header about-header">
           <p className="eyebrow">{about.eyebrow}</p>
           <h1>{about.title}</h1>
           {about.summary ? <p className="summary">{about.summary}</p> : null}
-          <a className="profile-about-link" href="/support" data-native-navigation>播放与色彩支持</a>
+          <SupportEntry />
         </header>
 
         <article className="markdown-body">
@@ -107,6 +107,29 @@ export default async function AboutPage() {
         </article>
       </div>
     </main>
+  );
+}
+
+/**
+ * The site's playback and colour guide, set beside the title so it stays out of
+ * the way of the personal introduction below it. A full document load: /support
+ * is a standalone static page.
+ */
+function SupportEntry() {
+  return (
+    <a className="about-support-link" href="/support" data-native-navigation>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+        <rect x="2" y="4" width="20" height="14" rx="2" />
+        <path d="M8 22h8M12 18v4M9 8l6 3-6 3z" />
+      </svg>
+      <span>
+        <strong>播放与色彩支持</strong>
+        <small lang="en">Playback &amp; Color</small>
+      </span>
+      <svg className="about-support-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M5 12h14M13 6l6 6-6 6" />
+      </svg>
+    </a>
   );
 }
 

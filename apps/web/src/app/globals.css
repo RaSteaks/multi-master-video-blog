@@ -214,7 +214,7 @@ a {
   .source-mode,
   .collection-links a,
   .github-link,
-  .profile-about-link,
+  .about-support-link,
   .orbit-lab-entry,
   .github-widget,
   .bilibili-widget
@@ -1182,6 +1182,78 @@ html[data-vt-origin="frame"]::view-transition-image-pair(route-wipe-line) {
 
 .video-title .meta-line {
   margin: 28px 0 0;
+}
+
+/* ---- About header ----
+   The guide entry sits in the empty space right of the title, its bottom on the
+   title's, so the personal introduction and cover follow the title directly. */
+.about-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "eyebrow eyebrow"
+    "title entry"
+    "summary summary";
+  column-gap: 32px;
+  max-width: none;
+  margin-bottom: 20px;
+}
+
+.about-header > .eyebrow { grid-area: eyebrow; }
+.about-header > h1 { grid-area: title; margin-bottom: 0; }
+.about-header > .summary { grid-area: summary; max-width: 800px; margin-top: 20px; }
+
+.about-support-link {
+  grid-area: entry;
+  align-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  color: var(--text-secondary);
+  transition: color var(--transition-fast);
+}
+
+.about-support-link > svg { flex: none; }
+
+.about-support-link > span {
+  display: grid;
+  line-height: 1.35;
+}
+
+.about-support-link strong {
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.about-support-link small {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.about-support-arrow { transition: translate var(--transition-fast), color var(--transition-fast); }
+
+@media (hover: hover) and (pointer: fine) {
+  .about-support-link:hover { color: var(--text); }
+  .about-support-link:hover .about-support-arrow { color: var(--accent); translate: 3px 0; }
+}
+
+/* Narrow cards have no room beside the title: one quiet line beneath it. */
+@media (max-width: 640px) {
+  .about-header {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "eyebrow" "title" "entry" "summary";
+  }
+
+  .about-support-link {
+    justify-self: start;
+    margin-top: 12px;
+    gap: 10px;
+  }
+
+  .about-support-link > svg:first-child { width: 18px; height: 18px; }
+  .about-support-link small { display: none; }
 }
 
 /* ---- Article shell ---- */
@@ -5080,8 +5152,7 @@ h3 {
   margin-top: 26px;
 }
 
-.github-link,
-.profile-about-link {
+.github-link {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -5102,8 +5173,7 @@ h3 {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .github-link:hover,
-  .profile-about-link:hover {
+  .github-link:hover {
     border-color: rgb(var(--accent-rgb) / 0.6);
     background: var(--accent-soft);
     color: var(--text);
@@ -5728,8 +5798,7 @@ h3 {
     width: 100%;
   }
 
-  .github-link,
-  .profile-about-link {
+  .github-link {
     flex: 1 1 auto;
   }
 }
