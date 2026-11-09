@@ -62,6 +62,7 @@ export function MarkdownAssetImage({ src, srcSet, sizes, width, height, style, c
     <span className={styles.frame} data-image-state={state}
       data-error-sized={state === "error" && aspectRatio ? "true" : undefined}
       style={state === "error" && aspectRatio ? { width: intrinsicWidth, aspectRatio } : undefined}>
+      {/* eslint-disable-next-line @next/next/no-img-element -- Preserve author-provided srcset and the intrinsic ratio when Markdown has no dimensions. */}
       <img {...props} ref={imageRef} src={src} srcSet={srcSet} sizes={sizes}
         width={width} height={height} style={{ aspectRatio, ...style }}
         className={[styles.image, className].filter(Boolean).join(" ")} />

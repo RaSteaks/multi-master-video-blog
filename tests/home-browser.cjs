@@ -151,12 +151,12 @@ async function main() {
       .getImageData(0, 0, canvas.width, canvas.height).data.some(value => value !== 0));
     assert.equal(await painted(), true);
     const drawn = new Set();
-    const kindOf = caption => /^波形/.test(caption) ? "waveform" : /^矢量图/.test(caption) ? "vectorscope" : "volume";
-    for (let visit = 0; visit < 60 && drawn.size < 3; visit++) {
-      drawn.add(kindOf(await page.locator(".home-diagram figcaption").innerText()));
+    for (let visit = 0; visit < 120 && drawn.size < 8; visit++) {
+      drawn.add(await page.locator(".home-diagram").getAttribute("data-diagram"));
+      assert.equal(await painted(), true, "Every diagram paints.");
       await page.reload({ waitUntil: "networkidle" });
     }
-    assert.equal(drawn.size, 3, "Refreshing reaches every diagram.");
+    assert.equal(drawn.size, 8, `Refreshing reaches every diagram, got ${[...drawn]}.`);
     pass("by default a refresh can land on any diagram");
 
     await page.evaluate(() => localStorage.setItem("mm-home-diagram-v2", JSON.stringify({ version: 2, diagram: "volume", gamut: "random", model: "xyz" })));
@@ -164,7 +164,7 @@ async function main() {
     assert.equal(await painted(), true);
     assert.equal(await page.locator(".liquid-bg").count(), 1);
     assert.equal(await page.evaluate(() => document.querySelector(".liquid-bg").getBoundingClientRect().width > 0), true);
-    assert.match(await page.locator(".home-diagram figcaption").innerText(), /^(Rec\.709|P3-D65|Rec\.2020|ACES AP0) · CIE XYZ$/);
+    assert.match(await page.locator(".home-diagram figcaption").innerText(), /^(Rec\.709|P3-D65|Rec\.2020|ACES AP0|ACES AP1|DaVinci WG|ARRI WG4|S-Gamut3) · CIE XYZ$/);
     pass("the diagram paints a random gamut in XYZ over the retained liquid background");
 
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -219,6 +219,11 @@ async function main() {
 
     await page.getByRole("button", { name: "外观设置", exact: true }).click();
     const options = page.getByRole("group", { name: "首页图示", exact: true });
+    const customHsv = page.getByRole("button", { name: /^HSV 自定义/ });
+    await customHsv.click();
+    await page.locator(".sv-plane").press("Enter");
+    assert.equal(await page.getByRole("spinbutton", { name: "S", exact: true }).evaluate(element => element === document.activeElement), true);
+    await customHsv.click();
     const rowHeights = await page.evaluate(async () => {
       const rows = document.querySelector(".home-diagram-rows");
       const before = rows.getBoundingClientRect().height;
@@ -230,7 +235,10 @@ async function main() {
       }
       return { before, heights, animating: rows.dataset.panelAnimating };
     });
-    assert.ok(new Set(rowHeights.heights).size > 1 && rowHeights.heights[0] < rowHeights.heights.at(-1), `Rows ease open, got ${JSON.stringify(rowHeights)}.`);
+    // The volume's rows outnumber the vectorscope's, so the panel eases shut by steps.
+    const steps = rowHeights.heights.map((height, index, all) => index ? height - all[index - 1] : height - rowHeights.before);
+    assert.ok(new Set(rowHeights.heights).size > 1 && (steps.every(step => step <= 0) || steps.every(step => step >= 0)),
+      `Rows ease to their new height, got ${JSON.stringify(rowHeights)}.`);
     const signals = page.getByRole("group", { name: "信号", exact: true });
     const looks = page.getByRole("group", { name: "样式", exact: true });
     const phosphors = page.getByRole("group", { name: "荧光色", exact: true });
@@ -256,7 +264,7 @@ async function main() {
     await options.getByRole("button", { name: "矢量图", exact: true }).click();
     assert.equal(await page.locator(".home-diagram[data-draggable]").count(), 0, "Only the solid can be turned.");
     assert.equal(await page.getByRole("group", { name: "色彩空间", exact: true }).count(), 0);
-    await options.getByRole("button", { name: "色彩体积", exact: true }).click();
+    await options.getByRole("button", { name: "体积", exact: true }).click();
     await page.getByRole("group", { name: "色彩空间", exact: true }).getByRole("button", { name: "2020", exact: true }).click();
     const xyY = page.getByRole("group", { name: "坐标", exact: true }).getByRole("button", { name: "xyY", exact: true });
     await xyY.focus();
@@ -286,9 +294,12 @@ async function main() {
       const box = button.getBoundingClientRect();
       return { top: box.top, left: box.left, right: box.right, fits: button.scrollWidth <= button.clientWidth };
     }));
-    assert.equal(coordinateButtons.length, 6);
-    assert.equal(new Set(coordinateButtons.map(button => button.top)).size, 2, "The six models use two rows.");
+    assert.equal(coordinateButtons.length, 14);
+    assert.equal(new Set(coordinateButtons.map(button => button.top)).size, 3, "The fourteen models use three rows of five or fewer.");
     assert.ok(coordinateButtons.every(button => button.fits && button.left >= 0 && button.right <= 320));
+    const unfit = await page.locator(".home-diagram-options button").evaluateAll(buttons => buttons
+      .filter(button => button.scrollWidth > button.clientWidth || button.getBoundingClientRect().height > 40).map(button => button.textContent));
+    assert.deepEqual(unfit, [], "Every option label fits on one line at 320px.");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await xyY.click(); // Scroll the coordinate controls into the panel's visible area.
     await page.screenshot({ path: path.join(fixture.output, "home-xyy-mobile.png"), fullPage: true });
@@ -299,6 +310,118 @@ async function main() {
     assert.equal(await page.locator(".home-diagram figcaption").innerText(), "ACES AP0 · CAM16-UCS");
     await page.waitForFunction(() => document.querySelector(".home-diagram canvas").getContext("2d")
       .getImageData(0, 0, 400, 400).data.some(value => value !== 0));
+    await page.getByRole("group", { name: "叠加", exact: true }).getByRole("button", { name: "Pointer", exact: true }).click();
+    assert.equal(await page.locator(".home-diagram figcaption").innerText(), "ACES AP0 · CAM16-UCS · Pointer 色域");
+    const contentRow = page.getByRole("group", { name: "内容", exact: true });
+    for (const [diagram, content, label, turnable] of [
+      ["变换", "红色盲", "色觉模拟 · 红色盲（Machado 2009）", true],
+      ["色度图", "椭圆", "麦克亚当椭圆 ×10 · xy ↔ u′v′", false],
+      ["光谱", "TM-30", "ANSI/IES TM-30 色矢量图", false],
+      ["曲线", "胶片", "胶片特性曲线 · 示意", false],
+      ["像素", "拜耳", "拜耳阵列 · RGGB 与双线性去马赛克", false],
+    ]) {
+      await options.getByRole("button", { name: diagram, exact: true }).click();
+      await contentRow.getByRole("button", { name: content, exact: true }).click();
+      assert.equal(await page.locator(".home-diagram figcaption").innerText(), label);
+      assert.equal(await page.locator(".home-diagram[data-draggable]").count(), turnable ? 1 : 0, `${diagram} turnable`);
+      assert.equal(await painted(), true, `${diagram} paints`);
+    }
+    const appearance = page.getByRole("button", { name: "外观设置", exact: true });
+    const closeAppearance = page.getByRole("button", { name: "关闭外观设置", exact: true });
+    const stage = page.getByRole("slider", { name: "图示阶段", exact: true });
+    await closeAppearance.click();
+    assert.equal(await stage.getAttribute("aria-valuetext"), "原始画面");
+    const bayerFrames = new Set([await pixels()]);
+    for (const label of ["RGGB 马赛克", "双线性去马赛克"]) {
+      const previous = await pixels();
+      await stage.press("ArrowRight");
+      assert.equal(await stage.getAttribute("aria-valuetext"), label);
+      await page.waitForFunction(last => document.querySelector(".home-diagram canvas").toDataURL() !== last, previous);
+      bayerFrames.add(await pixels());
+    }
+    assert.equal(bayerFrames.size, 3, "All three Bayer stages are distinct stills.");
+    const heldFrame = await pixels();
+    await page.waitForTimeout(400);
+    assert.equal(await pixels(), heldFrame, "A timed diagram rests under reduced motion.");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await stage.waitFor({ state: "hidden" });
+    const movingFrame = await pixels();
+    await page.waitForFunction(last => document.querySelector(".home-diagram canvas").toDataURL() !== last, movingFrame, { timeout: 5000 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await appearance.click();
+    await contentRow.getByRole("button", { name: "抽样", exact: true }).click();
+    await closeAppearance.click();
+    for (const label of ["4:4:4", "4:2:2", "4:2:0"]) {
+      assert.equal(await stage.getAttribute("aria-valuetext"), label);
+      if (label !== "4:2:0") await stage.press("ArrowRight");
+    }
+    pass("timed diagrams play with motion allowed and expose comparison stages under reduced motion");
+
+    await appearance.click();
+    await options.getByRole("button", { name: "光谱", exact: true }).click();
+    await contentRow.getByRole("button", { name: "相机", exact: true }).click();
+    await closeAppearance.click();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const figure = page.locator(".home-diagram");
+    await figure.scrollIntoViewIfNeeded();
+    await stage.waitFor({ state: "visible" });
+    const cameraLayout = await figure.evaluate(element => {
+      const canvas = element.querySelector("canvas");
+      const box = canvas.getBoundingClientRect();
+      const title = element.querySelector("figcaption").getBoundingClientRect();
+      const panel = element.getBoundingClientRect();
+      const profile = document.querySelector(".profile-hub").getBoundingClientRect();
+      return {
+        left: box.left, right: box.right, viewport: innerWidth,
+        stageBottom: document.querySelector(".orbital-stage").getBoundingClientRect().bottom,
+        figureTop: panel.top,
+        gutterDifference: Math.max(Math.abs(profile.left - panel.left), Math.abs(profile.right - panel.right)),
+        titleHeight: title.height, titleBottom: title.bottom, canvasTop: box.top,
+        sliderBottom: element.querySelector('input[type="range"]').getBoundingClientRect().bottom,
+      };
+    });
+    assert.ok(cameraLayout.left >= 0 && cameraLayout.right <= cameraLayout.viewport, JSON.stringify(cameraLayout));
+    assert.ok(cameraLayout.figureTop >= cameraLayout.stageBottom, "The pinned chart sits below the cards.");
+    assert.ok(cameraLayout.gutterDifference < 1, "The pinned chart aligns with the profile card.");
+    assert.ok(cameraLayout.titleHeight > 0 && cameraLayout.titleBottom <= cameraLayout.canvasTop, "The title sits above the full canvas.");
+    assert.ok(cameraLayout.sliderBottom <= cameraLayout.canvasTop, "The stage control clears the floating button at the bottom of the chart.");
+    assert.equal(await solid.evaluate(canvas => {
+      // The fit used to send coloured curves into the tick-label band below the plot.
+      const top = Math.ceil(canvas.height * 0.9);
+      const pixels = canvas.getContext("2d").getImageData(0, top, canvas.width, canvas.height - top).data;
+      for (let index = 0; index < pixels.length; index += 4) {
+        const [r, g, b, alpha] = pixels.subarray(index, index + 4);
+        if (alpha && Math.max(r, g, b) - Math.min(r, g, b) > 45) return true;
+      }
+      return false;
+    }), false);
+    await figure.screenshot({ path: path.join(fixture.output, "home-camera-mobile.png") });
+    pass("a pinned camera plot fits the phone and keeps the fit clear of the wavelength labels");
+
+    await page.setViewportSize({ width: 1440, height: 940 });
+    await appearance.click();
+    await options.getByRole("button", { name: "体积", exact: true }).click();
+    await page.getByRole("group", { name: "色彩空间", exact: true }).getByRole("button", { name: "DWG", exact: true }).click();
+    await page.getByRole("group", { name: "坐标", exact: true }).getByRole("button", { name: "ICtCp", exact: true }).click();
+    await page.getByRole("group", { name: "叠加", exact: true }).getByRole("button", { name: "无", exact: true }).click();
+    // Start from the initial orientation, independent of earlier drag tests.
+    await page.reload({ waitUntil: "networkidle" });
+    const wideVolume = await solid.boundingBox();
+    const volumeStart = await pixels();
+    const centreX = wideVolume.x + wideVolume.width / 2, centreY = wideVolume.y + wideVolume.height / 2;
+    await page.mouse.move(centreX, centreY);
+    await page.mouse.down();
+    await page.mouse.move(centreX + 170, centreY, { steps: 10 });
+    await page.mouse.up();
+    assert.notEqual(await pixels(), volumeStart, "The drag changes the projected volume.");
+    assert.equal(await solid.evaluate(canvas => canvas.getContext("2d")
+      .getImageData(canvas.width - 1, 0, 1, canvas.height).data.some((value, index) => index % 4 === 3 && value)), false,
+    "DaVinci WG in ICtCp clears the right canvas edge after a drag.");
+    await figure.screenshot({ path: path.join(fixture.output, "home-ictcp-fit.png") });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    pass("the wide-gamut wireframe fits after the drag that used to clip it");
+
+    await appearance.click();
     await options.getByRole("button", { name: "关闭", exact: true }).click();
     await page.locator(".home-diagram").waitFor({ state: "detached" });
     await page.reload({ waitUntil: "networkidle" });
@@ -350,7 +473,7 @@ async function main() {
 
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.getByRole("button", { name: "外观设置", exact: true }).click();
-    await options.getByRole("button", { name: "色彩体积", exact: true }).click();
+    await options.getByRole("button", { name: "体积", exact: true }).click();
     await xyY.click();
     const other = await context.newPage();
     await other.goto(fixture.url, { waitUntil: "networkidle" });
@@ -383,7 +506,7 @@ async function main() {
       const fallback = await blocked.newPage();
       await fallback.goto(fixture.url, { waitUntil: "networkidle" });
       await fallback.getByRole("button", { name: "外观设置", exact: true }).click();
-      await fallback.getByRole("group", { name: "首页图示", exact: true }).getByRole("button", { name: "色彩体积", exact: true }).click();
+      await fallback.getByRole("group", { name: "首页图示", exact: true }).getByRole("button", { name: "体积", exact: true }).click();
       await fallback.getByRole("group", { name: "坐标", exact: true }).getByRole("button", { name: "xyY", exact: true }).click();
       assert.match(await fallback.locator(".home-diagram figcaption").innerText(), /xyY/);
       await fallback.getByRole("group", { name: "首页图示", exact: true }).getByRole("button", { name: "关闭", exact: true }).click();

@@ -91,7 +91,8 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
   const settlingRequestRef = useRef<number | null>(null);
   const userSwitchRef = useRef<{ requestId: number; label: string } | null>(null);
   const switchedTimerRef = useRef<number | null>(null);
-  const [switchTarget, setSwitchTarget] = useState<string | null>(null);
+  const [userSwitch, setUserSwitch] = useState<typeof userSwitchRef.current>(null);
+  const switchTarget = userSwitch?.label;
   const [switchedLabel, setSwitchedLabel] = useState<string | null>(null);
   const [loadingHint, setLoadingHint] = useState(false);
   const [statusChip, setStatusChip] = useState<{ text: string; kind: "busy" | "done" } | null>(null);
@@ -253,7 +254,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
     const pending = userSwitchRef.current;
     if (!pending || pending.requestId !== requestId) return;
     userSwitchRef.current = null;
-    setSwitchTarget(null);
+    setUserSwitch(null);
     setSwitchedLabel(pending.label);
     if (switchedTimerRef.current !== null) window.clearTimeout(switchedTimerRef.current);
     switchedTimerRef.current = window.setTimeout(() => {
@@ -275,7 +276,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
       settlingRequestRef.current = null;
       releaseFreezeFrame();
       userSwitchRef.current = null;
-      setSwitchTarget(null);
+      setUserSwitch(null);
 
       if (
         sdrFallback &&
@@ -454,7 +455,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
           completeUserSwitch(snapshot.requestId);
         } else if (userSwitchRef.current?.requestId === snapshot.requestId) {
           userSwitchRef.current = null;
-          setSwitchTarget(null);
+          setUserSwitch(null);
           // A conservative timeout is not a success claim, but a decoded, settled
           // paused image must not leave a permanent generic loading hint either.
           if (video.readyState >= 2 && !video.seeking) setPlaybackState(video.paused ? "ready" : "playing");
@@ -523,6 +524,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
     const pending = pendingPlaybackRef.current;
     if (
       !pending ||
+      userSwitch?.requestId !== pending.requestId ||
       userSwitchRef.current?.requestId !== pending.requestId ||
       pending.targetMasterId !== activeMasterId ||
       pending.targetMasterId !== currentMasterRef.current?.id ||
@@ -533,8 +535,8 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
     pendingPlaybackRef.current = null;
     releaseFreezeFrame(pending.requestId);
     userSwitchRef.current = null;
-    setSwitchTarget(null);
-  });
+    setUserSwitch(null);
+  }, [activeMasterId, releaseFreezeFrame, userSwitch]);
 
   const switchMaster = useCallback((master: VideoMaster) => {
     // A slow automatic probe must never override an explicit user choice.
@@ -552,7 +554,7 @@ export function MediaPlayer({ masters, poster, videoProjectId, addMaster }: Medi
     pendingPlaybackRef.current = snapshot;
     holdFreezeFrame(snapshot.requestId);
     userSwitchRef.current = { requestId: snapshot.requestId, label: master.label };
-    setSwitchTarget(master.label);
+    setUserSwitch(userSwitchRef.current);
     setSwitchedLabel(null);
     // A batched B→A→B while B is still loading leaves activeMasterId unchanged,
     // but invalidates B's old request. Start its replacement even without an ID change.

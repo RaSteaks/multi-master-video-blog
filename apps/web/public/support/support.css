@@ -52,10 +52,23 @@ section, main { scroll-margin-top: calc(var(--header-h) + 28px); }
 .skip-link:focus { top: 12px; }
 .skip-link:hover { color: var(--background); }
 
+/* Header: where you are on the left (a way back when a site page sent you,
+   then the breadcrumb), the main site's sections on the right. */
 .site-header { position: sticky; z-index: 3; top: 0; height: var(--header-h); display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 0 max(24px, calc((100% - 1240px) / 2)); background: var(--background); border-bottom: 1px solid var(--line-light); }
-.identity { display: inline-flex; align-items: center; gap: 12px; min-height: 40px; font-size: .9rem; font-weight: 600; }
-.site-header nav { display: flex; gap: 24px; font-size: .88rem; color: var(--secondary); }
-.site-header nav a { display: inline-flex; align-items: center; min-height: 40px; }
+.site-bar { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.back { display: inline-flex; flex: none; align-items: center; gap: 4px; min-height: 36px; padding: 0 14px 0 0; border-right: 1px solid var(--line-light); color: var(--secondary); font-size: .86rem; white-space: nowrap; transition: color 130ms; }
+.back svg { margin-left: -4px; }
+.crumbs { min-width: 0; }
+.crumbs ol { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.crumbs li { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.crumbs li:first-child { flex: none; }
+.crumbs li + li::before { content: "/"; color: var(--track-ahead); }
+.crumbs a { display: inline-flex; align-items: center; min-height: 40px; color: var(--secondary); font-size: .88rem; transition: color 130ms; }
+.identity { display: inline-flex; align-items: center; gap: 10px; min-width: 0; font-size: .9rem; font-weight: 600; white-space: nowrap; }
+.identity svg { flex: none; }
+.site-nav { display: flex; gap: 4px; flex: none; }
+.site-nav a { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: 6px; color: var(--secondary); font-size: .88rem; white-space: nowrap; transition: color 130ms, background-color 130ms; }
+.site-nav svg { flex: none; }
 main { max-width: 1240px; width: calc(100% - 48px); margin: auto; }
 
 /* Station signs are the page-wide numbering system: playback is a solid line,
@@ -240,10 +253,17 @@ footer { padding: 44px 0 56px; border-top: 1px solid var(--line-light); color: v
 footer p { max-width: 65em; }
 footer nav { display: flex; flex-wrap: wrap; gap: 12px 26px; margin: 24px 0; }
 footer a { text-decoration: underline; text-decoration-color: var(--line-light); text-underline-offset: 5px; }
-.back-top { display: inline-block; padding: 8px 0; }
+/* The guide ends where its subject begins: the videos it describes. */
+.footer-exit { display: flex; flex-wrap: wrap; gap: 8px 26px; }
+.footer-exit a { display: inline-block; padding: 8px 0; }
+.footer-exit a:first-child { color: var(--text); }
+.footer-exit a:first-child::after { content: " →"; }
+/* Hash links focus their section for keyboard users; the section is not a control. */
+main:focus, main > section:focus { outline: none; }
 
 @media (hover: hover) {
   a:hover, summary:hover { color: #fff; }
+  .site-nav a:hover { background: var(--raised); }
   .contents a:hover, .transfer:hover, footer a:hover { text-decoration-color: currentColor; border-color: currentColor; }
   a.sign:hover { background: var(--raised); color: #fff; }
   summary:hover { background: var(--surface); }
@@ -251,6 +271,17 @@ footer a { text-decoration: underline; text-decoration-color: var(--line-light);
   .station:hover .dot { stroke: var(--text); }
   .readout-controls button:not(:disabled):hover { background: var(--raised); border-color: var(--secondary); }
   .fig-controls button:not(:disabled):hover { background: var(--raised); color: var(--text); }
+}
+/* Below this width the sections no longer share the bar's row. The header box
+   steps aside (display: contents) so the bar alone stays pinned and the
+   section row scrolls away with the intro; the footer and bar keep the exits. */
+@media (max-width: 760px) {
+  :root { --header-h: 56px; }
+  .site-header { display: contents; }
+  .site-bar { position: sticky; z-index: 3; top: 0; height: var(--header-h); padding: 0 24px; background: var(--background); border-bottom: 1px solid var(--line-light); }
+  .site-nav { gap: 2px; padding: 6px 12px; border-bottom: 1px solid var(--line-light); overflow-x: auto; scrollbar-width: none; overscroll-behavior-inline: contain; }
+  .site-nav::-webkit-scrollbar { display: none; }
+  .site-nav a { padding: 0 12px; }
 }
 @media (max-width: 1100px) {
   .metadata-list > div { grid-template-columns: 200px minmax(0, 1fr); }
@@ -315,9 +346,12 @@ footer a { text-decoration: underline; text-decoration-color: var(--line-light);
 @media (max-width: 600px) {
   :root { --header-h: 56px; }
   main { width: calc(100% - 32px); }
-  .site-header { padding: 0 16px; gap: 10px; }
-  .site-header nav { gap: 18px; }
-  .identity { gap: 8px; font-size: .85rem; }
+  .site-bar { padding: 0 16px; gap: 12px; }
+  .back { padding-right: 12px; }
+  .crumbs ol, .crumbs li { gap: 8px; }
+  .identity { display: block; overflow: hidden; text-overflow: ellipsis; font-size: .85rem; }
+  .identity svg { display: none; }
+  .site-nav { padding-inline: 6px; }
   .intro { padding: 40px 0 28px; }
   h1 br { display: none; }
   h1 { font-size: 2.6rem; }
@@ -330,13 +364,34 @@ footer a { text-decoration: underline; text-decoration-color: var(--line-light);
   .disclosure { padding-right: 8px; }
   .fig-plate, .fig-short .fig-plate, .fig[data-fig="p1"] .fig-plate, .fig[data-fig="p5"] .fig-plate { aspect-ratio: 4 / 3; }
   .fig-tall .fig-plate, .fig-tall-m .fig-plate { aspect-ratio: 1 / 1; }
+  /* Give the stacked fields room without letting the aspect ratio widen the plate. */
+  .fig[data-fig="p2"] .fig-plate { width: 100%; min-height: 344px; }
   .fig-state { display: -webkit-box; height: 3.3em; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
   .fig-results { grid-template-columns: 1fr; gap: 0; }
   .fig-results dd { margin-bottom: 8px; }
 }
+/* Compact navigation is independent of the guide's 600px content/figure layout.
+   At phone widths the labels alone fit all five sections without scrolling. */
+@media (max-width: 420px) {
+  .site-nav { justify-content: space-between; }
+  .site-nav svg { display: none; }
+  .site-nav a { padding: 0 10px; }
+}
+/* Moving between this standalone document and the site's pages cross-fades
+   instead of cutting. The site's globals.css declares the same type, so the
+   fade runs in both directions; browsers without cross-document view
+   transitions simply load the page. */
+@view-transition { navigation: auto; types: document-hop; }
+/* Equal timing keeps the two plus-lighter layers summing to full opacity. */
+html:active-view-transition-type(document-hop)::view-transition-old(root) { animation: hop-out 220ms ease both; }
+html:active-view-transition-type(document-hop)::view-transition-new(root) { animation: hop-in 220ms ease both; }
+@keyframes hop-out { to { opacity: 0; } }
+@keyframes hop-in { from { opacity: 0; } }
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: 0ms !important; }
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
 @media (forced-colors: active) {
   :root { scrollbar-color: auto; }

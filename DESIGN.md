@@ -249,29 +249,26 @@ readout controls and the em-relative station signs use the `support*` radii.
   Home's three action slots use published project links and laboratory fallbacks;
   profile, layout breakpoints and visual tokens remain unchanged.
 
-- `HomeDiagram` draws reference line work on a canvas above the liquid background
-  and behind the home cards, in the empty side of the desktop composition and at
-  low opacity behind the cards at 1200px and below. It offers a vectorscope (standard,
-  points, ×2) and a waveform (luma, RGB or YCbCr parade, RGB overlay), both read from
-  one scan line of a real Rec.709 signal (`scope-signal.ts`: 75% or 100% bars, a hue
-  sweep or ColorChecker) with white, green, amber or signal-coloured phosphor, and
-  random grain per visit (`scope-drawing.ts`), or a slowly turning gamut solid
-  (`color-volume.ts`: Rec.709, P3-D65, Rec.2020 or ACES AP0, a random one each visit
-  unless pinned, in CIE XYZ, CIE xyY, CIELAB, Oklab, ICtCp or CAM16-UCS, with labelled axes).
-  XYZ and xyY are as measured, so AP0 keeps its D60 white and its negative Y. xyY
-  places chromaticity x/y on the base and relative luminance Y upward (white Y=1);
-  edges approaching black use their own limiting chromaticity, never an invented
-  common black xy. The six coordinate choices use two rows of three. The appearance
-  models adapt AP0 to D65. Everything drawn is computed from the real signal or model, and only
-  the solid animates; reduced motion leaves one still frame. Above 1200px, where it
-  clears every card, the solid can be dragged: a flick is speed-limited and eases back
-  to the resting turn, and reduced motion keeps dragging without the throw. By default each visit
-  draws one of the three diagrams at random, with every option of that diagram random
-  too; choosing a diagram pins it, and its signal, style and phosphor can each stay
-  random or be pinned. The Appearance
-  background tab chooses it per browser (`home-diagram.ts`), including off. Storage
-  events synchronize resets across tabs; an in-memory override exists only while
-  persistence fails, and also represents a local reset explicitly.
+- `HomeDiagram` sits in the empty side of the desktop composition. At 1200px
+  and below, the random diagram stays behind the cards at low opacity. A pinned
+  diagram sits between the cards and the contact strip, with its title above a
+  bounded canvas on an opaque reference surface so the axes and readouts remain
+  visible. The vectorscope and waveform read one Rec.709 scan line, with signal,
+  style and phosphor selectable in Appearance. The gamut solid covers display,
+  ACES and camera gamuts across labelled colour models and optional overlays.
+  XYZ and xyY use the gamut's own white, including D60 and negative Y for AP0.
+  In xyY, an edge approaching black keeps its own limiting chromaticity. The
+  appearance models adapt both ACES gamuts to D65. Transforms, chromaticity,
+  spectra, curves and pixel demos complete the eight diagram types.
+
+  A fixed scale fits the whole turn of each solid or transform. Above 1200px,
+  it can be dragged and a speed-limited flick eases back to the resting turn.
+  Reduced motion removes automatic playback and the throw. A native stage
+  slider on pinned timed diagrams keeps the comparison frames available by
+  keyboard and touch. Each visit samples a diagram and its options unless pinned.
+  The Appearance background tab stores the browser's choices, including off.
+  Storage events synchronize resets across tabs and an in-memory override keeps
+  local choices and resets working while persistence fails.
 
 - `SortableGrid` gives a signed-in author GitHub-style ordering on the videos,
   articles, albums and laboratory lists: a six-dot handle chip at each card's top

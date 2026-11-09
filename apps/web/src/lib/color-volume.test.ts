@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { COLOR_MODELS, GAMUTS, colorVolume, modelCoordinates } from "./color-volume";
+import { COLOR_MODELS, GAMUTS, VOLUME_OVERLAYS, colorVolume, gamutPrimaries, modelCoordinates } from "./color-volume";
+import { WAVELENGTHS, optimalColor } from "./spectral";
 
 describe("colour models", () => {
   it("places white on the neutral axis in the appearance models", () => {
     for (const gamut of GAMUTS) {
-      for (const model of COLOR_MODELS.filter(model => model !== "xyz" && model !== "xyy")) {
+      for (const model of COLOR_MODELS.filter(model => !["xyz", "xyy", "lms"].includes(model))) {
         const [, a, b] = modelCoordinates(gamut, model, [1, 1, 1]);
-        expect(Math.hypot(a, b), `${gamut} ${model}`).toBeLessThan(0.05);
+        // ZCAM leaves D65 white faintly colourful (colour-science gives Mz ≈ 0.42 of red's 52.6).
+        expect(Math.hypot(a, b), `${gamut} ${model}`).toBeLessThan(model === "zcam" ? 0.5 : 0.05);
       }
     }
   });
@@ -74,17 +76,79 @@ describe("colour models", () => {
       expect(modelCoordinates("rec2020", model, [0, 0, 0])[0], model).toBeCloseTo(0, 5);
     }
   });
+
+  // Reference values from colour-science 0.4.4 for linear sRGB red.
+  it.each([
+    { model: "cieluv", expected: [53.2371156, 175.0098222, 37.7650936], digits: 1 },
+    { model: "ipt", expected: [0.4561614, 0.6209296, 0.4428087], digits: 3 },
+    { model: "jzazbz", expected: [0.1343847, 0.1178853, 0.1118781], digits: 4 },
+  ] as const)("matches colour-science for sRGB red in $model", ({ model, expected, digits }) => {
+    const actual = modelCoordinates("rec709", model, [1, 0, 0]);
+    expected.forEach((value, index) => expect(actual[index]).toBeCloseTo(value, digits));
+  });
+
+  it("matches colour-science ZCAM lightness, colourfulness and hue for sRGB red", () => {
+    const [lightness, a, b] = modelCoordinates("rec709", "zcam", [1, 0, 0]);
+    expect(lightness).toBeCloseTo(51.197, 1);
+    expect(Math.hypot(a, b)).toBeCloseTo(52.599, 1);
+    expect(Math.atan2(b, a) * 180 / Math.PI).toBeCloseTo(42.477, 1);
+    expect(modelCoordinates("rec709", "zcam", [1, 1, 1])[0]).toBeCloseTo(100, 6);
+  });
+
+  it("puts the RGB-derived models on Rec.709 R′G′B′", () => {
+    const [luma, cb, cr] = modelCoordinates("rec709", "ycbcr", [1, 0, 0]);
+    expect(luma).toBeCloseTo(0.2126, 4);
+    expect(cb).toBeCloseTo(-0.2126 / 1.8556, 4);
+    expect(cr).toBeCloseTo(0.5, 4);
+    expect(modelCoordinates("rec709", "hsv", [1, 0, 0])[0]).toBeCloseTo(1, 6);
+    expect(modelCoordinates("rec709", "hsl", [1, 0, 0])[0]).toBeCloseTo(0.5, 6);
+    // Rec.2020 green lies outside Rec.709, so its red channel goes negative.
+    expect(modelCoordinates("rec2020", "hsv", [0, 1, 0])[0]).toBeGreaterThan(1);
+  });
+
+  it("normalises LMS so D65 white is one in every cone", () => {
+    modelCoordinates("rec709", "lms", [1, 1, 1]).forEach(value => expect(value).toBeCloseTo(1, 6));
+  });
+
+  it("matches the published primaries of the camera and ACES working gamuts", () => {
+    const xy = (gamut: (typeof GAMUTS)[number]) => gamutPrimaries(gamut).flat();
+    [0.713, 0.293, 0.165, 0.83, 0.128, 0.044].forEach((value, index) => expect(xy("ap1")[index]).toBeCloseTo(value, 4));
+    [0.8, 0.313, 0.1682, 0.9877, 0.079, -0.1155].forEach((value, index) => expect(xy("dwg")[index]).toBeCloseTo(value, 4));
+    [0.7347, 0.2653, 0.1424, 0.8576, 0.0991, -0.0308].forEach((value, index) => expect(xy("awg4")[index]).toBeCloseTo(value, 4));
+    [0.73, 0.28, 0.14, 0.855, 0.1, -0.05].forEach((value, index) => expect(xy("sgamut3")[index]).toBeCloseTo(value, 4));
+  });
 });
 
 describe("colorVolume", () => {
-  it("stays finite and inside the drawing for every gamut and model", () => {
+  it("stays finite and inside the drawing for every gamut, model and overlay", () => {
     for (const gamut of GAMUTS) {
       for (const model of COLOR_MODELS) {
-        const limit = colorVolume(gamut, model).segments.flatMap(segment => [...segment.from, ...segment.to]).map(Math.abs);
-        expect(limit.every(Number.isFinite), `${gamut} ${model}`).toBe(true);
-        expect(Math.max(...limit), `${gamut} ${model}`).toBeLessThan(1.45);
+        for (const overlay of VOLUME_OVERLAYS) {
+          const volume = colorVolume(gamut, model, overlay);
+          const limit = [...volume.segments, ...(volume.overlay ?? [])].flatMap(segment => [...segment.from, ...segment.to]).map(Math.abs);
+          expect(limit.every(Number.isFinite), `${gamut} ${model} ${overlay}`).toBe(true);
+          expect(Math.max(...limit), `${gamut} ${model} ${overlay}`).toBeLessThan(1.45);
+          expect((volume.overlay?.length ?? 0) > 0, `${gamut} ${model} ${overlay}`).toBe(overlay !== "none");
+        }
       }
     }
+  });
+
+  it("closes the optimal colours at the D65 white and puts sRGB inside them", () => {
+    const [x, y, z] = optimalColor(0, WAVELENGTHS.length);
+    expect(x).toBeCloseTo(0.9505, 3);
+    expect(y).toBeCloseTo(1, 6);
+    expect(z).toBeCloseTo(1.089, 2);
+    const reach = (segments: { from: readonly number[] }[]) => Math.max(...segments.map(({ from }) => Math.hypot(from[0], from[1])));
+    const volume = colorVolume("rec709", "cielab", "optimal");
+    expect(reach(volume.overlay!)).toBeGreaterThan(reach(volume.segments));
+  });
+
+  it("labels the three gradient paths and bends the encoded one through darker greys", () => {
+    const volume = colorVolume("rec709", "oklab", "gradient");
+    expect(volume.marks?.map(mark => mark.label)).toEqual(["sRGB", "线性", "Oklab"]);
+    const [encoded, light] = volume.marks!;
+    expect(encoded.at[2]).toBeLessThan(light.at[2]);
   });
 
   it("draws a wider display gamut with more chroma", () => {

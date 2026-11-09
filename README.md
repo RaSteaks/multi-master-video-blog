@@ -89,7 +89,7 @@ multi-master-video-blog/
 
 ### 前置依赖
 
-- **Node.js 22 LTS** `>= 22.12.0 < 23`
+- **Node.js 22 LTS** `>= 22.13.0 < 23`
 - **FFmpeg** + **FFprobe**（加入系统 PATH 或通过 `.env` 指定路径）
 - **PostgreSQL**
 - **Windows 11** / Windows Server 或 **Linux**；生产安装见 [部署](#部署)
@@ -333,7 +333,7 @@ Linux 与 Docker 共用 `low-2gb`、`low-4gb` 资源档位，默认将重处理�
 
 #### 1. 准备环境与目录
 
-需要 **systemd、Node.js 22、npm、PostgreSQL 17、Nginx、FFmpeg / FFprobe、Git、curl、tar、util-linux**。服务单元使用 `/usr/bin/node`，请确认该路径安装的是 Node 22。FFmpeg 需匹配 FFprobe 版本；HDR 自动生成 SDR 还需要 libplacebo、zscale、Dolby Vision 支持和可用 Vulkan。
+需要 **systemd、Node.js 22.13 或以上的 22.x、npm、PostgreSQL 17、Nginx、FFmpeg / FFprobe、Git、curl、tar、util-linux**。服务单元使用 `/usr/bin/node`。FFmpeg 需匹配 FFprobe 版本；HDR 自动生成 SDR 还需要 libplacebo、zscale、Dolby Vision 支持和可用 Vulkan。
 
 以下是**首次安装**步骤，从仓库根目录执行，并使用已包含部署文件的已提交版本。已有安装请使用后面的更新流程。
 

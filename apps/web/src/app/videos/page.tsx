@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { ListHeader } from "@/components/ListHeader";
 import { MediaCard } from "@/components/MediaCard";
@@ -29,12 +30,13 @@ export default async function VideosPage() {
                   title={video.title}
                   description={video.description || "No description yet."}
                   media={cover ? (
-                    <img
+                    <Image
                       data-vt="cover"
                       alt={`Cover image for ${video.title}`}
                       src={cover}
                       width={960}
                       height={540}
+                      unoptimized
                       loading={index < 3 ? "eager" : "lazy"}
                       fetchPriority={index === 0 ? "high" : "auto"}
                       decoding="async"

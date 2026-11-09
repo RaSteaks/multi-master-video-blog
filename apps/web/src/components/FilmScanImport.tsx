@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import { useDroppedFiles } from "@/lib/dropped-files";
 import { authorHeaders, canAuthorize, observeAuthorResponse, useAuthorSession } from "@/lib/author-session";
 import { AuthorCredential } from "@/components/AuthorCredential";
@@ -111,6 +112,13 @@ const DEFAULT_ADJUSTMENTS: FilmAdjustments = {
   highlightRolloff: 0.25,
 };
 
+const FILM_METADATA_FIELDS = [
+  ["filmStock", "请输入胶卷型号。"],
+  ["iso", "ISO 必须是 1 到 25600 之间的整数。"],
+  ["pushPull", "迫冲/减冲需为 -5 至 5 档，以 0.5 档为单位。"],
+] as const;
+type FilmUploadField = (typeof FILM_METADATA_FIELDS)[number][0] | "token";
+
 export function FilmScanImport({
   albums,
   token,
@@ -137,10 +145,23 @@ export function FilmScanImport({
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
+  const [invalidField, setInvalidField] = useState<FilmUploadField | null>(null);
+  const errorId = useId();
   const [publish, setPublish] = useState(true);
   const [previewRevision, setPreviewRevision] = useState(0);
+  const jobId = job?.id;
+  const jobAlbumId = job?.albumId;
+  const jobStatus = job?.status;
+  const csrf = author.author ? author.csrf : null;
+
+  function clearFieldError(field: FilmUploadField) {
+    if (invalidField !== field) return;
+    setInvalidField(null);
+    setError("");
+  }
 
   function selectFilmStockPreset(preset: FilmStockPreset) {
+    if (invalidField === "filmStock" || invalidField === "iso") clearFieldError(invalidField);
     setFilmStock(formatFilmStockPreset(preset));
     setFilmType(preset.film_type);
     setIso(preset.nominal_iso);
@@ -149,23 +170,24 @@ export function FilmScanImport({
   }
 
   useEffect(() => {
-    if (!job || !["uploaded", "analyzing"].includes(job.status)) return;
+    if (jobId === undefined || jobAlbumId === undefined || (jobStatus !== "uploaded" && jobStatus !== "analyzing")) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
+    const jobUrl = `/api/albums/${jobAlbumId}/film-scans/${jobId}`;
     // Start the next poll only after completion; stale jobs never overwrite newer state.
     const poll = async () => {
       if (controller.signal.aborted) return;
       if (document.hidden) { timer = setTimeout(poll, 5000); return; }
       try {
         const response = await albumApiRequest<{ status: string; job: FilmJob }>(
-          `/api/albums/${job.albumId}/film-scans/${job.id}?progressOnly=true`,
+          `${jobUrl}?progressOnly=true`,
           token, { signal: controller.signal },
         );
         if (controller.signal.aborted) return;
         if (response.job.status === "review_required") {
           // Fetch frames once when analysis completes, not on every progress tick.
           const detail = await albumApiRequest<{ status: string; job: FilmJob }>(
-            `/api/albums/${job.albumId}/film-scans/${job.id}`, token, { signal: controller.signal },
+            jobUrl, token, { signal: controller.signal },
           );
           if (controller.signal.aborted) return;
           setJob(detail.job);
@@ -181,17 +203,29 @@ export function FilmScanImport({
     };
     timer = setTimeout(poll, 1400);
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [job?.id, job?.albumId, job?.status, token, author.author ? author.csrf : null]);
+  }, [jobId, jobAlbumId, jobStatus, token, csrf]);
 
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setInvalidField(null);
     if (!canAuthorize(token)) {
       setError("请输入管理员令牌。");
+      setInvalidField("token");
+      event.currentTarget.querySelector<HTMLInputElement>('input[type="password"]')?.focus();
       return;
     }
     if (!albumId || !files.length) {
       setError("请选择目标相簿和至少一个扫描原档。");
+      return;
+    }
+    // Keep the field constraints in the controls and show their failures in the form's own language.
+    for (const [name, message] of FILM_METADATA_FIELDS) {
+      const invalid = event.currentTarget.querySelector<HTMLInputElement>(`input[name="${name}"]:invalid`);
+      if (!invalid) continue;
+      setError(message);
+      setInvalidField(name);
+      invalid.focus();
       return;
     }
     const oversized = files.find((file) => file.size > 2 * 1024 ** 3);
@@ -414,7 +448,7 @@ export function FilmScanImport({
   }
 
   return (
-    <form className="film-scan-form" onSubmit={upload}>
+    <form className="film-scan-form" onSubmit={upload} noValidate>
       <div className="film-scan-intro">
         <div>
           <p className="eyebrow">Film scan intake</p>
@@ -431,9 +465,14 @@ export function FilmScanImport({
         <input
           type="password"
           value={token}
-          onChange={(event) => setToken(event.target.value)}
+          onChange={(event) => {
+            setToken(event.target.value);
+            clearFieldError("token");
+          }}
           autoComplete="new-password"
           required={!author.author}
+          aria-invalid={invalidField === "token" || undefined}
+          aria-describedby={invalidField === "token" ? errorId : undefined}
         />
       </label></AuthorCredential>
       <div className="film-scan-fields">
@@ -471,18 +510,28 @@ export function FilmScanImport({
         <FilmStockCombobox
           value={filmStock}
           token={token}
-          onChange={setFilmStock}
+          errorId={invalidField === "filmStock" ? errorId : undefined}
+          onChange={(value) => {
+            setFilmStock(value);
+            clearFieldError("filmStock");
+          }}
           onSelect={selectFilmStockPreset}
         />
         <label className="album-field">
           <span>ISO</span>
           <input
+            name="iso"
             type="number"
             min={1}
             max={25600}
             value={iso}
-            onChange={(event) => setIso(Number(event.target.value))}
+            onChange={(event) => {
+              setIso(Number(event.target.value));
+              clearFieldError("iso");
+            }}
             required
+            aria-invalid={invalidField === "iso" || undefined}
+            aria-describedby={invalidField === "iso" ? errorId : undefined}
           />
         </label>
         <SelectField label="冲洗工艺" value={process} onChange={setProcess}>
@@ -495,13 +544,18 @@ export function FilmScanImport({
         <label className="album-field">
           <span>迫冲/减冲</span>
           <input
+            name="pushPull"
             type="number"
             min={-5}
             max={5}
             step={0.5}
-            aria-describedby="film-push-pull-help"
+            aria-invalid={invalidField === "pushPull" || undefined}
+            aria-describedby={invalidField === "pushPull" ? `film-push-pull-help ${errorId}` : "film-push-pull-help"}
             value={pushPull}
-            onChange={(event) => setPushPull(event.target.value)}
+            onChange={(event) => {
+              setPushPull(event.target.value);
+              clearFieldError("pushPull");
+            }}
           />
           <small id="film-push-pull-help">单位：档。正值为迫冲，负值为减冲，0 为正常冲洗；例如 +1 为迫冲 1 档，-1 为减冲 1 档。</small>
         </label>
@@ -522,7 +576,7 @@ export function FilmScanImport({
         {files.length ? <small>{files.map(file => file.name).join("、")}</small> : null}
       </label>
       {busy ? <progress max={100} value={progress} /> : null}
-      {error ? <p className="album-form-feedback is-error" role="alert">{error}</p> : null}
+      {error ? <p id={errorId} className="album-form-feedback is-error" role="alert">{error}</p> : null}
       <button
         className="album-action-button album-action-button--primary album-submit"
         type="submit"
@@ -537,11 +591,13 @@ export function FilmScanImport({
 function FilmStockCombobox({
   value,
   token,
+  errorId,
   onChange,
   onSelect,
 }: {
   value: string;
   token: string;
+  errorId?: string;
   onChange: (value: string) => void;
   onSelect: (preset: FilmStockPreset) => void;
 }) {
@@ -709,8 +765,11 @@ function FilmStockCombobox({
       <div className="film-stock-combobox">
         <input
           id={inputId}
+          name="filmStock"
           role="combobox"
           aria-labelledby={`${inputId}-label`}
+          aria-invalid={Boolean(errorId) || undefined}
+          aria-describedby={errorId}
           aria-autocomplete="list"
           aria-expanded={open}
           aria-controls={listboxId}
@@ -861,11 +920,19 @@ function FilmReview({
   const adjustmentSignature = JSON.stringify(adjustments);
   const persistedAdjustmentSignature = JSON.stringify(job.rollAdjustments);
   const hasUnsavedAdjustments = adjustmentSignature !== persistedAdjustmentSignature;
+  const [lastSavedSignature, setLastSavedSignature] = useState(persistedAdjustmentSignature);
 
-  useEffect(() => {
+  // A refreshed job can carry a new object with the same saved values. Keep any local draft in that case.
+  if (lastSavedSignature !== persistedAdjustmentSignature) {
+    setLastSavedSignature(persistedAdjustmentSignature);
     setAdjustments(job.rollAdjustments);
     setPreviewWarnings(null);
-  }, [persistedAdjustmentSignature]);
+  }
+
+  const previewBody = JSON.stringify({
+    frameId: activeFrameId,
+    rollAdjustments: hasUnsavedAdjustments ? adjustments : undefined,
+  });
 
   useEffect(() => {
     if (job.frames.some((frame) => frame.id === activeFrameId)) return;
@@ -893,10 +960,7 @@ function FilmReview({
         token,
         {
           method: "POST",
-          body: JSON.stringify({
-            frameId: activeFrameId,
-            rollAdjustments: hasUnsavedAdjustments ? adjustments : undefined,
-          }),
+          body: previewBody,
         },
       ),
       onSuccess: (response) => {
@@ -904,26 +968,26 @@ function FilmReview({
           ...current,
           [activeFrameId]: (current[activeFrameId] ?? 0) + 1,
         }));
-        if (
-          adjustments.maskMode !== response.rollAdjustments.maskMode ||
-          JSON.stringify(adjustments.maskRgb) !== JSON.stringify(response.rollAdjustments.maskRgb) ||
-          JSON.stringify(adjustments.filmBaseSample) !== JSON.stringify(response.rollAdjustments.filmBaseSample)
-        ) {
-          setAdjustments((current) => ({
+        const rendered = response.rollAdjustments;
+        setAdjustments((current) => {
+          if (current.maskMode === rendered.maskMode &&
+            JSON.stringify(current.maskRgb) === JSON.stringify(rendered.maskRgb) &&
+            JSON.stringify(current.filmBaseSample) === JSON.stringify(rendered.filmBaseSample)) return current;
+          return {
             ...current,
-            maskMode: response.rollAdjustments.maskMode,
-            maskRgb: response.rollAdjustments.maskRgb,
-            filmBaseSample: response.rollAdjustments.filmBaseSample,
-          }));
-        }
-        setPreviewWarnings(response.warnings ?? job.warnings);
+            maskMode: rendered.maskMode,
+            maskRgb: rendered.maskRgb,
+            filmBaseSample: rendered.filmBaseSample,
+          };
+        });
+        setPreviewWarnings(response.warnings ?? null);
         setPreviewState("synced");
       },
       onError: () => setPreviewState("error"),
     });
   }, [
     activeFrameId,
-    adjustmentSignature,
+    previewBody,
     busy,
     job.albumId,
     job.id,
@@ -1274,6 +1338,7 @@ function useAuthenticatedImage(
   revision = 0,
 ) {
   const author = useAuthorSession();
+  const csrf = author.author ? author.csrf : null;
   const [image, setImage] = useState<string | null>(null);
   useEffect(() => {
     if (!url) {
@@ -1306,7 +1371,7 @@ function useAuthenticatedImage(
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [revision, token, url, author.author ? author.csrf : null]);
+  }, [revision, token, url, csrf]);
   return image;
 }
 
@@ -1341,7 +1406,7 @@ function FilmFrameThumbnail({
     >
       <span className="film-contact-frame-image">
         {preview ? (
-          <img src={preview} alt="" />
+          <Image src={preview} alt="" fill unoptimized loading="eager" />
         ) : (
           <i aria-hidden="true" />
         )}
@@ -1454,7 +1519,7 @@ function FilmFrameCard({
     <article className={`film-frame${frame.accepted ? "" : " is-rejected"}`}>
       <div className="film-frame-preview">
         <div className="film-frame-image">
-          {preview ? <img src={preview} alt={`胶片帧 ${index + 1} 审核预览`} /> : <span>正在载入预览…</span>}
+          {preview ? <Image src={preview} alt={`胶片帧 ${index + 1} 审核预览`} fill unoptimized loading="eager" /> : <span>正在载入预览…</span>}
           <div className="film-frame-badges">
             <strong>#{String(index + 1).padStart(2, "0")}</strong>
             <span className={frame.confidence < 0.85 ? "is-low" : ""}>{Math.round(frame.confidence * 100)}%</span>
@@ -1478,6 +1543,7 @@ function FilmFrameCard({
             onPointerCancel={() => setCropGesture(null)}
             onClick={sampleFilmBase}
           >
+            {/* eslint-disable-next-line @next/next/no-img-element -- The decoded source dimensions size the crop and sampling surface. */}
             <img src={sourcePreview} alt="" draggable={false} />
             <div
               className="film-crop-box"

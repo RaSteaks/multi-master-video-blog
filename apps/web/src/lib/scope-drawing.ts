@@ -11,7 +11,7 @@ import {
 export type Size = { context: CanvasRenderingContext2D; side: number };
 
 const INK = "226 232 238";
-const FONT = '10px "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace';
+export const FONT = '10px "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace';
 const PHOSPHOR_RGB: Record<Exclude<Phosphor, "signal">, string> = { white: INK, green: "116 255 150", amber: "255 190 96" };
 // The classic skin-tone line, degrees from the +Cb axis.
 const SKIN_TONE_ANGLE = 123;

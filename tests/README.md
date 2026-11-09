@@ -6,12 +6,13 @@
 
 ## 常用入口
 
-在仓库根目录使用 Node 22 和 npm：
+在仓库根目录使用 Node.js 22.13 或以上的 22.x 和 npm：
 
 | 命令 | 范围与条件 |
 | --- | --- |
 | `npm test` | 顺序运行下列三组，每组一次；任一失败即停止 |
 | `npm run test:web` | `apps/web/src/lib/*.test.ts`，Vitest，前端纯逻辑 |
+| `npm --workspace @multi-master-video-blog/web run lint` | `apps/web/src`，ESLint，Next.js 推荐规则与 React Hooks 检查 |
 | `npm run test:node` | `tests/*.test.cjs` 与 `scripts/test-manager-*.cjs`，隔离目录、服务和进程 |
 | `npm run test:api` | `apps/api/test/*.test.cjs`，包含真实媒体文件处理 |
 

@@ -270,6 +270,11 @@ a {
 }
 
 /* ---- Scrollbar ---- */
+:where(*) {
+  scrollbar-color: var(--line-light) var(--background);
+  scrollbar-width: thin;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -587,6 +592,25 @@ html[data-vt-direction="back"]::view-transition-image-pair(route-wipe-line) {
    back again, so it starts and ends fully off screen; top and bottom stay
    2 × run apart throughout. Forward the top leads (on the right); back the
    top leads too (on the left), mirroring the slant. */
+/* Full document loads (the standalone /support guide uses them) cross-fade
+   instead of wiping: there is no PageTransition on the other side to set the
+   wipe geometry or draw its divider. public/support/support.css declares the
+   same type so the fade runs both ways. In-app navigations keep the wipe, as
+   they never carry this type. */
+@view-transition { navigation: auto; types: document-hop; }
+html:active-view-transition-type(document-hop)::view-transition-old(root) {
+  animation: vt-hide 220ms ease both;
+  mix-blend-mode: plus-lighter;
+}
+html:active-view-transition-type(document-hop)::view-transition-new(root) {
+  animation: vt-show 220ms ease both;
+  mix-blend-mode: plus-lighter;
+}
+
+@keyframes vt-show {
+  from { opacity: 0; }
+}
+
 @keyframes vt-wipe-reveal {
   from { clip-path: polygon(0 0, 100% 0, 100% var(--wipe-top, 0px),
     calc(-1 * var(--wipe-top, 0px) * tan(var(--wipe-slant))) var(--wipe-top, 0px),
@@ -5735,6 +5759,8 @@ h3 {
 /* ---- Mobile portrait: single DOM flex flow (replaces dual-DOM system) ---- */
 @media (max-width: 640px) and (orientation: portrait) {
   .orbital-home {
+    --home-column-width: 430px;
+    --home-column-gutter: clamp(12px, 4vw, 18px);
     min-height: 100svh;
     padding: 0;
     place-items: stretch center;
@@ -5746,11 +5772,11 @@ h3 {
     flex-direction: column;
     align-items: center;
     min-height: 100svh;
-    width: min(430px, 100%);
+    width: min(var(--home-column-width), 100%);
     margin: 0 auto;
     padding:
       clamp(44px, 7svh, 72px)
-      clamp(12px, 4vw, 18px)
+      var(--home-column-gutter)
       clamp(18px, 4svh, 34px);
     gap: clamp(12px, 2.4svh, 22px);
     /* Ensure it's always visible (override the grid-mode visibility state) */
@@ -6537,8 +6563,13 @@ h3 {
 
 .album-field textarea {
   min-height: 92px;
-  resize: vertical;
+  max-height: 16rem;
+  field-sizing: content;
   line-height: 1.55;
+}
+
+.resize-none {
+  resize: none;
 }
 
 .album-field input:focus,
@@ -6826,14 +6857,13 @@ h3 {
 
 .album-pair-preview {
   position: relative;
+  min-height: 58px;
   overflow: hidden;
   border-radius: 3px;
   background: #090a0b;
 }
 
 .album-pair-preview img {
-  width: 76px;
-  height: 58px;
   object-fit: cover;
 }
 
@@ -7659,10 +7689,6 @@ h3 {
 
   .album-pair-row {
     grid-template-columns: 64px minmax(120px, 1fr) minmax(140px, 1fr);
-  }
-
-  .album-pair-preview img {
-    width: 64px;
   }
 
   .album-pair-row > .album-field:nth-of-type(2) {
@@ -8572,6 +8598,7 @@ h3 {
 .film-contact-frame.is-rejected { opacity: .42; }
 
 .film-contact-frame-image {
+  position: relative;
   display: grid;
   height: 94px;
   place-items: center;
@@ -9212,8 +9239,7 @@ object {
 /* Prevent long project names from contributing a min-content width to the home grid. */
 .orbital-stage, .home-action-row { min-width: 0; }
 
-/* The stage keeps the space above the contact strip, which lies along the
-   bottom of the first screen. */
+/* The stage fills the space above the contact strip when the page fits on one screen. */
 .orbital-home {
   grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
   padding-bottom: max(2px, env(safe-area-inset-bottom));
@@ -9240,15 +9266,15 @@ object {
   }
 }
 
-/* Reference signals behind the profile. Line work only, so it reads as part of
-   the room rather than a picture. It sits in the empty side of the composition,
-   and behind the cards where there is no empty side. */
+/* Reference signals in the empty side of the composition. On narrower screens,
+   a pinned diagram moves into the page while the random one stays ambient. */
 .home-diagram {
   position: absolute;
   z-index: 0;
   top: max(38dvh, 250px);
   left: calc(50% + 236px);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   width: min(calc(50% - 276px), 480px);
   margin: 0;
   pointer-events: none;
@@ -9257,6 +9283,7 @@ object {
 
 .home-diagram canvas {
   display: block;
+  order: -1;
   width: 100%;
   aspect-ratio: 1;
   opacity: 0.6;
@@ -9269,6 +9296,51 @@ object {
   letter-spacing: 0.04em;
   margin-top: -16px;
   text-align: center;
+}
+
+.home-diagram[data-pinned] figcaption {
+  color: var(--text-secondary);
+}
+
+.home-diagram-frames {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-diagram-frames {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    column-gap: 12px;
+    width: min(100%, 288px);
+    margin: 10px auto 0;
+    padding: 8px 12px 2px;
+    border: 1px solid var(--line-light);
+    border-radius: var(--radius-lg);
+    background: var(--background);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    pointer-events: auto;
+  }
+
+  .home-diagram-frames span {
+    color: var(--text);
+    text-align: right;
+  }
+
+  .home-diagram-frames input {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-height: 32px;
+    margin: 0;
+    accent-color: var(--accent-readable);
+    cursor: pointer;
+  }
+
+  .home-diagram-frames input:focus-visible {
+    outline: 2px solid var(--accent-readable);
+    outline-offset: 1px;
+  }
 }
 
 /* No empty side here: it runs behind the cards, so it stays well under the text. */
@@ -9291,19 +9363,53 @@ object {
 }
 
 @media (max-width: 1200px) {
-  .home-diagram {
+  .home-diagram:not([data-pinned]) {
     top: 0;
     left: 50%;
     width: min(150vw, 760px);
     transform: translateX(-50%);
   }
 
-  .home-diagram canvas {
+  .home-diagram:not([data-pinned]) canvas {
     opacity: 0.2;
   }
 
-  .home-diagram figcaption {
+  .home-diagram:not([data-pinned]) figcaption {
     display: none;
+  }
+
+  .orbital-home:has(> .home-diagram[data-pinned]) {
+    grid-template-rows: minmax(0, 1fr) auto auto;
+  }
+
+  .home-diagram[data-pinned] {
+    position: relative;
+    inset: auto;
+    width: min(100%, 480px);
+    margin-top: 16px;
+    padding: 10px 8px 12px;
+    border: 1px solid var(--line-light);
+    border-radius: var(--radius-lg);
+    background: var(--background);
+    pointer-events: auto;
+    transform: none;
+  }
+
+  .home-diagram[data-pinned] figcaption {
+    margin: 0;
+    font-size: 0.75rem;
+  }
+
+  .home-diagram[data-pinned] canvas {
+    /* Keep manual controls above the plot, clear of the floating page controls. */
+    order: 1;
+    opacity: 1;
+  }
+}
+
+@media (max-width: 640px) and (orientation: portrait) {
+  .home-diagram[data-pinned] {
+    width: calc(min(var(--home-column-width), 100%) - 2 * var(--home-column-gutter));
   }
 }
 

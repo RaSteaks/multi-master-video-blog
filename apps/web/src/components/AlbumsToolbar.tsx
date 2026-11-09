@@ -290,9 +290,11 @@ function AlbumModal({
 function TokenField({
   token,
   setToken,
+  errorId,
 }: {
   token: string;
   setToken: (value: string) => void;
+  errorId?: string;
 }) {
   const author = useAuthorSession();
   return (
@@ -305,11 +307,16 @@ function TokenField({
         autoComplete="new-password"
         spellCheck={false}
         required={!author.author}
+        aria-invalid={Boolean(errorId) || undefined}
+        aria-describedby={errorId}
       />
       <small>仅保存在当前页面组件内，不会写入浏览器存储。</small>
     </label></AuthorCredential>
   );
 }
+
+const TOKEN_REQUIRED = "请输入管理员令牌。";
+type AlbumCreateField = "token" | "title" | "slug";
 
 function CreateAlbumForm({
   token,
@@ -325,13 +332,30 @@ function CreateAlbumForm({
   const [description, setDescription] = useState("");
   const [published, setPublished] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ message: string; field?: AlbumCreateField } | null>(null);
+  const errorId = useId();
+
+  function clearError(field: AlbumCreateField) {
+    if (error?.field === field) setError(null);
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError("");
+    setError(null);
     if (!canAuthorize(token)) {
-      setError("请输入管理员令牌。");
+      setError({ field: "token", message: TOKEN_REQUIRED });
+      event.currentTarget.querySelector<HTMLInputElement>('input[type="password"]')?.focus();
+      return;
+    }
+    if (!title.trim()) {
+      setError({ field: "title", message: "请输入相簿标题。" });
+      event.currentTarget.querySelector<HTMLInputElement>('input[name="title"]')?.focus();
+      return;
+    }
+    const invalidSlug = event.currentTarget.querySelector<HTMLInputElement>('input[name="slug"]:invalid');
+    if (invalidSlug) {
+      setError({ field: "slug", message: "Slug 只能用小写字母或数字，并用单个连字符分隔。" });
+      invalidSlug.focus();
       return;
     }
     setBusy(true);
@@ -345,34 +369,49 @@ function CreateAlbumForm({
       });
       onCreated(response.album);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "创建相簿失败。");
+      setError({ message: cause instanceof Error ? cause.message : "创建相簿失败。" });
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <form className="album-form" onSubmit={submit}>
-      <TokenField token={token} setToken={setToken} />
+    <form className="album-form" onSubmit={submit} noValidate>
+      <TokenField token={token} errorId={error?.field === "token" ? errorId : undefined} setToken={(value) => {
+        setToken(value);
+        clearError("token");
+      }} />
       <div className="album-form-grid">
         <label className="album-field">
           <span>标题</span>
           <input
+            name="title"
             value={title}
-            onChange={(event) => setTitle(event.target.value)}
+            onChange={(event) => {
+              setTitle(event.target.value);
+              clearError("title");
+            }}
             maxLength={200}
             autoFocus
             required
+            aria-invalid={error?.field === "title" || undefined}
+            aria-describedby={error?.field === "title" ? errorId : undefined}
           />
         </label>
         <label className="album-field">
           <span>Slug（可选）</span>
           <input
+            name="slug"
             value={slug}
-            onChange={(event) => setSlug(event.target.value.toLowerCase())}
+            onChange={(event) => {
+              setSlug(event.target.value.toLowerCase());
+              clearError("slug");
+            }}
             maxLength={200}
             pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
             placeholder="night-walk"
+            aria-invalid={error?.field === "slug" || undefined}
+            aria-describedby={error?.field === "slug" ? errorId : undefined}
           />
           <small>留空时从英文标题生成；无法生成时自动使用日期与短 ID。</small>
         </label>
@@ -380,6 +419,7 @@ function CreateAlbumForm({
       <label className="album-field">
         <span>说明</span>
         <textarea
+          className="resize-none"
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           maxLength={5000}
@@ -397,7 +437,7 @@ function CreateAlbumForm({
           <small>关闭后保存为草稿，仅管理员列表可见。</small>
         </span>
       </label>
-      <FormFeedback error={error} />
+      <FormFeedback error={error?.message} id={errorId} />
       <button
         className="album-action-button album-action-button--primary album-submit"
         type="submit"
@@ -444,6 +484,7 @@ function UploadAlbumPhotosForm({
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [showValidation, setShowValidation] = useState(false);
+  const errorId = useId();
 
   useEffect(() => {
     if (!options.some((album) => String(album.id) === albumId)) {
@@ -510,7 +551,8 @@ function UploadAlbumPhotosForm({
     setSuccess("");
 
     if (!canAuthorize(token)) {
-      setError("请输入管理员令牌。");
+      setError(TOKEN_REQUIRED);
+      event.currentTarget.querySelector<HTMLInputElement>('input[type="password"]')?.focus();
       return;
     }
     if (!albumId) {
@@ -570,9 +612,12 @@ function UploadAlbumPhotosForm({
   }
 
   return (
-    <form className="album-form album-upload-form" onSubmit={submit}>
+    <form className="album-form album-upload-form" onSubmit={submit} noValidate>
       <section className="album-upload-context" aria-label="上传目标">
-        <TokenField token={token} setToken={setToken} />
+        <TokenField token={token} errorId={error === TOKEN_REQUIRED ? errorId : undefined} setToken={(value) => {
+          setToken(value);
+          if (error === TOKEN_REQUIRED) setError("");
+        }} />
         <div className="album-target-row">
           <label className="album-field">
             <span>目标相簿</span>
@@ -695,7 +740,7 @@ function UploadAlbumPhotosForm({
         </section>
       ) : null}
 
-      <FormFeedback error={error} success={success} />
+      <FormFeedback error={error} success={success} id={errorId} />
       {busy ? (
         <div className="album-progress" aria-live="polite">
           <progress max={100} value={progress} />
@@ -767,6 +812,7 @@ function AlbumSettings({
         <label className="album-field">
           <span>说明</span>
           <textarea
+            className="resize-none"
             value={description}
             onChange={(event) => setDescription(event.target.value)}
             maxLength={5000}
@@ -804,13 +850,16 @@ function AlbumSettings({
 function FormFeedback({
   error,
   success,
+  id,
 }: {
   error?: string;
   success?: string;
+  id?: string;
 }) {
   if (!error && !success) return null;
   return (
     <p
+      id={id}
       className={`album-form-feedback${error ? " is-error" : " is-success"}`}
       role={error ? "alert" : "status"}
     >

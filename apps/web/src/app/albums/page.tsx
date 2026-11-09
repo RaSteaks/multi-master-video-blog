@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import Link from "next/link";
 import { AlbumsToolbar } from "@/components/AlbumsToolbar";
 import { ListHeader } from "@/components/ListHeader";
@@ -62,11 +63,12 @@ export default async function AlbumsPage({
                       <div className="album-card-frame">
                         <span className="album-frame-index" aria-hidden="true" />
                         {cover ? (
-                          <img
+                          <Image
                             src={cover}
                             alt=""
                             width={960}
                             height={640}
+                            unoptimized
                             loading={index < 2 ? "eager" : "lazy"}
                             fetchPriority={index === 0 ? "high" : "auto"}
                             decoding="async"

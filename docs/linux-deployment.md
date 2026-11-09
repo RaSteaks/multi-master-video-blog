@@ -29,7 +29,7 @@
 
 ## 原生 systemd 首次安装
 
-以下命令是管理员显式部署步骤，不会由开发测试自动执行。需要 systemd、Node 22（`/usr/bin/node`）、npm、PostgreSQL 17、Nginx、curl、Git、tar、util-linux。示例路径固定为 `/opt/video-blog/current` 和 `/var/lib/video-blog`；改变路径时同步修改单元和 Nginx alias。
+以下命令是管理员显式部署步骤，不会由开发测试自动执行。需要 systemd、Node.js 22.13 或以上的 22.x（`/usr/bin/node`）、npm、PostgreSQL 17、Nginx、curl、Git、tar、util-linux。示例路径固定为 `/opt/video-blog/current` 和 `/var/lib/video-blog`；改变路径时同步修改单元和 Nginx alias。
 
 1. 创建专用服务用户和持久目录：
 

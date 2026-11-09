@@ -1,5 +1,7 @@
 "use client";
 
+import Image from "next/image";
+
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -18,7 +20,7 @@ function FrameContent({ frame, live }: { frame: ContactFrame; live: boolean }) {
     <>
       <div className="contact-frame-picture" data-vt={frame.morphsCover ? "cover" : "frame"}>
         {frame.cover
-          ? <img src={frame.cover} alt="" width={93} height={62} loading="lazy" decoding="async" />
+          ? <Image src={frame.cover} alt="" width={93} height={62} unoptimized loading="lazy" decoding="async" />
           : frame.preview ? <ProjectPreview project={frame.preview} active={live} fallback={title} /> : title}
       </div>
       <span className="contact-frame-label">

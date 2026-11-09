@@ -46,6 +46,7 @@ export function AuthorMenu() {
   const device = useAuthorDevice();
   const session = useAuthorSession();
   const activity = useAuthorTasks(session.author);
+  const { failed, acknowledgeFailures } = activity;
   const [open, setOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const continuation = useRef<(() => void) | undefined>(undefined);
@@ -56,8 +57,8 @@ export function AuthorMenu() {
 
   useEffect(() => { setNotice(""); }, [pathname]);
   useEffect(() => {
-    if (open) activity.acknowledgeFailures();
-  }, [open, activity.failed, activity.acknowledgeFailures]);
+    if (open && failed) acknowledgeFailures();
+  }, [open, failed, acknowledgeFailures]);
 
   useEffect(() => {
     function login(event: Event) {

@@ -331,6 +331,7 @@ export function AppearanceControl({
   useEffect(() => {
     if (!open) return;
 
+    const toggle = toggleRef.current;
     const firstControl = panelRef.current?.querySelector<HTMLElement>(
       "button:not(:disabled), input:not(:disabled)"
     );
@@ -338,7 +339,7 @@ export function AppearanceControl({
 
     return () => {
       if (restoreFocusRef.current) {
-        toggleRef.current?.focus();
+        toggle?.focus();
       }
     };
   }, [open]);

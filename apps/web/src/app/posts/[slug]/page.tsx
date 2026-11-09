@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { notFound } from "next/navigation";
 import {
   Children,
@@ -95,13 +96,14 @@ export default async function PostPage({ params }: PostPageProps) {
             data-collapsible={tocItems.length > 4}
           >
             {coverImageUrl ? (
-              <img
+              <Image
                 className="article-toc-cover"
                 data-vt="cover"
                 src={coverImageUrl}
                 alt={`Cover image for ${post.title}`}
                 width={640}
                 height={360}
+                unoptimized
                 loading="eager"
                 fetchPriority="high"
               />
@@ -134,13 +136,14 @@ export default async function PostPage({ params }: PostPageProps) {
           </header>
 
           {coverImageUrl ? (
-            <img
+            <Image
               className="hero-media"
               data-vt="cover"
               src={coverImageUrl}
               alt={`Cover image for ${post.title}`}
               width={1600}
               height={900}
+              unoptimized
               loading="eager"
               fetchPriority="high"
             />

@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import { useDroppedFiles } from "@/lib/dropped-files";
 
 import {
@@ -122,7 +123,7 @@ export function UploadPairEditor({
   return (
     <article className="album-pair-row">
       <div className="album-pair-preview">
-        {preview ? <img src={preview} alt="" /> : null}
+        {preview ? <Image src={preview} alt="" fill unoptimized loading="eager" /> : null}
         <span className={pair.hdr ? "is-hdr" : ""}>
           {pair.hdr ? "HDR 配对" : "SDR"}
         </span>
@@ -288,7 +289,7 @@ export function AlbumPhotoUploader({
   }
 
   return (
-    <form className="album-photo-uploader" onSubmit={submit}>
+    <form className="album-photo-uploader" onSubmit={submit} noValidate>
       <header className="album-photo-uploader-header">
         <div>
           <p className="eyebrow">上传照片</p>

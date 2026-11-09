@@ -55,7 +55,12 @@ async function bundle() {
   fs.writeFileSync(path.join(build, "next-link.js"),
     "import React from 'react'; export default function Link({ href, children, prefetch, ...props }) { return React.createElement('a', { href, ...props }, children); }");
   fs.writeFileSync(path.join(build, "next-navigation.js"),
-    "export function useRouter() { return { push() {}, refresh() {}, replace() {} }; }");
+    `const router = { push() {}, refresh() {}, replace() {} };
+const searchParams = new URLSearchParams(location.search);
+export function useRouter() { return router; }
+export function usePathname() { return location.pathname; }
+export function useSearchParams() { return searchParams; }
+`);
   await esbuild.build({
     stdin: {
       contents: `import React from "react"; import { createRoot } from "react-dom/client"; import { AlbumGallery } from "./src/components/AlbumGallery";
@@ -65,7 +70,7 @@ async function bundle() {
     },
     bundle: true, jsx: "automatic", platform: "browser", format: "iife", outfile: path.join(build, "client.js"),
     alias: { "next/link": path.join(build, "next-link.js"), "next/navigation": path.join(build, "next-navigation.js") },
-    nodePaths: [path.join(root, "node_modules")], define: { "process.env.NODE_ENV": '"production"' },
+    nodePaths: [path.join(root, "node_modules")], define: { "process.env.NODE_ENV": '"production"', "process.env": "{}" },
     tsconfig: path.join(web, "tsconfig.json"), logLevel: "silent",
   });
 }

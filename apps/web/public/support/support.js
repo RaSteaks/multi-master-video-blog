@@ -1,3 +1,52 @@
+// Leaving the guide. Reading it never adds history entries, so the browser's
+// Back, the header's back link and any link to the page the reader came from
+// all return in one step, to the place they left.
+(() => {
+  // The site's sections, as the main navigation names them.
+  const SECTIONS = [["/videos", "视频"], ["/upload", "视频"], ["/posts", "文章"], ["/write", "文章"],
+    ["/albums", "相簿"], ["/project", "实验室"], ["/about", "关于"]];
+  let from = null;
+  try { from = document.referrer ? new URL(document.referrer) : null; } catch { /* Unreadable referrer: no way back. */ }
+  // A page opened in a new tab has no entry to return to, only a referrer.
+  if (!from || from.origin !== location.origin || from.pathname === location.pathname || history.length < 2) from = null;
+
+  const back = document.querySelector(".site-header .back");
+  // Home is already the breadcrumb's first step, which then returns instead.
+  if (from && back && from.pathname !== "/") {
+    const section = SECTIONS.find(([path]) => from.pathname === path || from.pathname.startsWith(`${path}/`));
+    back.lastElementChild.textContent = section ? `返回${section[1]}` : "返回上一页";
+    back.href = from.href;
+    back.hidden = false;
+  }
+
+  const modified = event => event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+  document.addEventListener("click", event => {
+    if (modified(event)) return;
+    const link = event.target.closest("a[href]");
+    if (!link) return;
+    // The route map's stations are SVG links, whose href is not a string.
+    const target = new URL(link.getAttribute("href"), location.href);
+    if (target.origin !== location.origin) return;
+
+    if (target.pathname === location.pathname && target.hash) {
+      // Stops ride the route map (below); every other anchor on the page
+      // scrolls in place and replaces the entry instead of pushing one.
+      const section = document.getElementById(decodeURIComponent(target.hash.slice(1)));
+      if (!section || section.classList.contains("stage")) return;
+      event.preventDefault();
+      history.replaceState(history.state, "", target.hash);
+      if (!section.hasAttribute("tabindex")) section.setAttribute("tabindex", "-1");
+      section.focus({ preventScroll: true });
+      section.scrollIntoView({ block: "start" });
+      return;
+    }
+    if (from && target.pathname + target.search === from.pathname + from.search) {
+      event.preventDefault();
+      history.back();
+    }
+  });
+})();
+
 // Native document scrolling owns navigation. The route map only follows it: no
 // wheel/touch interception, animation library, media decoding or backend calls.
 (() => {
@@ -140,7 +189,10 @@
   function schedule() { if (!frame) frame = requestAnimationFrame(sync); }
 
   function measure() {
-    const header = document.querySelector(".site-header").getBoundingClientRect().height;
+    // On narrow windows only the breadcrumb bar stays pinned; the header box steps aside.
+    const siteHeader = document.querySelector(".site-header");
+    const pinned = getComputedStyle(siteHeader).display === "contents" ? siteHeader.querySelector(".site-bar") : siteHeader;
+    const header = pinned.getBoundingClientRect().height;
     readingLine = stripLayout.matches
       ? Math.round(header + readout.getBoundingClientRect().height + 20)
       : Math.round(Math.max(header + 120, innerHeight * .32));

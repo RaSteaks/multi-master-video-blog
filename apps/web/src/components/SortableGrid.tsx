@@ -239,6 +239,9 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
           {item.content}
           {sortable ? <button type="button" className="sort-handle" title="拖动调整顺序"
             aria-label={`调整“${item.title}”的顺序，使用方向键移动`}
+            onClick={event => {
+              if (event.detail === 0) setAnnouncement("使用方向键移动，按 Home 或 End 移到首尾。");
+            }}
             onPointerDown={event => begin(event, id)}
             onPointerMove={event => {
               if (!drag.current) return;

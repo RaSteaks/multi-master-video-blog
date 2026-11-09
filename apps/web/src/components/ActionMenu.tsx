@@ -1,7 +1,7 @@
 "use client";
 
 import type { KeyboardEvent, ReactNode } from "react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -63,7 +63,10 @@ export function ActionMenu({
 }) {
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
-  function setOpen(value: boolean) { setLocalOpen(value); onOpenChange?.(value); }
+  const setOpen = useCallback((value: boolean) => {
+    setLocalOpen(value);
+    onOpenChange?.(value);
+  }, [onOpenChange]);
   // Stays true after `open` turns false until the collapse animation ends.
   const [panelMounted, setPanelMounted] = useState(false);
   if (open && !panelMounted) setPanelMounted(true);
@@ -74,8 +77,8 @@ export function ActionMenu({
   const pathname = usePathname();
 
   // A route change (including choosing a link item) closes the panel.
-  useEffect(() => { setLocalOpen(false); onOpenChange?.(false); }, [pathname, onOpenChange]);
-  useEffect(() => { if (hidden) { setLocalOpen(false); onOpenChange?.(false); } }, [hidden, onOpenChange]);
+  useEffect(() => { setOpen(false); }, [pathname, setOpen]);
+  useEffect(() => { if (hidden) setOpen(false); }, [hidden, setOpen]);
 
   useEffect(() => {
     if (!open) return;
@@ -84,7 +87,7 @@ export function ActionMenu({
     }
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
+  }, [open, setOpen]);
 
   useEffect(() => {
     if (open) panelRef.current?.querySelector<HTMLElement>(".action-menu-item")?.focus();

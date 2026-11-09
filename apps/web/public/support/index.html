@@ -14,8 +14,19 @@
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
   <header class="site-header">
-    <a class="identity" href="/support" aria-current="page"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 22h8M12 18v4M9 8l6 3-6 3z"/></svg>播放与色彩支持</a>
-    <nav aria-label="站点导航"><a href="/">首页</a><a href="/about">关于</a></nav>
+    <div class="site-bar">
+      <!-- Shown by support.js only when an on-site page sent the reader here. -->
+      <a class="back" href="/" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><span>返回</span></a>
+      <nav class="crumbs" aria-label="当前位置"><ol><li><a href="/">首页</a></li><li><span class="identity" aria-current="page"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 22h8M12 18v4M9 8l6 3-6 3z"/></svg>播放与色彩支持</span></li></ol></nav>
+    </div>
+    <!-- The main site's sections, in its order, so every area is one step away. -->
+    <nav class="site-nav" aria-label="站点导航">
+      <a href="/videos"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><polygon points="10 9 15 12 10 15" fill="currentColor" stroke="none"/></svg>视频</a>
+      <a href="/posts"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="12" y2="17"/></svg>文章</a>
+      <a href="/albums"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m4 17 4-4 3 3 2-2 6 6"/></svg>相簿</a>
+      <a href="/project"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 8h18M8 12l-3 3 3 3M16 12l3 3-3 3"/></svg>实验室</a>
+      <a href="/about"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>关于</a>
+    </nav>
   </header>
   <main id="main" tabindex="-1">
     <div class="journey">
@@ -147,7 +158,7 @@
           <figure class="fig fig-tall" data-fig="c1">
             <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
             <div class="fig-controls"><span class="fig-label">编码原色</span><button type="button" data-pick="gamut" value="rec709" aria-pressed="false">BT.709</button><button type="button" data-pick="gamut" value="p3" aria-pressed="false">P3-D65</button><button type="button" data-pick="gamut" value="rec2020" aria-pressed="true">BT.2020</button></div>
-            <figcaption><span class="fig-state" aria-hidden="true"></span>CIE 1931 xy 色度图（2° 观察者），按标准坐标绘制。粗线三角是编码原色定义的色域，可切换；带端点的细线是示例的母版监视器原色，它与编码原色是两份不同的信息。填色按 sRGB 计算：sRGB 之外的区域只能画出近似色，越靠近光谱轨迹越不准确。</figcaption>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>CIE 1931 xy 色度图（2° 观察者），按标准坐标绘制。粗线三角是编码原色定义的色域，可切换；带端点的细线是示例的母版监视器原色。两者独立记录，坐标相同时三角会重合。填色按 sRGB 计算：sRGB 之外的区域只能画出近似色，越靠近光谱轨迹越不准确。</figcaption>
           </figure>
           <dl class="io"><div><dt>输入</dt><dd>像素格式、色彩标记与 HDR 元数据</dd></div><div><dt>输出</dt><dd>可验证的信号解释规则</dd></div></dl>
         </article>
@@ -189,12 +200,12 @@
           <h3><span class="sign sign-p">P4</span><span>按具体配置选择可用母版</span></h3>
           <p class="stop-meta"><span>播放线 · 网页播放器</span><span>前端播放器 / MediaCapabilities</span></p>
           <p>先检查显示环境是否报告 HDR，再读取候选母版首个 HLS variant 的 CODECS、VIDEO-RANGE、分辨率、帧率和带宽，连同色域及传递函数查询 <code>decodingInfo()</code>。</p>
-          <p>只有 <code>supported</code> 与 <code>smooth</code> 同时为真才自动选 HDR。支持的 HDR 中优先指定默认母版，再按 Dolby Vision、HDR10、HLG 排序。单次能力查询限时 1.5 秒，整体选源限时 5 秒；未知或超时选择已验证 SDR。手动选择优先。</p>
+          <p>只有 <code>supported</code> 与 <code>smooth</code> 同时为真才自动选 HDR。支持的 HDR 中优先指定默认母版，再按 Dolby Vision、HDR10、HLG 排序。单次能力查询限时 1.5 秒，整体选源限时 5 秒；没有候选通过或整体超时时，如有已验证 SDR 就选用它。手动选择优先。</p>
           <figure class="fig fig-tall" data-fig="p4">
             <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
             <div class="fig-controls"><button type="button" data-action="probe">用这台设备试一下</button></div>
             <dl class="fig-results" aria-live="polite" hidden></dl>
-            <figcaption><span class="fig-state" aria-hidden="true"></span>判定顺序与本站播放器代码一致：显示环境未报告 HDR 时直接选择已验证 SDR，不再查询。点按钮后，本机用示例编码配置（3840×2160 · 24 fps · 20 Mbps）运行 matchMedia 与 decodingInfo()；结果只反映这些示例配置，不代表某个具体作品。</figcaption>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>图中是播放器为实际作品选源的流程：显示环境未报告 HDR 时跳过 HDR 查询。按钮单独探测本机对三组示例配置（3840×2160 · 24 fps · 20 Mbps）的支持与流畅度，逐项显示结果。作品能否播放还取决于它的母版和 HLS 清单。</figcaption>
           </figure>
           <dl class="io"><div><dt>输入</dt><dd>ready 母版、HLS 声明、设备能力报告</dd></div><div><dt>输出</dt><dd>适合当前播放环境的母版地址</dd></div></dl>
         </article>
@@ -218,7 +229,7 @@
           <figure class="fig" data-fig="c3">
             <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
             <div class="fig-controls"><button type="button" data-pick="case" value="auto" aria-pressed="true">随滚动</button><button type="button" data-pick="case" value="a" aria-pressed="false">正确解释</button><button type="button" data-pick="case" value="b" aria-pressed="false">limited 误作 full</button><button type="button" data-pick="case" value="c" aria-pressed="false">full 误作 limited</button></div>
-            <figcaption><span class="fig-state" aria-hidden="true"></span>按公式计算：10-bit limited 范围以码值 64 为黑、940 为白。下方灰阶是同一组源码值经当前解释后的 SDR 示意。</figcaption>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>按公式计算：10-bit limited 的标称黑白码值为 64 和 940，full 的为 0 和 1023。误读时，灰线显示同一组源码值的正确解释。下方灰阶用 SDR 示意当前解释的结果。</figcaption>
           </figure>
           <dl class="io"><div><dt>输入</dt><dd>解码后的分量样本、矩阵与范围</dd></div><div><dt>输出</dt><dd>进入亮度与色彩处理的图像信号</dd></div></dl>
         </article>
@@ -230,7 +241,7 @@
           <figure class="fig" data-fig="c4">
             <div class="fig-plate"><canvas aria-hidden="true"></canvas></div>
             <div class="fig-controls"><label class="fig-range" for="peak-range">屏幕峰值<input id="peak-range" type="range" min="400" max="2000" step="50" value="1000" data-input="peak"><output for="peak-range">1000 cd/m²</output></label></div>
-            <figcaption><span class="fig-state" aria-hidden="true"></span>按 SMPTE ST 2084 与 BT.2100 HLG（系统伽马 1.2 + 0.42·log₁₀(峰值 / 1000)）计算，按中性灰绘制。拖动屏幕峰值：PQ 曲线不动，超过屏幕能力的部分（暗线）需要映射；HLG 随峰值整体缩放。</figcaption>
+            <figcaption><span class="fig-state" aria-hidden="true"></span>按 SMPTE ST 2084 与 BT.2100 HLG（系统伽马 1.2 + 0.42·log₁₀(峰值 / 1000)）计算，以黑位为 0 的中性灰为例。调整屏幕峰值：PQ 的目标亮度不变，超过峰值的部分（暗线）需要映射；HLG 曲线随峰值和系统伽马变化。</figcaption>
           </figure>
           <dl class="io"><div><dt>输入</dt><dd>视频信号及 PQ / HLG 标记</dd></div><div><dt>输出</dt><dd>具有正确亮度含义的图像</dd></div></dl>
         </article>
@@ -294,7 +305,7 @@
     <footer>
       <p>说明对应本站当前实现。服务端验证关注媒体结构与元数据；屏幕亮度、色彩准确性和 Dolby 显示状态需要在目标设备确认。</p>
       <nav aria-label="技术参考"><a href="https://www.w3.org/TR/media-capabilities/">Media Capabilities 标准</a><a href="https://developer.apple.com/streaming/hls-authoring-specification-for-apple-devices.html">Apple HLS 规范</a><a href="https://github.com/shaka-project/shaka-player">Shaka Player</a></nav>
-      <a class="back-top" href="#main">回到顶部</a>
+      <p class="footer-exit"><a href="/videos">去看视频</a><a class="back-top" href="#main">回到顶部</a></p>
     </footer>
   </main>
 </body>

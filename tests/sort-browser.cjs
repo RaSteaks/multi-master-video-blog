@@ -129,6 +129,8 @@ async function main() {
 
     const keyed = handleOf("文章三");
     await keyed.focus();
+    await page.keyboard.press("Enter");
+    assert.match(await page.locator("main p.visually-hidden[role=status]").textContent(), /使用方向键移动/);
     await page.keyboard.press("ArrowRight");
     await page.keyboard.press("ArrowDown");
     assert.deepEqual(await titles(), ["文章四", "文章五", "文章二", "文章一", "文章三"]);

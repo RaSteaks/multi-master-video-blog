@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import Image from "next/image";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
@@ -42,6 +43,14 @@ export default async function AboutPage() {
       ...(cmsPost.cover_image ? [cmsPost.cover_image] : []),
     ]);
     const coverSize = cmsPost.cover_image ? dimensions.get(cmsPost.cover_image) : undefined;
+    const cover = coverUrl && {
+      className: "hero-media about-cover",
+      src: coverUrl,
+      alt: `Cover image for ${cmsPost.title}`,
+      loading: "eager",
+      decoding: "async",
+      fetchPriority: "high",
+    } as const;
     const components = { img: markdownImageComponent(dimensions) };
 
     return (
@@ -64,18 +73,10 @@ export default async function AboutPage() {
               <a className="profile-about-link" href="/support" data-native-navigation>播放与色彩支持</a>
             </header>
 
-            {coverUrl ? (
-              <img
-                className="hero-media about-cover"
-                src={coverUrl}
-                alt={`Cover image for ${cmsPost.title}`}
-                width={coverSize?.width}
-                height={coverSize?.height}
-                loading="eager"
-                decoding="async"
-                fetchPriority="high"
-              />
-            ) : null}
+            {cover && (coverSize
+              ? <Image {...cover} {...coverSize} unoptimized />
+              // eslint-disable-next-line @next/next/no-img-element -- A cover without CMS dimensions uses its original aspect ratio in normal flow.
+              : <img {...cover} />)}
 
             <article className="markdown-body">
               <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useEffectEvent, useRef, useState } from "react";
 import { useDroppedFiles } from "@/lib/dropped-files";
 import { canAuthorize, useAuthorSession } from "@/lib/author-session";
 import { dismissAuthorTask } from "@/lib/author-tasks";
@@ -428,14 +428,18 @@ export function UploadVideoForm({ lang = "zh", initialProjectId, initialSessionI
     // Keep SSR inputs inert until React owns changes and the recovery bookmark has loaded.
     setHydrated(true);
     return () => { requestRef.current?.abort(); };
-  }, []);
+  }, [initialSessionId]);
 
-  useEffect(() => {
-    // A task link is a request to see that task, so read it without another click.
-    if (!hydrated || !initialSessionId || linkedRead.current || !canAuthorize(token)) return;
+  const readLinkedSession = useEffectEvent(() => {
+    if (linkedRead.current || !canAuthorize(token)) return;
     linkedRead.current = true;
     void runUpload();
-  }, [hydrated, author.author]);
+  });
+
+  useEffect(() => {
+    // Read the linked task once it is restored and the author session is ready.
+    if (hydrated && initialSessionId && sessionId === initialSessionId && author.author) readLinkedSession();
+  }, [hydrated, initialSessionId, sessionId, author.author]);
 
   const copy = lang === "zh" ? {
     recover: "恢复上传 / 刷新状态", saved: "有可恢复的视频上传。输入上传令牌后读取进度。",
@@ -588,20 +592,16 @@ export function UploadVideoForm({ lang = "zh", initialProjectId, initialSessionI
     setSlug(slugify(title) || (video ? slugifyFileName(video.name) : "") || timestampSlug());
     setSlugTouched(true);
   };
-  const canSubmit = useMemo(
-    () =>
-      Boolean(
-        canAuthorize(token) &&
-          title.trim() &&
-          slug.trim() &&
-          !slugInvalid &&
-          sourceReady &&
-          !sourceError &&
-          (!appendProject || selectedProject) &&
-          (!pairedSdr || !isHdr || sdrVideo) &&
-          !sessionId && state !== "uploading" && state !== "success"
-      ),
-    [sessionId, slug, slugInvalid, sourceReady, state, title, token, author, appendProject, selectedProject, pairedSdr, isHdr, sdrVideo, sourceError]
+  const canSubmit = Boolean(
+    canAuthorize(token) &&
+      title.trim() &&
+      slug.trim() &&
+      !slugInvalid &&
+      sourceReady &&
+      !sourceError &&
+      (!appendProject || selectedProject) &&
+      (!pairedSdr || !isHdr || sdrVideo) &&
+      !sessionId && state !== "uploading" && state !== "success"
   );
 
   const dropTexts = {

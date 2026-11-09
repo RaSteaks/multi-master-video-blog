@@ -123,6 +123,9 @@ export function AlbumGallery({
   const [uploadOpen, setUploadOpen] = useState(false);
   const [adminBusy, setAdminBusy] = useState(false);
   const [adminError, setAdminError] = useState("");
+  const adminFeedbackId = useId();
+  const tokenRequired = "请输入管理员令牌。";
+  const missingToken = adminError === tokenRequired;
   const [adminNotice, setAdminNotice] = useState("");
   const [orderDirty, setOrderDirty] = useState(false);
   const [editingPhoto, setEditingPhoto] = useState<ManagedPhoto | null>(null);
@@ -169,9 +172,11 @@ export function AlbumGallery({
     }
   }, [uploadOpen, Boolean(managedAlbum)]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function loadAdminAlbum() {
+  async function loadAdminAlbum(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     if (!canAuthorize(token)) {
-      setAdminError("请输入管理员令牌。");
+      setAdminError(tokenRequired);
+      event.currentTarget.querySelector<HTMLInputElement>('input[type="password"]')?.focus();
       return null;
     }
     setAdminBusy(true);
@@ -432,10 +437,8 @@ export function AlbumGallery({
           {!managedAlbum ? (
             <form
               className="album-admin-login"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void loadAdminAlbum();
-              }}
+              onSubmit={loadAdminAlbum}
+              noValidate
             >
               <div>
                 <p className="eyebrow">受保护的管理视图</p>
@@ -447,10 +450,15 @@ export function AlbumGallery({
                 <input
                   type="password"
                   value={token}
-                  onChange={(event) => setToken(event.target.value)}
+                  onChange={(event) => {
+                    setToken(event.target.value);
+                    if (missingToken) setAdminError("");
+                  }}
                   autoComplete="new-password"
                   autoFocus
                   required={!author.author}
+                  aria-invalid={missingToken || undefined}
+                  aria-describedby={missingToken ? adminFeedbackId : undefined}
                 />
               </label></AuthorCredential>
               <button
@@ -516,6 +524,7 @@ export function AlbumGallery({
             </>
           )}
           <p
+            id={adminFeedbackId}
             className={`album-admin-feedback${adminError ? " is-error" : ""}`}
             role={adminError ? "alert" : "status"}
           >
@@ -790,12 +799,15 @@ function AlbumAdminForm({
   const [title, setTitle] = useState(album.title);
   const [description, setDescription] = useState(album.description);
   const [published, setPublished] = useState(album.published);
+  const canSave = !busy && Boolean(title.trim());
 
   return (
     <form
       className="album-admin-form"
+      noValidate
       onSubmit={(event) => {
         event.preventDefault();
+        if (!canSave) return;
         void onSave({ title, description, published });
       }}
     >
@@ -817,6 +829,7 @@ function AlbumAdminForm({
       <label className="album-field">
         <span>相簿说明</span>
         <textarea
+          className="resize-none"
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           maxLength={5000}
@@ -837,7 +850,7 @@ function AlbumAdminForm({
         <button
           className="album-action-button"
           type="submit"
-          disabled={busy || !title.trim()}
+          disabled={!canSave}
         >
           {busy ? "保存中…" : "保存相簿"}
         </button>
@@ -919,6 +932,7 @@ function PhotoEditDialog({
     >
       <form
         className="album-dialog-surface album-form"
+        noValidate
         onSubmit={(event: FormEvent<HTMLFormElement>) => {
           event.preventDefault();
           void onSave({ caption, altText, published });
@@ -941,6 +955,7 @@ function PhotoEditDialog({
         <label className="album-field">
           <span>说明</span>
           <textarea
+            className="resize-none"
             value={caption}
             onChange={(event) => setCaption(event.target.value)}
             maxLength={2000}
@@ -1457,14 +1472,15 @@ function PhotoLightbox({
     motionRef.current.shell = [backdrop, fadeIn(scrimRef.current), ...chromeElements().map((element) => fadeIn(element))]
       .filter((animation): animation is Animation => Boolean(animation));
     const motion = motionRef.current;
+    const settling = settleAnimations.current;
     return () => {
       motion.shell.forEach((animation) => animation.cancel());
       motion.layers.forEach((animation) => animation.cancel());
       motion.close.forEach((animation) => animation.cancel());
-      for (const animations of settleAnimations.current.values()) {
+      for (const animations of settling.values()) {
         animations.forEach((animation) => animation.cancel());
       }
-      settleAnimations.current.clear();
+      settling.clear();
     };
   }, [chromeElements]);
 

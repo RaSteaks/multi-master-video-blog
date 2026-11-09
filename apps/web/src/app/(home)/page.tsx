@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { ContactStrip } from "@/components/ContactStrip";
 import { HomeDiagram } from "@/components/HomeDiagram";
@@ -21,7 +22,6 @@ export default async function Home() {
   return (
     <>
       <main className="orbital-home" aria-label={siteConfig.home.profileName}>
-        <HomeDiagram />
         <div
           className="orbital-stage"
           style={{ "--home-stage-height": homeLayout.stage.minHeight } as HomeWidgetStyle}
@@ -44,6 +44,7 @@ export default async function Home() {
             <BilibiliWidget />
           </div>
         </div>
+        <HomeDiagram />
         <ContactStrip frames={frames} />
       </main>
     </>
@@ -67,11 +68,12 @@ function ProfileHub({
     >
       <div className="profile-avatar">
         {siteConfig.home.avatarUrl ? (
-          <img
+          <Image
             src={siteConfig.home.avatarUrl}
             alt={`${siteConfig.home.profileName} avatar`}
             width={256}
             height={256}
+            unoptimized
             loading="eager"
             fetchPriority="high"
           />

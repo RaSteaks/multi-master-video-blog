@@ -7,6 +7,14 @@ const sharp = require("sharp");
 const { webkit } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const { startFixture } = require("./helpers/create-menu-fixture.cjs");
 
+async function expectFieldError(dialog, field, message) {
+  const alert = dialog.getByRole("alert").filter({ hasText: message });
+  await alert.waitFor();
+  assert.equal(await field.getAttribute("aria-invalid"), "true");
+  assert.ok((await field.getAttribute("aria-describedby")).split(/\s+/).includes(await alert.getAttribute("id")));
+  assert.equal(await field.evaluate(element => element === document.activeElement), true);
+}
+
 async function main() {
   const fixture = await startFixture();
   const report = { browser: "headless WebKit", checks: [], errors: [], passed: false };
@@ -227,13 +235,49 @@ async function main() {
     await page.goto(`${fixture.url}/albums?dialog=create`, { waitUntil: "networkidle" });
     const createDialog = page.getByRole("dialog", { name: "新建相簿", exact: true });
     await createDialog.getByText("已作为作者登录", { exact: true }).waitFor();
-    await createDialog.getByLabel("标题", { exact: true }).fill("Session album");
+    const writes = [];
+    const recordWrite = request => {
+      if (request.method() === "POST" && /\/api\/albums(?:\/\d+\/film-scans)?$/.test(request.url())) writes.push(request.url());
+    };
+    page.on("request", recordWrite);
+    const albumTitle = createDialog.getByLabel("标题", { exact: true });
+    const albumSlug = createDialog.getByRole("textbox", { name: /^Slug/ });
+    const createAlbum = createDialog.getByRole("button", { name: "创建并发布", exact: true });
+    await createAlbum.click();
+    await expectFieldError(createDialog, albumTitle, "请输入相簿标题。");
+    await albumTitle.fill("Session album");
+    await albumSlug.fill("with a space");
+    await createAlbum.click();
+    await expectFieldError(createDialog, albumSlug, "Slug 只能用小写字母或数字");
+    assert.equal(await albumTitle.inputValue(), "Session album");
+    assert.equal(await albumSlug.inputValue(), "with a space");
+    assert.equal(writes.length, 0, "Invalid albums do not send a request.");
+    await albumSlug.fill("");
     const [created] = await Promise.all([
       page.waitForResponse(response => response.url().endsWith("/api/albums") && response.request().method() === "POST"),
-      createDialog.getByRole("button", { name: "创建并发布", exact: true }).click(),
+      createAlbum.click(),
     ]);
     assert.equal(created.status(), 201, await created.text());
     await createDialog.waitFor({ state: "hidden" }); await page.waitForURL(`${fixture.url}/albums`); await page.waitForLoadState("networkidle");
+
+    await page.goto(`${fixture.url}/albums?dialog=film`, { waitUntil: "networkidle" });
+    const filmDialog = page.getByRole("dialog", { name: "导入胶片扫描", exact: true });
+    await filmDialog.getByText("已作为作者登录", { exact: true }).waitFor();
+    const scan = await sharp({ create: { width: 32, height: 24, channels: 3, background: "#777777" } }).jpeg().toBuffer();
+    await filmDialog.locator('input[type="file"]').setInputFiles({ name: "scan.jpg", mimeType: "image/jpeg", buffer: scan });
+    const iso = filmDialog.getByRole("spinbutton", { name: "ISO", exact: true });
+    const pushPull = filmDialog.getByRole("spinbutton", { name: /^迫冲\/减冲/ });
+    const uploadFilm = filmDialog.getByRole("button", { name: "上传并开始分析", exact: true });
+    await iso.fill("0");
+    await uploadFilm.click();
+    await expectFieldError(filmDialog, iso, "ISO 必须是 1 到 25600 之间的整数。");
+    await iso.fill("400");
+    await pushPull.fill("0.3");
+    await uploadFilm.click();
+    await expectFieldError(filmDialog, pushPull, "以 0.5 档为单位。");
+    assert.deepEqual(writes, [`${fixture.url}/api/albums`], "Only the valid album was sent.");
+    page.off("request", recordWrite);
+    pass("album and film forms focus invalid fields, expose localized errors and block invalid requests");
 
     await page.goto(`${fixture.url}/albums?dialog=upload`, { waitUntil: "networkidle" });
     const photoDialog = page.getByRole("dialog", { name: "上传照片", exact: true });

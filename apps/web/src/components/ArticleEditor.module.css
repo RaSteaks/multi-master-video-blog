@@ -414,10 +414,12 @@
   font-size: 1.4rem;
 }
 
-.coverDrop > img {
-  width: 100%;
-  min-height: 250px;
+.coverDrop[data-has-cover="true"] {
+  min-height: 252px;
   aspect-ratio: 16 / 10;
+}
+
+.coverDrop > img {
   object-fit: cover;
 }
 
@@ -520,6 +522,7 @@
   min-width: 0;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
+  scrollbar-color: auto;
   scrollbar-width: none;
 }
 
@@ -741,7 +744,6 @@
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  resize: none;
   border: 0;
   outline: 0;
   background: transparent;

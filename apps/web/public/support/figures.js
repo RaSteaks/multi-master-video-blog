@@ -269,8 +269,10 @@
         const hash = "9c4e1b07a3f28d56e0b4c19f7a2d63e85b1f0c94d7e2a6b3f81c05e9d4a7b260";
         const shown = Math.round(64 * span(p, .8, .98));
         if (shown > 0) {
-          if (narrow) g.text(`SHA-256 ${hash.slice(0, Math.min(shown, 10))}${shown > 10 ? "…" + hash.slice(64 - Math.min(8, shown - 10)) : ""}`, rx, y + 18, { color: C.sec });
-          else {
+          // The right column can run out of room before the figure switches to its stacked layout.
+          if (narrow || g.width(hash.slice(0, 32)) > rw - 64) {
+            g.text(`SHA-256 ${hash.slice(0, Math.min(shown, 10))}${shown > 10 ? "…" + hash.slice(64 - Math.min(8, shown - 10)) : ""}`, rx, y + 18, { color: C.sec });
+          } else {
             g.text("SHA-256", rx, y + 20, { color: C.sec });
             g.text(hash.slice(0, Math.min(shown, 32)), rx + 64, y + 20, { color: C.text });
             if (shown > 32) g.text(hash.slice(32, shown), rx + 64, y + 36, { color: C.text });
@@ -348,7 +350,7 @@
         if (p < .22) return "CIE 1931 xy · 光谱轨迹";
         if (p < .45) return `编码原色 ${GAMUT[pick].label}：定义信号的色域`;
         if (p < .66) return pick === "rec709" ? "宽色域也可以用于 SDR；HEVC 或 10-bit 不能证明 HDR" : "色域越宽，三角形越大；它不代表屏幕能覆盖";
-        return "母版监视器原色是另一份信息，与编码原色不同";
+        return "母版监视器原色单独记录，坐标可以与编码原色相同";
       },
     },
 
@@ -591,27 +593,24 @@
       },
     },
 
-    // P4: the selection order of selectAutomaticMaster; optionally run here.
+    // P4 illustrates selectAutomaticMaster. The local probe reports each example independently.
     p4: {
-      init(f) { f.state.result = null; },
-      draw(g, w, h, p, f) {
-        const pad = 18, narrow = w < 480, result = f.state.result;
+      draw(g, w, h, p) {
+        const pad = 18, narrow = w < 480;
         const nodes = [["显示报告 HDR？", "matchMedia · (video-)dynamic-range"], ["候选排序", "默认母版 › Dolby Vision › HDR10 › HLG"],
           ["读取候选的首个 variant", "CODECS · VIDEO-RANGE · 分辨率 · 帧率 · 带宽"], ["decodingInfo()", "supported 且 smooth · 单次 ≤1.5 s · 否则试下一个候选"],
           ["选定第一个通过的母版", "整体选源 ≤5 s · 手动选择优先"]];
-        const lit = result ? 5 : p * 5.6;
-        const pass = result ? [result.hdr, result.hdr, result.hdr, result.hdr && result.pick !== null, result.hdr && result.pick !== null] : [true, true, true, true, true];
+        const lit = p * 5.6;
         const gap = 9, loop = 26, bx = pad + loop, bw = narrow ? w - bx - pad - 84 : w * .58, bh = (h - pad * 2 - gap * 4) / 5;
         const box = i => [bx, pad + i * (bh + gap), bw, bh];
         nodes.forEach(([name, note], i) => {
-          const [x, y] = box(i), on = lit > i, skipped = result && !pass[i];
-          const current = !result && i === Math.min(4, Math.floor(lit));
-          g.rect(x, y, bw, bh, { stroke: skipped ? C.ahead : current ? C.focus : on ? C.text : C.line, radius: 6, width: on && !skipped ? 1.4 : 1 });
-          const label = i === 4 && result?.pick ? `选定 ${result.pick}` : name;
-          const twoLines = bh >= 40, color = skipped ? C.lab : on ? C.text : C.lab;
-          g.text(label, x + 12, y + (twoLines ? bh / 2 - 3 : bh / 2 + 4), { font: SANS, size: 12, color, weight: 600 });
+          const [x, y] = box(i), on = lit > i;
+          const current = i === Math.min(4, Math.floor(lit));
+          g.rect(x, y, bw, bh, { stroke: current ? C.focus : on ? C.text : C.line, radius: 6, width: on ? 1.4 : 1 });
+          const twoLines = bh >= 40;
+          g.text(name, x + 12, y + (twoLines ? bh / 2 - 3 : bh / 2 + 4), { font: SANS, size: 12, color: on ? C.text : C.lab, weight: 600 });
           const short = i === 1 ? "默认 › DV › HDR10 › HLG" : note.split(" · ")[0];
-          if (twoLines) g.text(narrow ? short : note, x + 12, y + bh / 2 + 13, { font: SANS, size: 11, color: skipped || !on ? C.lab : C.sec });
+          if (twoLines) g.text(narrow ? short : note, x + 12, y + bh / 2 + 13, { font: SANS, size: 11, color: on ? C.sec : C.lab });
           if (i < 4) g.arrow(x + 22, y + bh + 1, x + 22, y + bh + gap - 1, { color: lit > i + 1 ? C.text : C.line, head: 3 });
         });
         // Each candidate that fails goes back for the next one.
@@ -621,18 +620,17 @@
         // The SDR branch: no HDR report, or no candidate passed.
         const sx = bx + bw + (narrow ? 12 : 30), sw = w - pad - sx, [, y0] = box(0), [, y4] = box(4);
         const sy = (y0 + y4 + bh) / 2 - 28;
-        const sdr = result ? !result.pick || !result.hdr : false;
-        g.rect(sx, sy, sw, 56, { stroke: sdr ? C.text : C.sec, dash: [6, 4], radius: 6, width: sdr ? 1.4 : 1 });
+        g.rect(sx, sy, sw, 56, { stroke: C.sec, dash: [6, 4], radius: 6 });
+        const sdrColor = p > .2 ? C.text : C.lab;
         if (narrow) {
-          g.text("已验证", sx + 8, sy + 23, { font: SANS, size: 12, color: sdr || p > .2 ? C.text : C.lab, weight: 600 });
-          g.text("SDR", sx + 8, sy + 41, { font: SANS, size: 12, color: sdr || p > .2 ? C.text : C.lab, weight: 600 });
-        } else g.text("已验证 SDR", sx + 10, sy + 23, { font: SANS, size: 12, color: sdr || p > .2 ? C.text : C.lab, weight: 600 });
+          g.text("已验证", sx + 8, sy + 23, { font: SANS, size: 12, color: sdrColor, weight: 600 });
+          g.text("SDR（如有）", sx + 8, sy + 41, { font: SANS, size: 11, color: sdrColor, weight: 600 });
+        } else g.text("已验证 SDR（如有）", sx + 10, sy + 23, { font: SANS, size: 12, color: sdrColor, weight: 600 });
         if (!narrow) g.text("未报告 HDR，或没有候选通过", sx + 10, sy + 41, { font: SANS, size: 11, color: C.sec });
         [0, 4].forEach(i => {
           const [x, y] = box(i);
           g.seg(x + bw, y + bh / 2, sx, sy + 28, { color: C.ahead, dash: [6, 4] });
         });
-        if (result) return !result.hdr ? "本机未报告 HDR：本站不会查询，直接选已验证 SDR" : result.pick ? `本机（示例配置）：自动选择 ${result.pick}` : "本机（示例配置）：没有候选通过 → 已验证 SDR";
         return ["先确认显示环境报告 HDR", "把 HDR 候选按优先级排序", "逐个读取候选的首个 HLS variant", "按具体配置查询 decodingInfo()", "第一个通过的候选即为结果"][Math.min(4, Math.floor(p * 5))];
       },
       async action(name, f) {
@@ -644,14 +642,13 @@
         const nativeHls = video.canPlayType("application/vnd.apple.mpegurl") !== "";
         const type = nativeHls ? "file" : "media-source";
         const base = { width: 3840, height: 2160, framerate: 24, bitrate: 20000000, colorGamut: "rec2020" };
-        // Already in the player's order: Dolby Vision › HDR10 › HLG (no default set).
+        // Report every example, even when the real player would skip HDR or stop at the first match.
         const configs = [
           { label: "Dolby Vision 8.1", codec: "dvh1.08.06", transferFunction: "pq" },
           { label: "HDR10", codec: "hvc1.2.4.L153.B0", transferFunction: "pq", hdrMetadataType: "smpteSt2086" },
           { label: "HLG", codec: "hvc1.2.4.L153.B0", transferFunction: "hlg" },
         ];
-        const rows = [["显示环境报告 HDR", hdr ? "是" : "否"], ["HDR 播放路径", nativeHls ? "原生 HLS（file）" : "MSE（media-source）"]];
-        let pick = null;
+        const rows = [["显示环境报告 HDR", hdr ? "是" : "否"], ["示例查询模式", nativeHls ? "原生 HLS（file）" : "MSE（media-source）"]];
         for (const config of configs) {
           const contentType = `video/mp4; codecs="${config.codec}"`;
           const playable = type === "file" ? video.canPlayType(contentType) !== "" : Boolean(window.MediaSource?.isTypeSupported?.(contentType));
@@ -669,22 +666,19 @@
               ]);
               const ms = Math.round(performance.now() - started);
               verdict = !info ? "超时（>1.5 s）" : `${info.supported ? "支持" : "不支持"} · ${info.smooth ? "流畅" : "不流畅"} · ${ms} ms`;
-              if (info?.supported && info.smooth && !pick) pick = config.label;
             } catch { verdict = "查询失败"; }
             clearTimeout(timer);
           }
           rows.push([`${config.label} · ${config.codec}`, verdict]);
         }
-        rows.push(["结论", !hdr ? "显示环境未报告 HDR：本站不会查询 decodingInfo()，直接选择已验证 SDR（以上查询仅供参考）"
-          : pick ? `自动选择 ${pick}（作品需提供该母版）` : "没有满足条件的候选 → 已验证 SDR"]);
+        rows.push(["实际播放", hdr ? "播放器会用作品自己的 HLS 清单检查候选母版。"
+          : "显示环境未报告 HDR，实际播放器会跳过 HDR 查询。"]);
         out.replaceChildren(...rows.flatMap(([term, value]) => {
           const dt = document.createElement("dt"), dd = document.createElement("dd");
           dt.textContent = term; dd.textContent = value; return [dt, dd];
         }));
         out.hidden = false;
-        f.state.result = { hdr, pick: hdr ? pick : null };
         button.disabled = false; button.textContent = "再试一次";
-        render(f);
         measure();
       },
     },
@@ -763,8 +757,12 @@
         const scrollCase = p < .4 ? "a" : p < .72 ? "b" : "c";
         const which = auto ? scrollCase : f.state.case;
         const morph = auto ? (which === "b" ? ease(span(p, .4, .55)) : which === "c" ? ease(span(p, .72, .87)) : 1) : 1;
-        const fn = { a: cv => clamp((cv - 64) / 876), b: cv => cv / 1023, c: cv => clamp((cv - 64) / 876) };
-        const sourceRange = which === "c" ? [0, 1023] : [64, 940];
+        const limited = cv => clamp((cv - 64) / 876), full = cv => cv / 1023;
+        const fullSource = which === "c";
+        const sourceRange = fullSource ? [0, 1023] : [64, 940];
+        // Compare both interpretations of the same source, including when the source is full range.
+        const correct = fullSource ? full : limited;
+        const interpreted = which === "b" ? full : limited;
         const px = pad + 34, pw = (narrow ? w - pad * 2 : w * .58) - 34, ptop = pad + 22, ph = h - pad * 2 - (narrow ? 96 : 70);
         const X = cv => px + pw * cv / 1023, Y = v => ptop + ph * (1 - v);
         g.rect(px, ptop, pw, ph, { stroke: C.line, radius: 2 });
@@ -774,9 +772,8 @@
         g.text("1", px - 6, ptop + 8, { align: "right", color: C.lab });
         g.text("0", px - 6, ptop + ph, { align: "right", color: C.lab });
         const curve = (map, range) => { const pts = []; for (let cv = range[0]; cv <= range[1]; cv += 8) pts.push([X(cv), Y(map(cv))]); pts.push([X(range[1]), Y(map(range[1]))]); return pts; };
-        if (which !== "a") g.line(curve(fn.a, [64, 940]), { color: C.ahead, width: 1.2 });
-        const prev = which === "c" ? fn.b : fn.a;
-        const cur = cv => lerp(prev(cv), fn[which](cv), morph);
+        if (which !== "a") g.line(curve(correct, sourceRange), { color: C.ahead, width: 1.2 });
+        const cur = cv => lerp(correct(cv), interpreted(cv), morph);
         g.line(curve(cur, sourceRange), { color: C.text, width: 2, alpha: span(p, 0, .2) });
         const steps = 11, sy = ptop + ph + 30, sw = (pw - (steps - 1) * 3) / steps;
         for (let i = 0; i < steps; i++) {
@@ -846,7 +843,7 @@
         g.text("PQ · 绝对亮度", lx + 24, ly, { font: SANS, size: 11.5, color: C.body });
         g.seg(lx, ly + 16, lx + 18, ly + 16, { color: C.sec, width: 1.8 });
         g.dot(lx + 9, ly + 16, 3, { fill: C.bg, stroke: C.sec, width: 1.5 });
-        g.text("HLG · 相对亮度", lx + 24, ly + 20, { font: SANS, size: 11.5, color: C.body });
+        g.text("HLG · 随峰值变化", lx + 24, ly + 20, { font: SANS, size: 11.5, color: C.body });
         if (!narrow) {
           g.text(`HLG 系统伽马 ${gamma.toFixed(2)}`, lx, ly + 52, { color: C.text });
           g.text("PQ 0.508 → 100", lx, ly + 78, { color: C.sec });
@@ -855,7 +852,7 @@
           g.text("超出屏幕能力", lx + 24, ly + 122, { font: SANS, size: 11, color: C.sec });
         }
         if (p < .45) return "PQ：码值对应固定的目标亮度，与屏幕无关";
-        return `HLG：随屏幕峰值缩放 · 系统伽马 ${gamma.toFixed(2)}`;
+        return `HLG：峰值与系统伽马共同决定亮度 · γ ${gamma.toFixed(2)}`;
       },
     },
 
@@ -1027,7 +1024,9 @@
   function measure() {
     readTokens();
     const journey = document.querySelector(".journey");
-    const header = document.querySelector(".site-header")?.getBoundingClientRect().height || 60;
+    // Narrow windows pin only the breadcrumb bar; its height is then the header's.
+    const pinned = document.querySelector(".site-header")?.getBoundingClientRect().height || document.querySelector(".site-bar")?.getBoundingClientRect().height;
+    const header = pinned || 60;
     const readingLine = parseFloat(journey?.style.getPropertyValue("--reading-offset")) || header;
     windowTop = stripLayout.matches ? Math.max(header, readingLine - 20) : header;
     windowBottom = innerHeight;

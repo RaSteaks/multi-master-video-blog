@@ -1,5 +1,7 @@
 "use client";
 
+import Image from "next/image";
+
 import dynamic from "next/dynamic";
 import {
   type CSSProperties,
@@ -102,7 +104,7 @@ export function GaussianSplatEmbed({ config }: GaussianSplatEmbedProps) {
             aria-label={`Load interactive 3D scene: ${config.title}`}
           >
             {config.poster ? (
-              <img src={config.poster} alt="" loading="lazy" />
+              <Image src={config.poster} alt="" fill unoptimized loading="lazy" />
             ) : (
               <span className="gaussian-splat-grid" aria-hidden="true" />
             )}

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import {
   memo,
   useDeferredValue,
@@ -345,7 +346,7 @@ function ToolbarButton({
 }
 
 export function ArticleEditor() {
-  const author = useAuthorSession();
+  useAuthorSession();
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [title, setTitle] = useState("");
@@ -465,9 +466,10 @@ export function ArticleEditor() {
   );
   const isDirty = !editorFingerprintsEqual(currentFingerprint, savedFingerprint);
 
+  const authorized = canAuthorize(token, "article");
   const commonValidationErrors = useMemo(() => {
     const errors: string[] = [];
-    if (!canAuthorize(token, "article")) errors.push("请输入文章访问令牌");
+    if (!authorized) errors.push("请输入文章访问令牌");
     if (!title.trim()) errors.push("请输入文章标题");
     if (!slug.trim()) errors.push("请输入 URL 标识");
     else if (!SLUG_PATTERN.test(slug.trim()))
@@ -478,7 +480,7 @@ export function ArticleEditor() {
     if (missingImageKeys.length > 0)
       errors.push(`正文中有 ${missingImageKeys.length} 张图片缺少本地附件`);
     return errors;
-  }, [contentBytes, missingImageKeys.length, slug, title, token, author, uploadBytes]);
+  }, [authorized, contentBytes, missingImageKeys.length, slug, title, uploadBytes]);
 
   const publishValidationErrors = useMemo(
     () =>
@@ -489,8 +491,9 @@ export function ArticleEditor() {
   );
 
   useEffect(() => {
+    const objectUrls = objectUrlsRef.current;
     return () => {
-      for (const url of objectUrlsRef.current) URL.revokeObjectURL(url);
+      for (const url of objectUrls) URL.revokeObjectURL(url);
       const request = xhrRef.current;
       if (request) {
         request.onload = null;
@@ -1226,7 +1229,7 @@ export function ArticleEditor() {
               >
                 {cover ? (
                   <>
-                    <img src={cover.previewUrl} alt="所选文章封面预览" />
+                    <Image src={cover.previewUrl} alt="所选文章封面预览" fill unoptimized loading="eager" />
                     <div className={styles.coverOverlay}>
                       <strong>{cover.file.name}</strong>
                       <span>{(cover.file.size / 1024 / 1024).toFixed(1)} MB</span>
@@ -1361,6 +1364,7 @@ export function ArticleEditor() {
               </div>
               <label className={styles.visuallyHidden} htmlFor="article-content">Markdown 正文</label>
               <textarea
+                className="resize-none"
                 ref={textareaRef}
                 id="article-content"
                 value={content}
@@ -1419,7 +1423,7 @@ export function ArticleEditor() {
                   const used = referencedKeys.has(image.key);
                   return (
                     <article className={styles.attachment} key={image.key} data-used={used}>
-                      <img src={image.previewUrl} alt="" />
+                      <Image src={image.previewUrl} alt="" width={76} height={68} unoptimized loading="eager" />
                       <div>
                         <strong title={image.file.name}>{image.file.name}</strong>
                         <label>

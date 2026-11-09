@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { GAMUTS } from "./color-volume";
-import { COLOR_MODELS } from "./color-volume";
+import { CHROMATICITY_VIEWS } from "./chromaticity";
+import { TRANSFORMS } from "./color-transform";
+import { COLOR_MODELS, GAMUTS, VOLUME_OVERLAYS } from "./color-volume";
+import { PIXEL_VIEWS } from "./pixel-demos";
 import { PHOSPHORS, SCOPE_SIGNALS, VECTOR_STYLES, WAVE_STYLES } from "./scope-signal";
+import { SPECTRUM_VIEWS } from "./spectrum-views";
+import { CURVE_VIEWS } from "./transfer-curves";
 import {
   DEFAULT_HOME_DIAGRAM,
   homeDrawing,
@@ -21,6 +25,14 @@ describe("resolveHomeDiagram", () => {
     expect(resolveHomeDiagram(JSON.stringify(off))).toEqual(off);
   });
 
+  it("keeps each newer diagram's own choice", () => {
+    const pinned = {
+      ...DEFAULT_HOME_DIAGRAM, diagram: "spectrum", gamut: "dwg", model: "zcam", overlay: "pointer",
+      transform: "rgc", chromaticity: "macadam", spectrum: "tm30", curve: "film", pixel: "bayer",
+    };
+    expect(resolveHomeDiagram(JSON.stringify(pinned))).toEqual(pinned);
+  });
+
   it("restores the xyY coordinate choice", () => {
     const preferences = { ...DEFAULT_HOME_DIAGRAM, diagram: "volume", gamut: "rec2020", model: "xyy" };
     expect(resolveHomeDiagram(JSON.stringify(preferences))).toEqual(preferences);
@@ -31,7 +43,7 @@ describe("resolveHomeDiagram", () => {
       .toEqual({ ...DEFAULT_HOME_DIAGRAM, gamut: "rec709" });
   });
 
-  it("gives older saved choices random scope options", () => {
+  it("gives older saved choices random options for everything added since", () => {
     expect(resolveHomeDiagram(JSON.stringify({ version: 2, diagram: "waveform", gamut: "p3", model: "xyy" })))
       .toEqual({ ...DEFAULT_HOME_DIAGRAM, diagram: "waveform", gamut: "p3", model: "xyy" });
   });
@@ -43,32 +55,32 @@ describe("resolveHomeDiagram", () => {
 });
 
 describe("randomDrawing", () => {
-  it("can land on every diagram, gamut and coordinate system", () => {
-    const seen = { diagram: new Set(), gamut: new Set(), model: new Set(), signal: new Set(), vectorStyle: new Set(), waveStyle: new Set(), phosphor: new Set() };
+  it("can land on every diagram and every option", () => {
+    const lists = {
+      diagram: 8, gamut: GAMUTS.length, model: COLOR_MODELS.length, signal: SCOPE_SIGNALS.length,
+      vectorStyle: VECTOR_STYLES.length, waveStyle: WAVE_STYLES.length, phosphor: PHOSPHORS.length,
+      overlay: VOLUME_OVERLAYS.length, transform: TRANSFORMS.length, chromaticity: CHROMATICITY_VIEWS.length,
+      spectrum: SPECTRUM_VIEWS.length, curve: CURVE_VIEWS.length, pixel: PIXEL_VIEWS.length,
+    } as const;
+    const seen = Object.fromEntries(Object.keys(lists).map(field => [field, new Set()])) as Record<keyof typeof lists, Set<unknown>>;
     for (let step = 0; step < 1000; step++) {
-      const { diagram, gamut, model, signal, vectorStyle, waveStyle, phosphor } = randomDrawing(() => step / 1000);
-      seen.diagram.add(diagram); seen.gamut.add(gamut); seen.model.add(model); seen.signal.add(signal);
-      seen.vectorStyle.add(vectorStyle); seen.waveStyle.add(waveStyle); seen.phosphor.add(phosphor);
+      const drawing = randomDrawing(() => step / 1000);
+      for (const field of Object.keys(lists) as (keyof typeof lists)[]) seen[field].add(drawing[field]);
     }
-    expect(seen.diagram.size).toBe(3);
-    expect(seen.gamut.size).toBe(GAMUTS.length);
-    expect(seen.model.size).toBe(COLOR_MODELS.length);
-    expect(seen.signal.size).toBe(SCOPE_SIGNALS.length);
-    expect(seen.vectorStyle.size).toBe(VECTOR_STYLES.length);
-    expect(seen.waveStyle.size).toBe(WAVE_STYLES.length);
-    expect(seen.phosphor.size).toBe(PHOSPHORS.length);
+    for (const [field, count] of Object.entries(lists)) expect(seen[field as keyof typeof lists].size, field).toBe(count);
   });
 
   it("never draws the off choice", () => {
     expect(randomDrawing(() => 0).diagram).toBe("vectorscope");
-    expect(randomDrawing(() => 0.999999).diagram).toBe("volume");
+    expect(randomDrawing(() => 0.999999).diagram).toBe("pixel");
   });
 });
 
 describe("homeDrawing", () => {
   const chance: HomeDrawing = {
     diagram: "waveform", gamut: "ap0", model: "oklab", signal: "hue", vectorStyle: "points",
-    waveStyle: "rgb", phosphor: "green", seed: 7,
+    waveStyle: "rgb", phosphor: "green", overlay: "gradient", transform: "agx", chromaticity: "hue",
+    spectrum: "metamer", curve: "tonemap", pixel: "mixing", seed: 7,
   };
 
   it("draws nothing when off", () => {
@@ -81,9 +93,11 @@ describe("homeDrawing", () => {
 
   it("keeps pinned choices and fills only the random gamut", () => {
     expect(homeDrawing({ ...DEFAULT_HOME_DIAGRAM, diagram: "volume", model: "xyy" }, chance))
-      .toEqual({ ...chance, diagram: "volume", gamut: "ap0", model: "xyy" });
+      .toEqual({ ...chance, diagram: "volume", gamut: "ap0", model: "xyy", overlay: "none" });
     expect(homeDrawing({ ...DEFAULT_HOME_DIAGRAM, diagram: "vectorscope", gamut: "p3", signal: "checker", phosphor: "white" }, chance))
-      .toEqual({ ...chance, diagram: "vectorscope", gamut: "p3", model: "xyz", signal: "checker", phosphor: "white" });
+      .toEqual({ ...chance, diagram: "vectorscope", gamut: "p3", model: "xyz", signal: "checker", phosphor: "white", overlay: "none" });
+    expect(homeDrawing({ ...DEFAULT_HOME_DIAGRAM, diagram: "curve", curve: "film", overlay: "none" }, chance))
+      .toEqual({ ...chance, diagram: "curve", model: "xyz", curve: "film", overlay: "none" });
   });
 });
 

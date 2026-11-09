@@ -2,6 +2,7 @@
 
 import {
   useId,
+  useRef,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -19,6 +20,7 @@ export function HsvPicker({
   onChange: (value: HsvColor) => void;
 }) {
   const pickerId = useId();
+  const saturationInput = useRef<HTMLInputElement>(null);
   const customHex = displayHex ?? hsvToHex(value);
   function updateSaturationValue(event: ReactPointerEvent<HTMLButtonElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -60,8 +62,12 @@ export function HsvPicker({
       <button
         type="button"
         className="sv-plane"
-        aria-label={`饱和度 ${value.s}%，明度 ${value.v}%。使用方向键调整，按住 Shift 每次调整 10%。`}
+        aria-label={`饱和度 ${value.s}%，明度 ${value.v}%。使用方向键调整，按住 Shift 每次调整 10%。按 Enter 可编辑饱和度数值。`}
         style={{ "--picker-hue": value.h } as CSSProperties}
+        onClick={(event) => {
+          // Pointer input has already applied the chosen position. Keyboard activation opens precise entry.
+          if (event.detail === 0) saturationInput.current?.focus();
+        }}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
           updateSaturationValue(event);
@@ -118,6 +124,7 @@ export function HsvPicker({
           <label key={channel}>
             <span>{label}</span>
             <input
+              ref={channel === "s" ? saturationInput : undefined}
               type="number"
               inputMode="numeric"
               min={min}
