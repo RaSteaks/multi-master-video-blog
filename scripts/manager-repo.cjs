@@ -1,5 +1,6 @@
 const fsp = require("node:fs/promises");
 const path = require("node:path");
+const { isDeepStrictEqual } = require("node:util");
 
 // Updates the checkout Manager runs from by fast-forward only. It never merges,
 // rebases, stashes, resets, cleans or edits Git configuration: local commits and
@@ -11,6 +12,45 @@ const LOCK_WRITE_DENIED = /\.lock': Permission denied/i;
 // These inputs define the automatic, non-destructive CMS upgrade contract.
 const SCHEMA_FILES = ["scripts/setup-directus-schema.cjs", "scripts/directus-db-utils.cjs",
   "scripts/directus-asset-presets.cjs", "config/directus-asset-presets.json", "shared/project-layouts.cjs"];
+
+function dependencyGraph(packages, workspace) {
+  const graph = new Map();
+  const visit = directory => {
+    if (graph.has(directory)) return;
+    const entry = packages[directory];
+    if (!entry || typeof entry !== "object") throw new Error("Incomplete lockfile");
+    if (entry.link) {
+      graph.set(directory, entry);
+      visit(entry.resolved);
+      return;
+    }
+    // npm's dev/optional flags describe placement across the whole installation,
+    // not a change to the package consumed by this particular service.
+    const { dev, optional, devOptional, peer, ...identity } = entry;
+    const fields = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+    graph.set(directory, directory === workspace
+      ? Object.fromEntries(fields.map(field => [field, entry[field]])) : identity);
+    for (const field of fields) {
+      for (const name of Object.keys(entry[field] || {})) {
+        let parent = directory;
+        let resolved;
+        while (true) {
+          const candidate = (parent ? parent + "/" : "") + "node_modules/" + name;
+          if (packages[candidate]) { resolved = candidate; break; }
+          if (!parent) break;
+          parent = path.posix.dirname(parent);
+          if (parent === ".") parent = "";
+        }
+        if (resolved) visit(resolved);
+        else if (!["optionalDependencies", "peerDependencies"].includes(field) && !entry.optionalDependencies?.[name]) {
+          throw new Error("Incomplete dependency graph");
+        }
+      }
+    }
+  };
+  visit(workspace);
+  return graph;
+}
 
 function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform, loadedFiles = () => [], fetchTimeoutMs = 120000 }) {
   const outLog = path.join(root, "logs", "git.out.log");
@@ -109,22 +149,57 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
     }
   }
 
-  function classify(files) {
+  async function classify(files, from, to) {
     const loaded = new Set(loadedFiles());
     const any = test => files.some(test);
-    // The root manifest and shared lockfile can change any workspace's runtime.
-    const all = any(file => ["package.json", "package-lock.json", "scripts/run-service.cjs", "config/resource-profile.cjs"].includes(file));
+    const dependencies = await dependencyImpact(files, from, to);
+    const all = dependencies.root || any(file => ["scripts/run-service.cjs", "config/resource-profile.cjs"].includes(file));
     const shared = file => file.startsWith("shared/") || file === "config/directus-asset-presets.json";
     return {
       manager: any(file => loaded.has(file)),
-      dependencies: any(file => ["package.json", "package-lock.json", "apps/api/package.json", "apps/web/package.json", "apps/cms/directus/package.json"].includes(file)),
+      dependencies: Object.values(dependencies).some(Boolean),
       schema: any(file => SCHEMA_FILES.includes(file)),
-      api: all || any(file => file.startsWith("apps/api/") || shared(file) || file === "config/storage.cjs"),
-      web: all || any(file => file.startsWith("apps/web/") || shared(file)),
-      cms: all || any(file => file.startsWith("apps/cms/") || ["config/storage.cjs", "config/directus-runtime.json", "config/private-cms-collections.json",
+      api: all || dependencies.api || any(file => file.startsWith("apps/api/") || shared(file) || file === "config/storage.cjs"),
+      web: all || dependencies.web || any(file => file.startsWith("apps/web/") || shared(file)),
+      cms: all || dependencies.cms || any(file => file.startsWith("apps/cms/") || ["config/storage.cjs", "config/directus-runtime.json", "config/private-cms-collections.json",
         "scripts/directus-db-utils.cjs", "scripts/directus-public-access.cjs"].includes(file)),
       deployment: any(file => file.startsWith("deployment/"))
     };
+  }
+
+  async function dependencyImpact(files, from, to) {
+    const workspaces = { root: "", cms: "apps/cms/directus", api: "apps/api", web: "apps/web" };
+    const manifests = Object.values(workspaces).map(dir => dir ? dir + "/package.json" : "package.json");
+    if (!files.some(file => file === "package-lock.json" || manifests.includes(file))) {
+      return { root: false, cms: false, api: false, web: false };
+    }
+    // Read both committed dependency graphs: a Web-only lockfile update must not
+    // restart CMS/API, but changed shared transitive packages affect every consumer.
+    try {
+      const revisions = await Promise.all([from, to].map(async revision => {
+        const [lock, manifest] = await Promise.all(["package-lock.json", "package.json"].map(async file =>
+          JSON.parse(await git(["show", revision + ":" + file]))));
+        if (![2, 3].includes(lock.lockfileVersion) || !lock.packages) throw new Error("Unsupported lockfile");
+        const changedManifests = await Promise.all(Object.entries(workspaces).filter(([, dir]) =>
+          dir && files.includes(dir + "/package.json")).map(async ([id, dir]) =>
+          [id, JSON.parse(await git(["show", revision + ":" + dir + "/package.json"]))]));
+        return { lock, manifest, manifests: { root: manifest, ...Object.fromEntries(changedManifests) } };
+      }));
+      return Object.fromEntries(Object.entries(workspaces).map(([id, dir]) => {
+        const snapshots = revisions.map(({ lock, manifest, manifests }) => {
+          const graph = dependencyGraph(lock.packages, dir);
+          const declared = Object.fromEntries(["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"].map(field =>
+            [field, manifests[id]?.[field]]));
+          // Root scripts and overrides can change service launch/install behavior;
+          // descriptive metadata and engine declarations do not reload a service.
+          return id === "root" ? { graph, declared, scripts: manifest.scripts, overrides: manifest.overrides, workspaces: manifest.workspaces } : { graph, declared };
+        });
+        return [id, !isDeepStrictEqual(...snapshots)];
+      }));
+    } catch {
+      // Old, missing or incomplete lockfiles cannot prove which services are safe.
+      return { root: true, cms: true, api: true, web: true };
+    }
   }
 
   async function readStatus() {
@@ -146,7 +221,7 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
     ]);
     const state = {
       available: true, root, branch, head, upstream, upstreamHead: null, remote: null,
-      ahead: 0, behind: 0, incoming: [], changedFiles: 0, impact: classify([]), conflicts: [],
+      ahead: 0, behind: 0, incoming: [], changedFiles: 0, impact: await classify([]), conflicts: [],
       localChanges: local.length, localFiles: local.slice(0, LISTED), inProgress, lastFetchedAt
     };
     if (!upstream) return state;
@@ -160,7 +235,7 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
     const [ahead, behind] = trim(counts).split(/\s+/).map(Number);
     return {
       ...state, upstreamHead, remote, ahead, behind, incoming,
-      changedFiles: files.length, impact: classify(files), conflicts: overlap(local, files)
+      changedFiles: files.length, impact: await classify(files, await git(["merge-base", "HEAD", "@{upstream}"]).then(trim), upstreamHead.hash), conflicts: overlap(local, files)
     };
   }
 
@@ -232,7 +307,7 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
       }
       const base = { branch: before.branch, upstream: before.upstream, from, to };
       if (from === to || await isAncestor(to, from)) {
-        return { ...base, upToDate: true, count: 0, changedFiles: 0, impact: classify([]), message: before.branch + " already contains " + short(to) + "." };
+        return { ...base, upToDate: true, count: 0, changedFiles: 0, impact: await classify([]), message: before.branch + " already contains " + short(to) + "." };
       }
       if (!await isAncestor(from, to)) {
         throw conflict(before.branch + " has local commits that are not on " + before.upstream + ". Manager only fast-forwards; reconcile the branch in a terminal.");
@@ -253,7 +328,7 @@ function createRepoUpdater({ root, execFile, gitPath = "git", env = {}, platform
       await protectUntrackedFiles(from, to);
       await git(["read-tree", "--dry-run", "-m", "-u", from, to], { write: true, log: true });
       return {
-        ...base, upToDate: false, count, changedFiles: files.length, impact: classify(files),
+        ...base, upToDate: false, count, changedFiles: files.length, impact: await classify(files, from, to),
         rootDependencies: files.includes("package.json") || files.includes("package-lock.json"),
         message: "Verified a fast-forward of " + before.branch + " from " + short(from) + " to " + short(to) + " (" + commits(count) + ")."
       };

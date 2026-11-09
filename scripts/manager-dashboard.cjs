@@ -605,7 +605,7 @@ async function checkHttp(url, timeoutMs = 3000) {
   const started = Date.now();
   try {
     if (url.endsWith("/server/health")) {
-      const health = await directusHealth(loadDirectusEnv(), url.replace(/\/server\/health$/, ""), timeoutMs);
+      const health = await directusHealth(loadDirectusEnv(process.env.CMS_ENV_FILE), url.replace(/\/server\/health$/, ""), timeoutMs);
       return { ...health, elapsed: Date.now() - started };
     }
     const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
@@ -1555,8 +1555,8 @@ async function readRepoStatus() {
   const repo = { ...await repoUpdater.status(), mode: systemd ? "systemd" : "windows" };
   if (systemd && repo.available) {
     repo.checkoutServices = Object.keys(await checkoutUnits(["cms", "api", "web"]));
-    if (repo.checkoutServices.length === 3) {
-      const schema = await readSchemaUpdate();
+    if (repo.checkoutServices.length) {
+      const schema = await readSchemaUpdate(repo.checkoutServices.length === 3);
       repo.schemaPending = schema.needed;
       repo.updatePending = Boolean(schema.pending);
       repo.updateImpact = schema.pending?.impact;
@@ -1609,11 +1609,14 @@ async function handleRepoPull(target) {
   }
 }
 
-async function readSchemaUpdate() {
-  const files = await Promise.all(SCHEMA_FILES.map(file => fsp.readFile(path.join(ROOT, file))));
-  const hash = crypto.createHash("sha256");
-  files.forEach((bytes, index) => { hash.update(SCHEMA_FILES[index] + "\0"); hash.update(bytes); });
-  const signature = hash.digest("hex");
+async function readSchemaUpdate(checkSchema = true) {
+  let signature;
+  if (checkSchema) {
+    const files = await Promise.all(SCHEMA_FILES.map(file => fsp.readFile(path.join(ROOT, file))));
+    const hash = crypto.createHash("sha256");
+    files.forEach((bytes, index) => { hash.update(SCHEMA_FILES[index] + "\0"); hash.update(bytes); });
+    signature = hash.digest("hex");
+  }
   const text = await fsp.readFile(path.join(ROOT, "logs", "schema-update.json"), "utf8").catch(error => {
     if (error.code === "ENOENT") return "{}";
     throw error;
@@ -1625,7 +1628,7 @@ async function readSchemaUpdate() {
       || saved.pending.running.some(id => !["cms", "api", "web"].includes(id))))) {
     throw new Error("Invalid logs/schema-update.json; restore the Manager update record before retrying.");
   }
-  return { signature, applied: saved.signature, needed: signature !== saved.signature, pending: saved.pending };
+  return { signature, applied: saved.signature, needed: checkSchema && signature !== saved.signature, pending: saved.pending };
 }
 
 async function saveSchemaUpdate(signature, pending) {
@@ -1655,17 +1658,19 @@ async function upgradeCmsSchema(env) {
 
 async function pullSystemdCheckout(plan) {
   const units = await checkoutUnits(["cms", "api", "web"]);
-  const schema = Object.keys(units).length === 3 ? await readSchemaUpdate() : null;
-  const migrate = Boolean(schema && (schema.needed || plan.impact.schema));
+  const canMigrate = Object.keys(units).length === 3;
+  const schema = await readSchemaUpdate(canMigrate);
+  const migrate = canMigrate && (schema.needed || plan.impact.schema);
   const impact = Object.fromEntries(["cms", "api", "web", "dependencies"].map(id => [id,
     Boolean(plan.impact[id] || schema?.pending?.impact[id] || (migrate && ["api", "web"].includes(id)))]));
   if (plan.upToDate && !migrate && !schema?.pending) return { message: plan.message };
-  if (plan.impact.schema && !schema && (units.api || units.web)) {
+  if (plan.impact.schema && !canMigrate && (units.api || units.web)) {
     throw new Error("Automatic schema upgrades require CMS, API and Web to use this checkout. Use the release deployment workflow for mixed installations.");
   }
   const affected = ["cms", "api", "web"].filter(id => impact[id]);
   const local = affected.filter(id => units[id]);
-  // A retry restores only services running before the failed schema update.
+  // Persist the original running set for every update, including a failed health
+  // check/build with no schema change. An up-to-date Git checkout can then retry.
   const running = local.filter(id => units[id].ActiveState === "active" || schema?.pending?.running.includes(id));
   for (const id of local) {
     if (!["active", "inactive", "failed"].includes(units[id].ActiveState)) throw new Error("Wait for the " + id + " unit operation to finish before pulling.");
@@ -1689,7 +1694,7 @@ async function pullSystemdCheckout(plan) {
     : await serviceStep(REPO_STEP, "pull", () => repoUpdater.fastForward(plan));
   let applied = schema?.applied;
   const rootDependencies = Boolean(plan.rootDependencies || schema?.pending?.rootDependencies);
-  const pending = migrate || schema?.pending ? { impact, running, rootDependencies } : null;
+  const pending = migrate || local.length ? { impact, running, rootDependencies } : null;
   if (pending) await saveSchemaUpdate(applied, pending);
   try {
     // Build with the matching Web unit's identity and production environment.
@@ -1699,7 +1704,9 @@ async function pullSystemdCheckout(plan) {
       ["install", ...local.map(id => "--workspace=@multi-master-video-blog/" + id),
         "--include-workspace-root=" + rootDependencies, "--include=dev", "--no-save", "--no-audit", "--no-fund"],
       { cwd: ROOT, timeout: 15 * 60_000 }));
-    if (local.includes("cms") && running.includes("cms")) await handleAction("cms", "start");
+    // handleAction(start) awaits the real HTTP health check before resolving.
+    // Never start the next affected service (or migrate/build) past a failed gate.
+    if (running.includes("cms")) await handleAction("cms", "start");
     if (migrate) {
       await waitForProcessHealth(serviceMap.get("cms"));
       await serviceStep({ id: "schema" }, "migrate", () => upgradeCmsSchema(schemaEnv));
@@ -1720,7 +1727,7 @@ async function pullSystemdCheckout(plan) {
   const summary = [pulled.message];
   if (migrate) summary.push("Applied required CMS schema upgrades.");
   if (rebuild) summary.push("Rebuilt production Web.");
-  if (running.length) summary.push("Restarted " + running.join(", ") + ".");
+  if (running.length) summary.push("Restarted and verified healthy in order: " + running.join(" → ") + ".");
   const outside = affected.filter(id => !units[id]);
   if (outside.length) summary.push("Outside this checkout or not installed: " + outside.join(", ") + ". For release units use " + deployCommand(plan.to) + ".");
   summary.push(repoNextSteps({ manager: plan.impact.manager, deployment: plan.impact.deployment }, plan.to));

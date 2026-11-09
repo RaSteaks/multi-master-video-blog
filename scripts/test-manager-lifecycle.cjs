@@ -280,6 +280,21 @@ test("rendered browser script parses and uses persistent feedback", () => {
   assert.doesNotMatch(script, /reportValidity\(/);
 });
 
+test("Manager CMS health uses the same external CMS_ENV_FILE as schema upgrades", async t => {
+  const root = temporaryRoot(t);
+  const cmsEnv = path.join(root, "external-cms.env");
+  fs.writeFileSync(cmsEnv, "DIRECTUS_HEALTH_EMAIL=health@example.invalid\nDIRECTUS_HEALTH_PASSWORD=fixture-external\n");
+  const checks = [];
+  const { run } = harness(root, { CMS_ENV_FILE: cmsEnv }, "linux", undefined, {
+    "./directus-health.cjs": { directusHealth: async (env, base) => {
+      checks.push({ email: env.DIRECTUS_HEALTH_EMAIL, password: env.DIRECTUS_HEALTH_PASSWORD, base });
+      return { ok: true, status: 200 };
+    } },
+  });
+  assert.equal((await run('checkHttp(serviceMap.get("cms").healthUrl)')).ok, true);
+  assert.deepEqual(checks, [{ email: "health@example.invalid", password: "fixture-external", base: "http://127.0.0.1:8055" }]);
+});
+
 function browserOperationHarness() {
   // Run the functions emitted to the browser with controlled responses/timing;
   // no real service, DOM implementation or wall-clock polling is involved.
@@ -616,14 +631,99 @@ test("Linux Pull updates only running checkout units and builds Web for its actu
   assert.deepEqual(calls, [], "An unchanged, completed schema is not applied again");
   run('active="active"; upToDate=false; calls=[]');
   failBuild = true;
-  await assert.rejects(pull({ web:true }), /pulled.*build failed.*web/);
+  await assert.rejects(pull({ web:true }), /pulled.*build failed.*retry Pull/);
   assert.deepEqual(calls.splice(0), ["stop:video-blog-web.service", "start:video-blog-web-build.service"]);
+  assert.deepEqual(Array.from((await run('readSchemaUpdate()')).pending.running), ["web"]);
+  failBuild = false;
+  run('active="inactive"; upToDate=true');
+  await pull({});
+  assert.deepEqual(calls.splice(0), ["stop:video-blog-web.service", "start:video-blog-web-build.service", "start:video-blog-web.service"]);
+  assert.equal((await run('readSchemaUpdate()')).pending, null);
+  run('active="active"; upToDate=false');
   run('checkWebBuildUnit = async () => { throw Error("missing build unit") }; calls=[]');
   await assert.rejects(pull({ web:true }), /missing build unit/);
   assert.equal(run('calls.length'), 0, "preflight failed before Git or service changes");
   run('repoUpdater.fastForward = async () => { throw Error("checkout failed") }');
   await assert.rejects(pull({ api:true }), /checkout failed/);
   assert.deepEqual(calls, []);
+});
+
+test("Linux Pull waits for each HTTP health gate and retries failed startup after a Manager reload", async t => {
+  for (const failure of [null, "cms", "api"]) await t.test(failure || "delayed healthy responses", async t => {
+    const root = temporaryRoot(t);
+    for (const file of require("./manager-repo.cjs").SCHEMA_FILES) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), "fixture schema\n");
+    }
+    const ids = ["cms", "api", "web"];
+    const states = Object.fromEntries(ids.map(id => [id, "active"]));
+    const calls = [];
+    let unhealthy = failure;
+    let hold = failure === null;
+    const gates = Object.fromEntries(ids.map(id => [id, { entered: Promise.withResolvers(), released: Promise.withResolvers() }]));
+    const server = require("node:http").createServer(async (req, res) => {
+      const id = req.url.slice(1);
+      calls.push("health:" + id);
+      gates[id].entered.resolve();
+      if (hold) await gates[id].released.promise;
+      res.writeHead(unhealthy === id ? 503 : 200).end("fixture health");
+    });
+    t.after(async () => {
+      for (const gate of Object.values(gates)) gate.released.resolve();
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    });
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const execFile = (file, args, options, callback) => {
+      assert.equal(file, "/usr/bin/sudo");
+      const id = args.at(-1).match(/^video-blog-(cms|api|web)\.service$/)[1];
+      const action = args.at(-2);
+      calls.push(action + ":" + id);
+      states[id] = action === "stop" ? "inactive" : "active";
+      callback(null, "", "");
+    };
+    const create = retry => {
+      const manager = harness(root, { MANAGER_WAIT_MS: failure ? "50" : "5000" }, "linux", execFile);
+      Object.assign(manager.context, { fixtureStates: states, fixtureCalls: calls, fixtureRetry: retry });
+      manager.run(`readUnit = async name => ({LoadState:"loaded", ActiveState:fixtureStates[name.split("-")[2].split(".")[0]],
+        User:"fixture", WorkingDirectory:ROOT, ExecStart:"npm run dev:web"});
+        for (const id of ["cms","api","web"]) serviceMap.get(id).healthUrl = "http://127.0.0.1:${server.address().port}/"+id;
+        repoUpdater.status = async () => ({available:true, head:{hash:"b".repeat(40)}});
+        repoUpdater.prepare = async () => ({upToDate:fixtureRetry, impact:fixtureRetry ? {} : {cms:true,api:true,web:true}, message:"Already current"});
+        repoUpdater.fastForward = async () => { fixtureCalls.push("pull"); return {message:"pulled"} };`);
+      return manager;
+    };
+    const manager = create(false);
+    await manager.run('readSchemaUpdate().then(state => saveSchemaUpdate(state.signature, null))');
+    const updating = manager.run('withOperation("repo:pull", () => handleRepoPull())');
+    if (!failure) {
+      for (const [index, id] of ids.entries()) {
+        await gates[id].entered.promise;
+        assert.equal(calls.includes("start:" + ids[index + 1]), false, "The next service must wait for " + id);
+        const journal = await manager.run('operationJournal.read()');
+        assert.equal(journal.steps.at(-1).serviceId, id);
+        assert.equal(journal.steps.at(-1).state, "running", "Health verification remains part of the start step");
+        gates[id].released.resolve();
+      }
+      await updating;
+    } else {
+      await assert.rejects(updating, /did not become healthy.*503.*retry Pull/);
+      assert.equal(calls.includes("start:" + ids[ids.indexOf(failure) + 1]), false);
+      const journal = await manager.run('operationJournal.read()');
+      assert.equal(journal.steps.at(-1).state, "failed");
+      assert.equal(journal.steps.at(-1).serviceId, failure);
+      unhealthy = null;
+      hold = false;
+      calls.length = 0;
+      const reloaded = create(true);
+      assert.equal((await reloaded.run('readRepoStatus()')).updatePending, true);
+      await reloaded.run('withOperation("repo:pull", () => handleRepoPull())');
+      assert.equal((await reloaded.run('readRepoStatus()')).updatePending, false);
+    }
+    assert.deepEqual(calls.filter(call => call !== "pull"), ["stop:web", "stop:api", "stop:cms",
+      "start:cms", "health:cms", "start:api", "health:api", "start:web", "health:web"]);
+    assert.equal((await manager.run('readSchemaUpdate()')).pending, null);
+  });
 });
 
 test("Windows pull + update verifies before stopping, updates only after both stop, then installs and starts", async () => {

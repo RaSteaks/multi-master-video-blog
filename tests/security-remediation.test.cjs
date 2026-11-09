@@ -314,6 +314,40 @@ test("CMS health shares login but still checks the authenticated health response
   healthy = false; await assert.rejects(check(), /503/); assert.equal(logins, 1);
 });
 
+test("CMS health reauthenticates after 401/403 and never accepts denied or failed health", async t => {
+  const { directusHealth } = require("../scripts/directus-health.cjs");
+  let logins = 0;
+  let healthStatus = 200;
+  const server = require("node:http").createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/auth/login") {
+      logins++;
+      return res.end(JSON.stringify({ data: { access_token: "fixture-" + logins, expires: 900000 } }));
+    }
+    assert.equal(req.headers.authorization, "Bearer fixture-" + logins);
+    res.writeHead(healthStatus).end(JSON.stringify({ status: healthStatus === 200 ? "ok" : "error" }));
+  });
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const check = () => directusHealth({ ADMIN_EMAIL: "fixture@example.invalid", ADMIN_PASSWORD: "fixture" },
+    "http://127.0.0.1:" + server.address().port);
+  await check();
+  for (const status of [401, 403]) {
+    healthStatus = status;
+    await assert.rejects(check(), new RegExp(String(status)));
+    const before = logins;
+    healthStatus = 200;
+    assert.equal((await check()).ok, true);
+    assert.equal(logins, before + 1);
+  }
+  healthStatus = 503;
+  await assert.rejects(check(), /503/);
+  assert.equal(logins, 3, "A service failure is not an authentication failure");
+});
+
 test("CMS startup rejects every anonymous policy until explicit bootstrap seals app grants", async t => {
   const dir = await temp(t), filename = path.join(dir, "permissions.db");
   const { DatabaseSync } = require("node:sqlite"); const db = new DatabaseSync(filename);

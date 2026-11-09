@@ -338,10 +338,11 @@ sudo -u admin sudo -n -l /usr/bin/systemctl start video-blog-web-build.service
 
 **Check for updates** 列出待拉取提交及其影响范围。**Pull** 只快进到确认的提交。Manager 会解析 CMS、API 和 Web 单元的 `WorkingDirectory`，在面板列出使用当前 Git 仓库或对应工作区的服务。
 
-- **直接从 Git clone 目录运行**：拉取成功后，Manager 自动重启受影响且原先运行的服务。只有 API 改动时只重启 API。Web 为 Development 时直接重启；Production 时先检查构建单元，再停 Web、构建并启动。按上一节配置与 Web 同账号、同工作目录的 `video-blog-web-build.service`。构建失败会显示失败步骤，修复后再启动服务。已停止的服务不会被启动。
-- **依赖改动**：受影响的工作区会在启动前安装依赖，根 `package.json` 或共享锁文件变化会影响全部工作区。请以有权写入 checkout 及其 `node_modules` 的非 root 账号运行 Manager。
+- **直接从 Git clone 目录运行**：拉取成功后，Manager 只更新受影响且原先运行的服务。多个模块受影响时，先按 Web → API → CMS 停止，再按 CMS → API → Web 启动，跳过未受影响的模块。每一步启动必须通过应用 HTTP 健康检查才进入下一步，systemd 的 `active` 状态本身不代表健康。只有 API 改动时只重启 API。Web 为 Development 时直接重启；Production 时先检查构建单元，轮到 Web 更新时构建再启动。按上一节配置与 Web 同账号、同工作目录的 `video-blog-web-build.service`。健康检查或构建失败会显示失败步骤并中止后续启动。原先已停止的服务不会被自动启动。
+- **依赖改动**：Manager 比较更新前后的 npm 工作区依赖图，覆盖直接、间接、构建和 peer 依赖；只属于 Web 的依赖或 lint 工具变化不会重启 CMS/API，共享依赖变化会更新实际引用它的模块。根安装依赖、脚本、overrides 或工作区配置变化仍按全部服务处理；旧版、缺失或不完整的锁文件无法可靠判断时也按全部服务处理。受影响工作区会在启动前安装依赖。请以有权写入 checkout 及其 `node_modules` 的非 root 账号运行 Manager。
 - **自动 schema 升级**：CMS、API、Web 都使用当前 checkout 时，Pull 会检查 schema 定义的内容指纹。首次启用、定义变化或上次升级未完成时，在 CMS 就绪后运行新代码的 `setup-directus-schema.cjs --upgrade-only`，成功后才启动 API、构建并启动 Production Web。该模式补齐集合、字段、关系和应用管理的图片预设，执行已明确的字段兼容修复；不修改站点内容、自定义校验、匿名访问策略、编辑器默认值或 Insights 面板。迁移需要 CMS 管理员凭据，沿用项目 CMS `.env` 和 Manager 已注入的环境；外置配置可在 Manager 环境设置 `CMS_ENV_FILE=/etc/video-blog/cms.env`。
-- **升级状态与重试**：`logs/schema-update.json` 保存已完成的 schema 指纹和未完成更新的服务状态，不保存凭据。任务面板显示 Schema 阶段，日志查看器的 **Schema** 标签显示输出。失败后 API/Web 不越过迁移继续启动；修正日志中的问题后点击 **Retry update**，即使 Git 已是最新也能继续，并恢复此前运行的服务。定义未变化且更新完成时不重复迁移。首次加载新版 Manager 后，若代码已更新但 schema 尚未确认，面板会提供 **Apply schema**，无需终端迁移命令。
+- **升级状态与重试**：`logs/schema-update.json` 保存已完成的 schema 指纹，以及所有未完成 checkout 更新的影响范围和原先运行的服务，不保存凭据。普通依赖安装、构建、健康检查失败也会保留重试状态，Manager 重启后仍可读取。任务面板显示失败阶段，Schema 输出可在日志查看器的 **Schema** 标签查看。修正问题后点击 **Retry update**，即使 Git 已是最新也会按原影响范围重新执行更新，并恢复此前运行的服务；后续服务不会越过失败步骤启动。定义未变化且迁移已完成时不重复迁移。首次加载新版 Manager 后，若代码已更新但 schema 尚未确认，面板会提供 **Apply schema**，无需终端迁移命令。
+- **CMS 健康检查认证**：健康检查与 schema 升级都读取 `CMS_ENV_FILE` 指定的外置 CMS 配置，未指定时读取项目 CMS `.env`，进程环境优先。健康检查优先使用 `DIRECTUS_HEALTH_EMAIL` / `DIRECTUS_HEALTH_PASSWORD`，其次 `DIRECTUS_EMAIL` / `DIRECTUS_PASSWORD`，再其次管理员凭据。缓存 token 收到 401/403 后会清除，下次轮询重新登录；401/403、503 和非 `ok` 健康状态都不会被当作启动成功。持续 403 时应核对账号与 CMS 的认证配置。
 - **独立 release**：运行在 `/opt/video-blog/current` 等其他目录的单元仍使用原 release。面板提供 `update-native.sh` 对应目标提交的部署命令。Manager 代码变动后仍通过 **Restart Manager** 单独加载。
 
 四个服务卡片出现错误时会显示 **Copy error**。按钮复制服务名称、定位信息和当前错误详情，使用已有提示条反馈结果；普通 HTTP 页面会使用选择复制回退。错误恢复后按钮隐藏，更新进行中仍可复制诊断信息。

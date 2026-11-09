@@ -35,7 +35,9 @@ async function directusHealth(env, base, timeoutMs = 3000) {
   }
   const response = await fetch(`${base}/server/health`, { signal,
     headers: { Authorization: `Bearer ${cached.token}` }, redirect: "error" });
-  if (response.status === 401) tokens.delete(key);
+  // A CMS restart or changed authentication policy can invalidate a cached token
+  // with either status. The next readiness poll must log in again, not reuse it.
+  if (response.status === 401 || response.status === 403) tokens.delete(key);
   const data = await response.json().catch(() => null);
   if (!response.ok || data?.status !== "ok") throw new Error(`CMS health check failed (${response.status}).`);
   return { status: response.status, ok: true };

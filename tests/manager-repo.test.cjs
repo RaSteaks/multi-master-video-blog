@@ -179,6 +179,60 @@ test("fast-forwards to the exact reviewed commit, even when upstream has moved o
   assert.equal(again.upToDate, true);
 });
 
+test("workspace dependency graphs isolate Web updates and include changed shared consumers", async t => {
+  const fixture = sandbox(t);
+  const repo = fixture.updater();
+  const manifest = { name: "fixture", private: true, workspaces: ["apps/api", "apps/web", "apps/cms/directus"], engines: { node: ">=22.12.0" } };
+  const lock = { lockfileVersion: 3, packages: {
+    "": { ...manifest },
+    "apps/api": { dependencies: { backend: "1.0.0" } },
+    "apps/web": { dependencies: { frontend: "1.0.0" } },
+    "apps/cms/directus": { dependencies: { cms: "1.0.0" } },
+    "node_modules/backend": { version: "1.0.0" },
+    "node_modules/frontend": { version: "1.0.0", dependencies: { shared: "1.0.0" } },
+    "node_modules/cms": { version: "1.0.0", dependencies: { shared: "1.0.0" } },
+    "node_modules/shared": { version: "1.0.0" },
+  } };
+  const publish = async extra => {
+    const plan = await repo.prepare(fixture.publish({ "package.json": JSON.stringify(manifest), "package-lock.json": JSON.stringify(lock), ...extra }));
+    await repo.fastForward(plan);
+    return plan;
+  };
+  await publish({ "apps/web/package.json": JSON.stringify(lock.packages["apps/web"]) });
+  // Reproduce the reported update: an engine declaration plus Web lint tooling.
+  manifest.engines.node = ">=22.13.0";
+  lock.packages["apps/web"].devDependencies = { lint: "1.0.0" };
+  lock.packages["node_modules/lint"] = { version: "1.0.0", dev: true };
+  const web = await publish({ "apps/web/package.json": JSON.stringify(lock.packages["apps/web"]) });
+  assert.deepEqual(web.impact, { manager: false, dependencies: true, schema: false, api: false, web: true, cms: false, deployment: false });
+
+  lock.packages["node_modules/shared"].version = "2.0.0";
+  const sharedTarget = fixture.publish({ "package-lock.json": JSON.stringify(lock) });
+  await repo.fetch();
+  const shared = await repo.prepare(sharedTarget);
+  assert.deepEqual((await repo.status()).impact, shared.impact, "Preview and execution use the same dependency graph");
+  assert.equal(shared.impact.cms, true);
+  assert.equal(shared.impact.web, true);
+  assert.equal(shared.impact.api, false);
+  await repo.fastForward(shared);
+
+  // A nested install can replace a hoisted dependency; removals also need reload.
+  lock.packages["node_modules/frontend/node_modules/shared"] = { version: "3.0.0" };
+  const nested = await publish();
+  assert.equal(nested.impact.web, true);
+  assert.equal(nested.impact.cms, false);
+  delete lock.packages["node_modules/frontend/node_modules/shared"];
+  assert.equal((await publish()).impact.web, true);
+
+  const manifestOnly = await publish({ "apps/web/package.json": JSON.stringify({ dependencies: { frontend: "2.0.0" } }) });
+  assert.equal(manifestOnly.impact.dependencies, true, "An edited manifest still installs even before its lockfile changes");
+  assert.equal(manifestOnly.impact.cms, false);
+
+  manifest.overrides = { shared: "3.0.0" };
+  const root = await publish();
+  assert.equal(root.impact.api && root.impact.web && root.impact.cms, true, "Root install overrides affect all services");
+});
+
 test("keeps unrelated local edits and refuses edits the update would overwrite", async t => {
   const fixture = sandbox(t);
   // Servers customize tracked deployment files; an unrelated update keeps them.
