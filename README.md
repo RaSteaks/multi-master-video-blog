@@ -564,6 +564,14 @@ Linux 实机、容器和 Vulkan 的验收范围及当前验证结果见 [维护�
 
 ---
 
+## 许可证
+
+Copyright (c) 2026 RaSteaks
+
+本项目采用 [GNU Affero General Public License v3.0](LICENSE)（SPDX：`AGPL-3.0-only`）。第三方依赖与素材遵循各自的许可证。
+
+---
+
 <div align="center">
 
 Made with care for cinema-grade video publishing on self-hosted infrastructure.
