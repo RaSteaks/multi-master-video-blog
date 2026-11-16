@@ -402,10 +402,19 @@ readout controls and the em-relative station signs use the `support*` radii.
 
 - `AlbumGallery` owns both public and managed photo tiles. Album pickers load bounded
   summaries; management loads the selected album before switching dialogs, retains
-  the current form on failure, and ignores canceled responses. Its responsive CSS grid
-  follows row order so number badges, keyboard focus, lightbox navigation, and the
-  first three eager images agree. Images retain their natural aspect ratios;
-  Directus display dimensions reserve their space in both modes. Named thumbnail
+  the current form on failure, and ignores canceled responses. Its justified flex
+  rows use the SDR aspect ratio for both basis and growth, keeping image heights
+  equal within a row without viewport measurements or DOM reordering. The target
+  height is 260px (210px up to 900px), capped at 360px; the final row stays left
+  aligned without enlarging a lone image. At 640px and below, a single-column
+  grid preserves each image's natural height. Numbering, keyboard focus, lightbox
+  navigation and the first three eager images share the same source order.
+  Photos and their embedded white borders remain uncropped, including on hover;
+  there is no extra tile border, shadow, scale or saturation effect. The 32px
+  caption row owns numbering and optional HDR availability; management actions
+  wrap on narrow portrait tiles. Directus display dimensions reserve space in
+  both modes; legacy missing dimensions are learned from the thumbnail on load.
+  Responsive source sizes follow the ratio and row-height ceiling. Named thumbnail
   parameters come from `config/directus-asset-presets.json`, shared with CMS setup
   and validation; no fixed skipped-content height is used for these tiles.
   Its native-dialog lightbox keeps wrap-around paging and delegates browser

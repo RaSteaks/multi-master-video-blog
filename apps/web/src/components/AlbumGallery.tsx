@@ -11,6 +11,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
   type MouseEvent,
 } from "react";
@@ -85,10 +86,6 @@ export type GalleryPhoto = {
   sortOrder: number;
 };
 
-/** Mirrors the .album-photo-grid responsive tracks and the 1120px shell in globals.css. */
-const ALBUM_TILE_SIZES =
-  "(max-width: 640px) calc(100vw - 40px), (max-width: 900px) calc(50vw - 30px), 360px";
-
 export type GalleryAlbum = {
   id: number;
   title: string;
@@ -131,6 +128,7 @@ export function AlbumGallery({
   const [editingPhoto, setEditingPhoto] = useState<ManagedPhoto | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [failedHdr, setFailedHdr] = useState<Set<number>>(() => new Set());
+  const [loadedRatios, setLoadedRatios] = useState<Record<string, number>>({});
   const lastTrigger = useRef<HTMLButtonElement | null>(null);
   const uploadPanelRef = useRef<HTMLDivElement | null>(null);
   const galleryRef = useRef<HTMLElement | null>(null);
@@ -537,10 +535,14 @@ export function AlbumGallery({
         <ol className="album-photo-grid">
           {photos.map((photo, index) => {
             const isCover = visibleAlbum.coverImage === photo.sdrImage;
+            const ratio = photo.width && photo.height
+              ? photo.width / photo.height
+              : loadedRatios[photo.sdrImage] ?? 4 / 5;
             return (
               <li
                 className={!photo.published ? "is-draft" : undefined}
                 key={photo.id}
+                style={{ "--album-photo-ratio": ratio } as CSSProperties}
               >
                 <article className="album-photo-tile">
                   <button
@@ -558,7 +560,10 @@ export function AlbumGallery({
                       src={photo.thumbnailUrl}
                       srcSet={photo.thumbnailSrcSet ?? undefined}
                       sizes={
-                        photo.thumbnailSrcSet ? ALBUM_TILE_SIZES : undefined
+                        // Match the 360px row-height ceiling and 1120px page shell.
+                        photo.thumbnailSrcSet
+                          ? `(max-width: 640px) calc(100vw - 40px), min(${Math.ceil(ratio * 360)}px, 1120px, calc(100vw - 40px))`
+                          : undefined
                       }
                       alt={photo.altText || ""}
                       width={photo.width ?? undefined}
@@ -566,10 +571,17 @@ export function AlbumGallery({
                       loading={index < 3 ? "eager" : "lazy"}
                       fetchPriority={index === 0 ? "high" : "auto"}
                       decoding="async"
+                      onLoad={(event) => {
+                        // Legacy records may lack dimensions. Learn their ratio from
+                        // the thumbnail; known metadata reserves the layout before load.
+                        if (photo.width && photo.height) return;
+                        const image = event.currentTarget;
+                        if (!image.naturalWidth || !image.naturalHeight) return;
+                        const loadedRatio = image.naturalWidth / image.naturalHeight;
+                        setLoadedRatios(current => current[photo.sdrImage] === loadedRatio
+                          ? current : { ...current, [photo.sdrImage]: loadedRatio });
+                      }}
                     />
-                    <span className="album-photo-number" aria-hidden="true">
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
                     {photo.hdrImage ? (
                       <span className="album-photo-range">
                         {photo.hdrTransfer?.toUpperCase() || "HDR"}
@@ -580,8 +592,11 @@ export function AlbumGallery({
                     ) : null}
                   </button>
                   <div className="album-photo-caption">
+                    <span className="album-photo-number" aria-hidden="true">
+                      {String(index + 1).padStart(2, "0")}
+                    </span>
                     <p>{photo.caption || photo.altText || "未命名照片"}</p>
-                    <span>{photo.hdrImage ? "SDR + HDR" : "SDR"}</span>
+                    {photo.hdrImage ? <span>SDR + HDR</span> : null}
                   </div>
                   {managedAlbum ? (
                     <div className="album-photo-controls">

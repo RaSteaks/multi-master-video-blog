@@ -17,10 +17,10 @@ const report = { browser: "headless WebKit", checks: [], pageErrors: [], gaps: [
 let browser;
 let page;
 
-function photo(id, { hdr = false, hlg = false } = {}) {
+function photo(id, { hdr = false, hlg = false, width = 1200, height = 800 } = {}) {
   return {
     id, sdrImage: `p${id}`, hdrImage: hdr ? `p${id}pq` : null, hlgImage: hlg ? `p${id}hlg` : null,
-    thumbnailUrl: `/api/assets/p${id}?key=album-thumb`, thumbnailSrcSet: null, width: 1200, height: 800,
+    thumbnailUrl: `/api/assets/p${id}?key=album-thumb`, thumbnailSrcSet: null, width, height,
     sdrUrl: `/api/assets/p${id}`, hdrUrl: hdr ? `/api/assets/p${id}pq` : null, hlgUrl: hlg ? `/api/assets/p${id}hlg` : null,
     caption: `第 ${id} 张`, altText: `照片 ${id}`, hdrTransfer: hdr ? "pq" : null, hdrPrimaries: hdr ? "bt2020" : null,
     hdrBitDepth: hdr ? 10 : null, filmStock: null, filmProcess: null, filmScanner: null, filmFrameFormat: null,
@@ -28,6 +28,10 @@ function photo(id, { hdr = false, hlg = false } = {}) {
   };
 }
 const photos = [photo(1), photo(2), photo(3, { hdr: true, hlg: true }), photo(4)];
+const layoutPhotos = [
+  photo(11), photo(12), photo(13, { width: 800, height: 1200 }),
+  photo(14), photo(15, { width: 800, height: 1200 }), photo(16), photo(17),
+];
 const album = { id: 7, title: "灯箱测试相簿", slug: "lightbox-test", description: "", coverImage: "p1", published: true, photos };
 const managedAlbum = {
   id: 7, title: album.title, slug: album.slug, description: "", coverImage: "p1", published: true,
@@ -42,9 +46,16 @@ const managedAlbum = {
 };
 
 // Per-file delay/failure, set by each check. Requests are logged with their auth header.
-const control = { delays: {}, failures: new Set(), requests: [] };
+const control = { delays: {}, failures: new Set(), requests: [], thumbnailDelay: 0, thumbnailFailures: new Set() };
 const colors = ["#3b4a56", "#5a4636", "#2f5446", "#4e3f5c"];
 function svg(id, thumb) {
+  const layoutPhoto = layoutPhotos.find(photo => photo.sdrImage === id);
+  if (layoutPhoto) {
+    const { width, height } = layoutPhoto;
+    const scale = thumb ? Math.min(600 / width, 600 / height) : 1;
+    // White borders belong to the source image and must survive every layout/hover state.
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width * scale}" height="${height * scale}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="#eee8dc"/><rect x="32" y="32" width="${width - 64}" height="${height - 64}" fill="${colors[(layoutPhoto.id - 11) % 4]}"/><text x="${width / 2}" y="${height / 2}" font-size="90" text-anchor="middle" fill="#e2e8ee" font-family="sans-serif">${id}</text></svg>`;
+  }
   const [w, h] = thumb ? [600, 400] : [1200, 800];
   const n = Number(String(id).match(/\d+/)?.[0] || 1);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 1200 800"><rect width="1200" height="800" fill="${colors[(n - 1) % 4]}"/><text x="600" y="430" font-size="160" text-anchor="middle" fill="#e2e8ee" font-family="sans-serif">${id}</text></svg>`;
@@ -85,14 +96,24 @@ const server = http.createServer((req, res) => {
     const id = asset[1];
     const thumb = url.searchParams.has("key");
     control.requests.push({ path: `${url.pathname}${url.search}`, auth: req.headers.authorization || null, id, thumb, at: Date.now() });
-    const delay = thumb ? 0 : control.delays[id] || 0;
+    const delay = thumb ? control.thumbnailDelay : control.delays[id] || 0;
     return setTimeout(() => {
+      if (thumb && control.thumbnailFailures.has(id)) return send(res, "missing", "text/plain", 404);
       if (!thumb && control.failures.has(id)) return send(res, "missing", "text/plain", 404);
       send(res, svg(id, thumb), "image/svg+xml", 200, { "Cache-Control": "no-store" });
     }, delay);
   }
   const managed = url.searchParams.get("mode") === "managed";
   const props = managed ? { initialAlbum: album, initialManagedAlbum: managedAlbum, initialToken: TOKEN } : { initialAlbum: album };
+  if (url.searchParams.has("layout")) {
+    const selected = url.searchParams.get("layout") === "single" ? layoutPhotos.slice(-1) : layoutPhotos;
+    const items = selected.map(photo => url.searchParams.has("unknown") && photo.id === 13 ? { ...photo, width: null, height: null } : photo);
+    props.initialAlbum = { ...album, title: "横竖照片排布验收", photos: items };
+    if (managed) props.initialManagedAlbum = { ...managedAlbum, photoCount: items.length, publishedPhotoCount: items.length, hdrPhotoCount: 0, photos: items.map(photo => ({
+      ...managedAlbum.photos[0], id: photo.id, sdrImage: photo.sdrImage, width: photo.width, height: photo.height,
+      caption: photo.caption, altText: photo.altText, sortOrder: photo.sortOrder,
+    })) };
+  }
   send(res, `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="/globals.css"><link rel="stylesheet" href="/client.css"></head>
     <body><div id="root"></div><script>window.__LIGHTBOX_CONFIG__=${JSON.stringify({ props })}</script><script src="/client.js"></script></body></html>`, "text/html");
@@ -142,8 +163,12 @@ async function newPage(options = {}) {
   }
   const current = await context.newPage();
   current.on("pageerror", (error) => report.pageErrors.push(error.message));
-  await current.goto(`${base}/${options.managed ? "?mode=managed" : ""}`);
-  await current.locator("[data-photo-tile='1'] img").waitFor();
+  const params = new URLSearchParams();
+  if (options.managed) params.set("mode", "managed");
+  if (options.layout) params.set("layout", options.layout);
+  if (options.unknown) params.set("unknown", "true");
+  await current.goto(`${base}/?${params}`, { waitUntil: options.beforeImages ? "domcontentloaded" : "load" });
+  await current.locator(".album-photo-open img").first().waitFor();
   page = current;
   return { context, page: current };
 }
@@ -159,6 +184,14 @@ async function openFromTile(p, id = 1) {
   await p.locator("dialog.album-lightbox[open]").waitFor();
   await p.waitForFunction(() => document.querySelector('[data-role="shown"] img'));
   return mark;
+}
+
+async function loadGalleryThumbnails(p) {
+  for (const image of await p.locator(".album-photo-open img").all()) {
+    await image.scrollIntoViewIfNeeded();
+    const id = await image.evaluate(element => element.parentElement.dataset.photoTile);
+    await p.waitForFunction(id => document.querySelector(`[data-photo-tile="${id}"] img`).complete, id);
+  }
 }
 
 /** Dispatches a synthetic single-finger (or second-finger) pointer sequence on the photo area. */
@@ -186,6 +219,116 @@ let base;
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
   browser = await webkit.launch({ headless: true, ...(process.env.WEBKIT_EXECUTABLE ? { executablePath: process.env.WEBKIT_EXECUTABLE } : {}) });
+
+  // ---- Justified rows: real CSS geometry, image loading and source order ----
+  {
+    control.thumbnailDelay = 1200;
+    const before = control.requests.length;
+    const { context, page: p } = await newPage({ layout: "mixed", beforeImages: true });
+    const geometry = () => p.locator(".album-photo-grid > li").evaluateAll(items => items.map(item => {
+      const image = item.querySelector("img"), box = image.getBoundingClientRect();
+      return { id: Number(item.querySelector("button").dataset.photoTile), x: box.x, y: box.y,
+        width: box.width, height: box.height, bottom: item.getBoundingClientRect().bottom,
+        caption: item.querySelector(".album-photo-caption").getBoundingClientRect().height };
+    }));
+    const pending = await geometry();
+    assert.ok(await p.locator(".album-photo-open img").first().evaluate(image => !image.complete));
+    await p.waitForFunction(() => [...document.querySelectorAll(".album-photo-open img")].slice(0, 3).every(image => image.complete && image.naturalWidth));
+    const loaded = await geometry();
+    // Intrinsic image sizing may round by 1/64px differently from the reserved
+    // CSS ratio; it must not change a row or move content by a visible pixel.
+    for (let index = 0; index < loaded.length; index++) {
+      for (const key of ["x", "y", "width", "height", "bottom"]) {
+        assert.ok(Math.abs(loaded[index][key] - pending[index][key]) < .1, `Thumbnail decode shifted ${index}/${key}.`);
+      }
+    }
+    assert.deepEqual(loaded.map(item => item.id), [11, 12, 13, 14, 15, 16, 17]);
+    for (let start = 0; start < 6; start += 3) {
+      const row = loaded.slice(start, start + 3);
+      assert.ok(row.every(item => Math.abs(item.y - row[0].y) < 1 && Math.abs(item.height - row[0].height) < 1));
+      assert.ok(row[1].x > row[0].x && row[2].x > row[1].x);
+    }
+    for (const item of loaded) {
+      const source = layoutPhotos.find(photo => photo.id === item.id);
+      assert.ok(Math.abs(item.width / item.height - source.width / source.height) < .005);
+      assert.ok(item.height <= 361 && item.caption <= 36);
+    }
+    assert.ok(loaded[3].y - loaded[0].bottom <= 21, "No blank area from a portrait in the preceding row.");
+    assert.ok(Math.abs(loaded[6].x - loaded[0].x) < 1 && loaded[6].height <= 261, "Last row stays left aligned at the target height.");
+    assert.ok(control.requests.slice(before).every(request => request.thumb), "Layout never fetches full originals.");
+    control.thumbnailDelay = 0;
+    await loadGalleryThumbnails(p);
+    await p.locator(".album-photo-grid").screenshot({ path: path.join(output, "justified-desktop.png") });
+    await p.locator('[data-photo-tile="13"]').hover();
+    assert.deepEqual(await p.locator('[data-photo-tile="13"] img').evaluate(image => ({
+      scale: getComputedStyle(image).scale, filter: getComputedStyle(image).filter,
+      imageWidth: image.getBoundingClientRect().width, buttonWidth: image.parentElement.getBoundingClientRect().width,
+    })), { scale: "none", filter: "none", imageWidth: loaded[2].width, buttonWidth: loaded[2].width });
+    await p.locator('[data-photo-tile="11"]').focus();
+    // macOS WebKit uses Option-Tab to include buttons under its native default
+    // keyboard preference; plain Tab skips buttons even on a blank HTML page.
+    await p.keyboard.press(process.platform === "darwin" ? "Alt+Tab" : "Tab");
+    assert.equal(await p.evaluate(() => document.activeElement.dataset.photoTile), "12");
+    await p.keyboard.press("Enter");
+    await p.waitForFunction(() => document.querySelector('[data-role="shown"] img')?.alt === "照片 12");
+    assert.equal(await counter(p), "02 / 07");
+    await p.keyboard.press("ArrowRight");
+    await p.waitForFunction(() => document.querySelector('[data-role="shown"] img')?.alt === "照片 13");
+    await p.keyboard.press("Escape");
+    await p.locator("dialog.album-lightbox").waitFor({ state: "detached" });
+    assert.equal(await p.evaluate(() => document.activeElement.dataset.photoTile), "12");
+    pass("Justified rows preserve proportions/white borders, pre-load geometry, compact captions and keyboard/lightbox order", loaded);
+    await context.close();
+  }
+  for (const width of [900, 640, 390, 320]) {
+    const { context, page: p } = await newPage({ layout: "mixed", viewport: { width, height: 900 } });
+    const boxes = await p.locator(".album-photo-open").evaluateAll(items => items.map(item => {
+      const box = item.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height };
+    }));
+    assert.ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    if (width <= 640) {
+      assert.ok(boxes.every(item => Math.abs(item.x - boxes[0].x) < 1 && Math.abs(item.width - boxes[0].width) < 1));
+      assert.ok(boxes.every((item, index) => index === 0 || item.y > boxes[index - 1].y + boxes[index - 1].height));
+    } else assert.ok(Math.abs(boxes[0].height - boxes[2].height) < 1);
+    await loadGalleryThumbnails(p);
+    await p.locator(".album-photo-grid").screenshot({ path: path.join(output, `justified-${width}.png`) });
+    pass(`Justified gallery fits ${width}px; phones retain one natural-ratio column`);
+    await context.close();
+  }
+  {
+    const { context, page: p } = await newPage({ layout: "single" });
+    const image = await p.locator(".album-photo-open img").boundingBox();
+    assert.ok(image.height <= 261 && image.width < 500, "A lone image is not stretched across the shell.");
+    await context.close();
+  }
+  {
+    control.thumbnailFailures.add("p16");
+    const { context, page: p } = await newPage({ layout: "mixed", unknown: true });
+    await p.waitForFunction(() => Math.abs(Number(document.querySelector('[data-photo-tile="13"]').closest("li").style.getPropertyValue("--album-photo-ratio")) - 2 / 3) < .001);
+    await p.locator('[data-photo-tile="16"]').scrollIntoViewIfNeeded();
+    await p.waitForFunction(() => document.querySelector('[data-photo-tile="16"] img').complete);
+    assert.ok((await p.locator('[data-photo-tile="16"]').boundingBox()).height > 100);
+    pass("Missing metadata learns the thumbnail ratio; a failed thumbnail retains its reserved frame");
+    control.thumbnailFailures.clear();
+    await context.close();
+  }
+  {
+    const before = control.requests.length;
+    const { context, page: p } = await newPage({ layout: "mixed", managed: true });
+    const controls = p.locator('[data-photo-tile="13"]').locator("..").locator(".album-photo-controls");
+    await controls.scrollIntoViewIfNeeded();
+    assert.ok(await controls.evaluate(element => element.scrollWidth <= element.clientWidth + 1));
+    await controls.getByRole("button", { name: "向前移动", exact: true }).click();
+    assert.deepEqual(await p.locator(".album-photo-open").evaluateAll(items => items.map(item => Number(item.dataset.photoTile))), [11, 13, 12, 14, 15, 16, 17]);
+    await controls.getByRole("button", { name: "编辑", exact: true }).click();
+    await p.getByRole("dialog", { name: "编辑照片信息", exact: true }).waitFor();
+    await p.getByRole("dialog", { name: "编辑照片信息", exact: true }).getByRole("button", { name: "关闭", exact: true }).click();
+    await loadGalleryThumbnails(p);
+    await p.locator(".album-photo-grid").screenshot({ path: path.join(output, "justified-managed.png") });
+    assert.ok(control.requests.slice(before).every(request => request.auth === `Bearer ${TOKEN}`));
+    pass("Portrait management controls wrap, reorder/edit work, and protected thumbnails retain authentication");
+    await context.close();
+  }
 
   // ---- Desktop keyboard, open/close and focus ----
   {

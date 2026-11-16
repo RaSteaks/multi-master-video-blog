@@ -7153,46 +7153,40 @@ h3 {
 }
 
 .album-photo-grid {
-  --album-grid-gap: clamp(14px, 2vw, 22px);
-  /* Row order matches the number badges, keyboard focus, lightbox and first three eager images. */
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--album-grid-gap);
-  align-items: start;
+  --album-grid-gap: 16px;
+  --album-row-target: 260px;
+  /* Proportional bases and growth give each row equal image heights without
+     measuring the viewport or changing DOM, keyboard, or lightbox order. */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px var(--album-grid-gap);
+  align-items: flex-start;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .album-photo-grid > li {
-  /* Use the image's width/height reservation; a generic skipped-content height shifts later rows. */
+  flex: var(--album-photo-ratio) 1 calc(var(--album-photo-ratio) * var(--album-row-target));
+  max-width: min(100%, calc(var(--album-photo-ratio) * 360px));
   min-width: 0;
+}
+
+.album-photo-grid::after {
+  /* Absorb the last row's unused width so a lone photo is not stretched.
+     Cancel this item's leading gap so it cannot create an empty extra row. */
+  content: "";
+  flex: 10000 1 0%;
+  margin-inline-start: calc(-1 * var(--album-grid-gap));
 }
 
 .album-photo-tile {
   position: relative;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 4px;
-  background: rgba(10, 12, 14, 0.88);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.2);
-  transition:
-    border-color var(--transition-base),
-    box-shadow var(--transition-base),
-    translate var(--transition-base);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .album-photo-tile:hover {
-    border-color: rgba(255, 255, 255, 0.2);
-    box-shadow: 0 20px 52px rgba(0, 0, 0, 0.3);
-    translate: 0 -2px;
-  }
 }
 
 .album-photo-grid > li.is-draft .album-photo-tile {
-  border-style: dashed;
-  border-color: rgba(215, 160, 82, 0.33);
+  outline: 1px dashed rgba(215, 160, 82, 0.5);
+  outline-offset: 4px;
 }
 
 .album-photo-open {
@@ -7211,19 +7205,9 @@ h3 {
   display: block;
   width: 100%;
   height: auto;
-  /* `auto` uses the width/height attributes' ratio when dimensions are known;
-     otherwise reserve a portrait-ish frame so lazy images don't collapse to 0. */
-  aspect-ratio: auto 4 / 5;
-  transition:
-    scale 650ms cubic-bezier(0.22, 1, 0.36, 1),
-    filter 220ms ease;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .album-photo-open:hover img {
-    filter: saturate(1.06);
-    scale: 1.025;
-  }
+  /* Reserve the metadata ratio even before decode. A fixed CSS fallback would
+     override the width/height attributes and shift rows as thumbnails arrive. */
+  aspect-ratio: auto var(--album-photo-ratio, 4 / 5);
 }
 
 .album-photo-open:focus-visible {
@@ -7232,17 +7216,8 @@ h3 {
 }
 
 .album-photo-number {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  border-radius: 2px;
-  background: rgba(4, 5, 6, 0.66);
-  color: rgba(255, 255, 255, 0.76);
-  padding: 2px 6px;
   font-family: var(--font-mono);
-  font-size: 0.62rem;
   letter-spacing: 0.08em;
-  backdrop-filter: blur(8px);
 }
 
 .album-photo-range,
@@ -7267,14 +7242,16 @@ h3 {
 
 .album-photo-caption {
   display: flex;
-  min-height: 54px;
+  min-height: 32px;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 8px;
+  padding: 5px 0;
 }
 
 .album-photo-caption p {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   margin: 0;
   color: var(--text-secondary);
@@ -7287,16 +7264,17 @@ h3 {
   flex: 0 0 auto;
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 0.58rem;
+  font-size: 0.6875rem;
   letter-spacing: 0.05em;
 }
 
 .album-photo-controls {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  /* Portrait tiles can be much narrower than landscape tiles in the same row. */
+  display: flex;
+  flex-wrap: wrap;
   gap: 5px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
-  padding: 8px;
+  padding: 8px 0;
 }
 
 .album-photo-controls > div {
@@ -7774,7 +7752,8 @@ h3 {
   }
 
   .album-photo-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    --album-grid-gap: 12px;
+    --album-row-target: 210px;
   }
 }
 
@@ -7905,10 +7884,20 @@ h3 {
   }
 
   .album-photo-grid {
-    grid-template-columns: 1fr;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .album-photo-grid > li {
+    max-width: none;
+  }
+
+  .album-photo-grid::after {
+    display: none;
   }
 
   .album-photo-controls {
+    display: grid;
     grid-template-columns: auto 1fr 1fr;
   }
 
