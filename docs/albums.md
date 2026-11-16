@@ -87,6 +87,12 @@ portrait.webp   ↔  （无 HDR，合法）
 - 扩展名、声明 MIME 与文件签名不一致。
 - SDR AVIF 使用 PQ / HLG，或 HDR AVIF 不满足 HDR 合同。
 
+上传字节上限与 CMS 生成缩略图的像素上限相互独立。仓库启动器将 Directus
+输入和中间处理尺寸上限均设为每边 8192 像素；相簿缩略图仍为既有的
+600/1200 像素，原图不会被缩小。Directus 默认的 6000 像素限制会让部分
+扫描图上传成功后仍无法显示缩略图。旧部署的调整与重启步骤见
+[CMS 大图说明](../apps/cms/directus/README.md#high-resolution-album-thumbnails)。
+
 服务端先接收到临时目录，再对整批执行 FFprobe：
 
 - SDR：JPEG、PNG、WebP 或非 HDR AVIF。

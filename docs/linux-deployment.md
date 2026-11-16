@@ -16,12 +16,23 @@
 | Web / API / CMS 堆 | 256 / 256 / 384MiB | 384 / 512 / 768MiB | `WEB_HEAP_MIB` / `API_HEAP_MIB` / `CMS_HEAP_MIB` |
 | 构建堆 / worker | 1024MiB / 1 | 1536MiB / 1 | `BUILD_HEAP_MIB` / `BUILD_WORKERS` |
 | Directus 变换并发 | 1 | 1 | `ASSETS_TRANSFORM_MAX_CONCURRENT` |
+| Directus 输入 / 中间处理最大边长 | 8192 / 8192px | 8192 / 8192px | `ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION` / `ASSETS_TRANSFORM_IMAGE_MAX_OUTPUT_DIMENSION` |
 | CMS 连接池 min / max | 0 / 3 | 0 / 5 | `DB_POOL__MIN` / `DB_POOL__MAX` |
 | PostgreSQL shared_buffers / 连接数 | 128MB / 20 | 256MB / 30 | 配置片段或 Compose 变量 |
 
 线程限制不改变编码预设、CRF、色彩转换和 Dolby RPU 校验。HDR 自动 SDR 转换仍需 FFmpeg 的 libplacebo、zscale、apply_dolbyvision 和可用 Vulkan；没有设备时保持原有明确失败和 HDR 母版保留行为，不自动改用另一套转换算法。
 
-像素上限在读取图像头后、完整解码前检查，多页图像累计计算。超限明确拒绝，不降低画质；旧任务的预览、分析、重新发布也检查。提高上限前必须重新测量峰值内存。
+胶片输入像素上限在读取图像头后、完整解码前检查，多页图像累计计算。超限明确拒绝，不降低画质；旧任务的预览、分析、重新发布也检查。提高上限前必须重新测量峰值内存。
+
+相簿缩略图另受 Directus 的边长限制。仓库启动器在所有档位（含 `default`）下
+默认允许 8192px 输入及中间步骤，并将图片变换并发设为 1；API 将预设图片
+请求排队，避免多个冷缩略图同时挤入 CMS。原图下载与 API 图片缓存命中不占用
+变换队列。Directus 12 的默认 6000px 会拒绝 6214px 等扫描图，即使原图已经
+上传成功；仅改输入上限仍会被格式转换步骤的输出上限拒绝。已有部署若在
+`/etc/video-blog/cms.env` 中写死 6000，应同时将两个边长参数改为 8192，
+更新代码后重启 CMS 和 API；无需重建 Web 或重新上传尺寸元数据完整的原图。
+命名预设的实际输出大小不变。显式并发覆盖应在两个服务共用的
+`/etc/video-blog/resources.env` 中配置。
 
 `PROCESS_MAX_OUTPUT_BYTES` 默认 16MiB，限制 FFprobe 等结构化输出及 Dolby sidecar；超限失败，不解析截断 JSON。`PROCESS_MAX_LOG_BYTES` 默认 64KiB，只保留子进程诊断尾部。启用低资源档位时使用 `MEDIA_PROCESS_*`，原 `VIDEO_PROCESS_*` 队列参数用于未启用档位时的独立视频队列。视频、胶片分析、预览和发布共享槽位；后台任务不因 HTTP 排队超时丢失。维护模式和重启后依赖已有 Directus 任务记录及磁盘 rollback 记录恢复。
 

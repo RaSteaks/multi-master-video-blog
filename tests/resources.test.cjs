@@ -44,6 +44,25 @@ test("profiles are opt-in, CPU-aware and reject invalid settings", () => {
   }
 });
 
+test("asset budgets admit high-resolution scans with bounded transform concurrency", () => {
+  for (const profile of ["default", "low-2gb", "low-4gb"]) {
+    const settings = resolveResourceProfile({ RESOURCE_PROFILE: profile });
+    assert.equal(settings.assetMaxInputDimension, 8192);
+    assert.equal(settings.assetMaxOutputDimension, 8192);
+    assert.equal(settings.assetConcurrency, 1);
+  }
+  const inputOverride = resolveResourceProfile({ ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION: "10000" });
+  assert.equal(inputOverride.assetMaxInputDimension, 10000);
+  assert.equal(inputOverride.assetMaxOutputDimension, 10000);
+  const explicit = resolveResourceProfile({ ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION: "10000",
+    ASSETS_TRANSFORM_IMAGE_MAX_OUTPUT_DIMENSION: "9000", ASSETS_TRANSFORM_MAX_CONCURRENT: "2" });
+  assert.equal(explicit.assetMaxOutputDimension, 9000);
+  assert.equal(explicit.assetConcurrency, 2);
+  for (const name of ["ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION", "ASSETS_TRANSFORM_IMAGE_MAX_OUTPUT_DIMENSION", "ASSETS_TRANSFORM_MAX_CONCURRENT"]) {
+    for (const value of ["0", "-1", "NaN", "1.5"]) assert.throws(() => resolveResourceProfile({ [name]: value }));
+  }
+});
+
 test("process environment overrides quoted file values and missing files are optional", async t => {
   const filename = path.join(await directory(t), ".env");
   await fs.writeFile(filename, 'RESOURCE_PROFILE=low-4gb\nHOST="127.0.0.1"\n');

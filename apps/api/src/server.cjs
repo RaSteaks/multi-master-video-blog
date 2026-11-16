@@ -218,12 +218,23 @@ const ARTICLE_IMAGE_TARGET_PATTERN =
 const ASSET_PRESETS = new Set(
   require("../../../config/directus-asset-presets.json").map((preset) => preset.key)
 );
+const assetTransformSlots = createTaskLimiter({
+  concurrency: resourceLimits.assetConcurrency, maxPending: 24, waitMs: 30_000
+});
 const assetCache = createAssetCache({
   request: directusRequest,
-  fetchAsset: (fileId, preset, token, headers, method, signal) => {
+  fetchAsset: async (fileId, preset, token, headers, method, signal) => {
     const url = new URL(`${DIRECTUS_URL}/assets/${encodeURIComponent(fileId)}`);
     if (preset) url.searchParams.set("key", preset);
-    return fetchDirectusAsset(url, token, headers, method, false, signal);
+    // CMS finishes a cold transform before returning headers. Queue those
+    // requests instead of flooding Sharp and getting "Server too busy" errors;
+    // original downloads and API cache hits need no transform slot.
+    const release = preset ? await assetTransformSlots.acquire({ signal }) : null;
+    try {
+      return await fetchDirectusAsset(url, token, headers, method, false, signal);
+    } finally {
+      release?.();
+    }
   },
   presets: require("../../../config/directus-asset-presets.json"),
   maxBytes: env.ASSET_CACHE_ENABLED === "false" ? 0

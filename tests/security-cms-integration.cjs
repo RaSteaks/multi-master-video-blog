@@ -61,13 +61,17 @@ async function port() {
     }
     throw new Error(`Fixture did not become ready: ${url}: ${last}`);
   }
-  async function close() {
-    for (const child of children.reverse()) {
-      if (child.exitCode !== null) continue;
-      child.kill("SIGTERM");
-      await Promise.race([new Promise(resolve => child.once("exit", resolve)), delay(1500)]);
-      if (child.exitCode === null) child.kill("SIGKILL");
+  async function stopChild(child) {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    child.kill("SIGTERM");
+    await Promise.race([new Promise(resolve => child.once("exit", resolve)), delay(1500)]);
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await new Promise(resolve => child.once("exit", resolve));
     }
+  }
+  async function close() {
+    for (const child of children.reverse()) await stopChild(child);
     await fsp.rm(dir, { recursive: true, force: true });
   }
   try {
@@ -84,7 +88,9 @@ async function port() {
     await fsp.mkdir(env.STORAGE_LOCAL_ROOT); await fsp.mkdir(env.EXTENSIONS_PATH);
     const cli = path.join(root, "node_modules/directus/cli.js");
     await command("bootstrap", [path.join(root, "scripts/run-service.cjs"), "bootstrap"], { ...cmsLaunch, DIRECTUS_CLI: cli });
-    const cmsChild = start("cms", [path.join(root, "scripts/run-service.cjs"), "cms"], { ...cmsLaunch, DIRECTUS_CLI: cli }); await ready(cms + "/server/health", cmsChild);
+    let cmsChild = start("cms", [path.join(root, "scripts/run-service.cjs"), "cms"], { ...cmsLaunch, DIRECTUS_CLI: cli,
+      ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION: "6000", ASSETS_TRANSFORM_IMAGE_MAX_OUTPUT_DIMENSION: "6000" });
+    await ready(cms + "/server/health", cmsChild);
     await command("schema", [path.join(root, "scripts/setup-directus-schema.cjs")]);
     checks.push("Directus bootstrap and schema succeed on an empty isolated database");
     let token;
@@ -111,6 +117,34 @@ async function port() {
       checks.push(`Directus accepts ${location} and writes the uploaded image to its configured root`);
     }
     const file = uploadedFiles.oss_album;
+    // Match the dimensions of the failing production scan. Compression makes
+    // this fixture small on disk, while Sharp still decodes the full pixel area.
+    const scan = await require("sharp")({ create: { width: 6214, height: 4351, channels: 4, background: "#79838a" } }).png().toBuffer();
+    const scanForm = new FormData(); scanForm.set("storage", "oss_album");
+    scanForm.append("file", new Blob([scan], { type: "image/png" }), "large-scan.png");
+    const scanUpload = await fetch(cms + "/files", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: scanForm });
+    const scanResult = await scanUpload.json(); assert.equal(scanUpload.status, 200, JSON.stringify(scanResult));
+    const scanFile = scanResult.data;
+    assert.equal(scanFile.width, 6214); assert.equal(scanFile.height, 4351);
+    async function assertLegacyTransformRejected() {
+      const response = await fetch(cms + `/assets/${scanFile.id}?key=album-thumb`, { headers: { Authorization: `Bearer ${token}` } });
+      const result = await response.json();
+      assert.equal(response.status, 400);
+      assert.equal(result.errors[0].extensions.code, "ILLEGAL_ASSET_TRANSFORMATION");
+    }
+    await assertLegacyTransformRejected();
+    await stopChild(cmsChild);
+    cmsChild = start("cms-input-only", [path.join(root, "scripts/run-service.cjs"), "cms"], { ...cmsLaunch, DIRECTUS_CLI: cli,
+      ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION: "8192", ASSETS_TRANSFORM_IMAGE_MAX_OUTPUT_DIMENSION: "6000" });
+    await ready(cms + "/server/health", cmsChild);
+    await assertLegacyTransformRejected();
+    checks.push("A 6214px scan reproduces HTTP 400 with both legacy defaults and an input-only limit change");
+    await stopChild(cmsChild);
+    cmsChild = start("cms-fixed", [path.join(root, "scripts/run-service.cjs"), "cms"], { ...cmsLaunch, DIRECTUS_CLI: cli,
+      // Empty optional settings must resolve to the same defaults as omitted ones.
+      ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION: "", ASSETS_TRANSFORM_IMAGE_MAX_OUTPUT_DIMENSION: "", ASSETS_TRANSFORM_MAX_CONCURRENT: "" });
+    await ready(cms + "/server/health", cmsChild);
+
     await request("/items/album_photos", "POST", { album_id: album.id, sdr_image: file.id, published: true, sort_order: 0 });
     const post = await request("/items/posts", "POST", { title: "Published fixture", slug: "fixture-post", content: "Fixture", published: true });
     const project = await request("/items/video_projects", "POST", { title: "Video fixture", slug: "film", published: true });
@@ -133,6 +167,21 @@ async function port() {
     const detail = await (await fetch(api + `/albums/${album.id}/manage`, { headers })).json();
     assert.equal(detail.album.photos[0].width, 48); assert.equal(detail.album.photos[0].height, 64);
     checks.push("Album summaries use real CMS aggregation; selected detail retains image geometry");
+    await request("/items/album_photos", "POST", { album_id: album.id, sdr_image: scanFile.id, published: true, sort_order: 1 });
+    const transforms = require("../config/directus-asset-presets.json").map(async preset => {
+      const response = await fetch(api + `/assets/${scanFile.id}?key=${preset.key}`);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      assert.equal(response.status, 200, `${preset.key}: ${bytes.toString().slice(0, 200)}`);
+      const metadata = await require("sharp")(bytes).metadata();
+      assert.equal(metadata.format, "webp");
+      assert.ok(metadata.width <= preset.width && metadata.height <= preset.height, preset.key);
+    });
+    assert.equal((await fetch(api + "/health")).status, 200);
+    await Promise.all(transforms);
+    const scanOriginal = await fetch(api + `/assets/${scanFile.id}`);
+    assert.equal(scanOriginal.status, 200);
+    assert.deepEqual(Buffer.from(await scanOriginal.arrayBuffer()), scan);
+    checks.push("Existing large originals survive CMS restart unchanged; all seven cold presets load concurrently through API admission and health remains available");
     assert.equal((await fetch(api + `/assets/${file.id}`)).status, 200);
     await request(`/items/albums/${album.id}`, "PATCH", { published: false });
     assert.equal((await fetch(api + `/assets/${file.id}`)).status, 404);

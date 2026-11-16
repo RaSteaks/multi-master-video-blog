@@ -28,6 +28,7 @@ function resolveResourceProfile(env = process.env, cores = os.availableParalleli
   if (integer(env, "DB_POOL__MIN", defaults ? 0 : 2, 0) > integer(env, "DB_POOL__MAX", defaults?.pool ?? 10)) {
     throw new Error("DB_POOL__MIN must not exceed DB_POOL__MAX.");
   }
+  const assetMaxInputDimension = integer(env, "ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION", 8192);
   return Object.freeze({
     name, enabled: Boolean(defaults),
     mediaConcurrency: integer(env, "MEDIA_PROCESS_CONCURRENCY", 1),
@@ -45,7 +46,11 @@ function resolveResourceProfile(env = process.env, cores = os.availableParalleli
       integer(env, `${service.toUpperCase()}_HEAP_MIB`, defaults?.[service] ?? 0, 0)])),
     dbPoolMax: integer(env, "DB_POOL__MAX", defaults?.pool ?? 10),
     dbPoolMin: integer(env, "DB_POOL__MIN", defaults ? 0 : 2, 0),
-    assetConcurrency: integer(env, "ASSETS_TRANSFORM_MAX_CONCURRENT", defaults ? 1 : 25)
+    assetConcurrency: integer(env, "ASSETS_TRANSFORM_MAX_CONCURRENT", 1),
+    assetMaxInputDimension,
+    // Directus checks intermediate steps too; format conversion precedes resize
+    // in named presets, so the output budget must also admit the source dimensions.
+    assetMaxOutputDimension: integer(env, "ASSETS_TRANSFORM_IMAGE_MAX_OUTPUT_DIMENSION", assetMaxInputDimension)
   });
 }
 

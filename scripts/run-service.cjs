@@ -27,10 +27,14 @@ const readEnvironment = ["web", "build"].includes(service) ? loadEnvironment : r
 const env = readEnvironment(path.join(cwd, ".env"));
 const settings = resolveResourceProfile(env);
 const heap = settings.heap[["bootstrap", "schema"].includes(service) ? "cms" : service];
+// Directus 12 defaults to a 6000px input/intermediate cap, even when uploading
+// the original succeeds. Keep high-resolution photos and their presets usable.
+env.ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION = String(settings.assetMaxInputDimension);
+env.ASSETS_TRANSFORM_IMAGE_MAX_OUTPUT_DIMENSION = String(settings.assetMaxOutputDimension);
+env.ASSETS_TRANSFORM_MAX_CONCURRENT = String(settings.assetConcurrency);
 if (settings.enabled) {
   env.DB_POOL__MIN ??= String(settings.dbPoolMin);
   env.DB_POOL__MAX ??= String(settings.dbPoolMax);
-  env.ASSETS_TRANSFORM_MAX_CONCURRENT ??= String(settings.assetConcurrency);
   env.UV_THREADPOOL_SIZE ??= "2";
   env.MALLOC_ARENA_MAX ??= "2";
   env.VIPS_CONCURRENCY ??= String(settings.sharpConcurrency || 1);

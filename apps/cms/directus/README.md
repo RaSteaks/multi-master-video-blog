@@ -30,6 +30,34 @@ assets and article/content snapshots. Restart CMS and API after changing storage
 See [unified OSS storage](../../../docs/upload-api.md#unified-oss-content-storage)
 for the directory layout, existing-file compatibility and required permissions.
 
+## High-resolution album thumbnails
+
+The repository launcher defaults both `ASSETS_TRANSFORM_IMAGE_MAX_DIMENSION`
+and `ASSETS_TRANSFORM_IMAGE_MAX_OUTPUT_DIMENSION` to 8192 pixels. Directus 12
+otherwise defaults to 6000: a 6214 × 4351 PNG can upload successfully while
+every named thumbnail returns HTTP 400 (`ILLEGAL_ASSET_TRANSFORMATION`).
+Both settings matter because Directus applies the output budget to intermediate
+steps, including the format conversion before a preset's resize.
+
+These dimension limits are separate from the API's 256 MiB file-size limit.
+Named presets still produce their existing 600/1200px album thumbnails and
+bounded cover/hero images; original files remain unchanged. Transform concurrency
+defaults to one in both CMS and the API's preset-request queue, including when
+no low-memory profile is selected. Explicit environment overrides are preserved;
+apply a shared concurrency override to both services if changing it.
+
+On native Linux, existing settings live in `/etc/video-blog/cms.env` (plus
+shared overrides in `/etc/video-blog/resources.env`). Set both dimension values
+to 8192 if they still explicitly specify 6000, deploy the updated launcher/API,
+then restart `video-blog-cms` and `video-blog-api`. Existing uploads whose width
+and height were recorded do not need uploading again. If an older upload has
+missing dimensions, its metadata must be repaired separately before Directus
+can create a thumbnail. Files beyond 8192px require a deliberate budget increase.
+
+`npm run test:cms-security` reproduces the legacy 400 against real, isolated
+Directus, checks the input-only failure, then verifies all seven named presets
+and unchanged originals after restarting with the repository defaults.
+
 ## Repair a deployed Insights aggregation
 
 `Cannot query field "undefined" on type "video_projects_aggregated"` can occur
