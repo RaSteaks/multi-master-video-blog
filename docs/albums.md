@@ -83,7 +83,7 @@ portrait.webp   ↔  （无 HDR，合法）
 - SDR 或 HDR 内出现重复配对键。
 - HDR 没有同名 SDR。
 - manifest 包含未知照片，或 SDR 照片没有 manifest 条目。
-- 超过 24 张、单文件超过 64 MiB，或整批超过 512 MiB（默认值）。
+- 超过 24 张、单文件超过 256 MiB（默认值，包含 HDR 补传）；不设整批容量上限。
 - 扩展名、声明 MIME 与文件签名不一致。
 - SDR AVIF 使用 PQ / HLG，或 HDR AVIF 不满足 HDR 合同。
 

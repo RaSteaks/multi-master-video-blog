@@ -178,11 +178,10 @@ test("validatePairedAspectRatio allows resized pairs but rejects a mismatch", ()
   );
 });
 
-test("validateAlbumBatchLimits enforces photo, file, and batch limits", () => {
+test("validateAlbumBatchLimits enforces photo and file limits without a batch byte cap", () => {
   const limits = {
     maxPhotos: 2,
-    maxFileBytes: 10,
-    maxBatchBytes: 20
+    maxFileBytes: 10
   };
   assert.deepEqual(
     validateAlbumBatchLimits(
@@ -210,15 +209,26 @@ test("validateAlbumBatchLimits enforces photo, file, and batch limits", () => {
       ),
     /large\.jpg exceeds 10/
   );
-  assert.throws(
-    () =>
-      validateAlbumBatchLimits(
-        [{ size: 10 }, { size: 10 }],
-        [{ size: 1 }],
-        limits
-      ),
-    /exceeds 20/
+  assert.deepEqual(
+    validateAlbumBatchLimits([{ size: 10 }, { size: 10 }], [{ size: 10 }], limits),
+    { photoCount: 2, fileCount: 3, totalBytes: 30 }
   );
+});
+
+test("album SDR/HDR files accept 256 MiB each and batches above the former 512 MiB cap", () => {
+  const bytes = 256 * 1024 ** 2;
+  const limits = { maxPhotos: 24, maxFileBytes: bytes };
+  assert.deepEqual(
+    validateAlbumBatchLimits([{ size: bytes }, { size: bytes }], [{ size: bytes }], limits),
+    { photoCount: 2, fileCount: 3, totalBytes: 3 * bytes }
+  );
+  for (const kind of ["sdr", "hdr"]) {
+    const file = { originalName: `${kind}-oversized`, size: bytes + 1 };
+    assert.throws(
+      () => validateAlbumBatchLimits(kind === "sdr" ? [file] : [], kind === "hdr" ? [file] : [], limits),
+      new RegExp(`${kind}-oversized exceeds ${bytes}`)
+    );
+  }
 });
 
 test("rollbackAlbumBatch removes records before files in reverse order and continues on errors", async () => {

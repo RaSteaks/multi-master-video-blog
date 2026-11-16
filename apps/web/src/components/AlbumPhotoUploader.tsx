@@ -24,8 +24,7 @@ export type UploadMetadata = {
 
 
 export const MAX_PHOTOS = 24;
-export const MAX_FILE_BYTES = 64 * 1024 * 1024;
-export const MAX_BATCH_BYTES = 512 * 1024 * 1024;
+export const MAX_FILE_BYTES = 256 * 1024 * 1024;
 
 
 export function FileDropZone({
@@ -226,9 +225,7 @@ export function AlbumPhotoUploader({
       errors.push(`每批最多上传 ${MAX_PHOTOS} 张照片。`);
     }
     const oversized = allFiles.find((file) => file.size > MAX_FILE_BYTES);
-    if (oversized) errors.push(`“${oversized.name}”超过 64 MiB。`);
-    const totalBytes = allFiles.reduce((sum, file) => sum + file.size, 0);
-    if (totalBytes > MAX_BATCH_BYTES) errors.push("本批文件总量超过 512 MiB。");
+    if (oversized) errors.push(`“${oversized.name}”超过 ${MAX_FILE_BYTES / 1024 ** 2} MiB。`);
     return errors;
   }, [hdrFiles, pairing.errors, pairing.pairs.length, sdrFiles]);
 

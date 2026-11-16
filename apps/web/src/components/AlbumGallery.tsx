@@ -24,7 +24,7 @@ import {
 import { ActionMenu } from "@/components/ActionMenu";
 import { canAuthorize, requestAuthorSignIn, useAuthorDevice, useAuthorSession } from "@/lib/author-session";
 import { AuthorCredential } from "@/components/AuthorCredential";
-import { AlbumPhotoUploader, UploadIcon } from "@/components/AlbumPhotoUploader";
+import { AlbumPhotoUploader, MAX_FILE_BYTES, UploadIcon } from "@/components/AlbumPhotoUploader";
 import { albumThumbSrcSet, assetUrl } from "@/lib/asset-url";
 import {
   IDENTITY_TRANSFORM,
@@ -901,8 +901,8 @@ function PhotoEditDialog({
       setHdrError("请先选择一张 HDR AVIF 照片。");
       return;
     }
-    if (hdrFile.size > 64 * 1024 * 1024) {
-      setHdrError("HDR 文件不能超过 64 MiB。");
+    if (hdrFile.size > MAX_FILE_BYTES) {
+      setHdrError(`HDR 文件不能超过 ${MAX_FILE_BYTES / 1024 ** 2} MiB。`);
       return;
     }
     setHdrError("");

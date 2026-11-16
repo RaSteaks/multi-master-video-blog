@@ -15,6 +15,22 @@ async function expectFieldError(dialog, field, message) {
   assert.equal(await field.evaluate(element => element === document.activeElement), true);
 }
 
+async function checkAlbumFileLimits(scope, files) {
+  const input = scope.locator('.album-drop-zone input[type="file"]').first();
+  const submit = scope.getByRole("button", { name: /^验证并上传(?:整批照片)?$/ });
+  await input.setInputFiles(files.oversized);
+  await scope.getByText("“oversized.png”超过 256 MiB。", { exact: true }).waitFor();
+  // The inline form reports invalid submission; the toolbar disables its button.
+  if (await submit.isEnabled()) {
+    await submit.click();
+    await scope.getByRole("alert").filter({ hasText: "请先修正文件配对与容量问题。" }).waitFor();
+  }
+  await input.setInputFiles(files.batch);
+  await scope.getByRole("heading", { name: "3 张 SDR · 0 组 HDR", exact: true }).waitFor();
+  assert.equal(await scope.getByText("本批次尚不能上传", { exact: true }).count(), 0);
+  assert.equal(await submit.isEnabled(), true, "Three 256 MiB files pass without a 512 MiB batch cap.");
+}
+
 async function main() {
   const fixture = await startFixture();
   const report = { browser: "headless WebKit", checks: [], errors: [], passed: false };
@@ -184,6 +200,27 @@ async function main() {
     await page.screenshot({ path: path.join(fixture.output, "local-album-drop.png") });
     pass("local SDR/HDR drop zones retain the current album and paired files without global navigation");
 
+    const health = await (await context.request.get(`${fixture.url}/api/health`, {
+      headers: { Authorization: `Bearer ${fixture.token}` },
+    })).json();
+    assert.equal(health.albumLimits.imageBytes, 256 * 1024 ** 2);
+    assert.equal(health.albumLimits.requestBytes, null);
+
+    // Sparse files exercise real browser File.size without allocating/uploading
+    // hundreds of MiB just to check selection. The small PNG remains decodable.
+    const png = await sharp({ create: { width: 32, height: 24, channels: 3, background: "#777777" } }).png().toBuffer();
+    const limitFiles = { batch: [], oversized: path.join(fixture.temp, "oversized.png") };
+    for (const name of ["limit-a.png", "limit-b.png", "limit-c.png", "oversized.png"]) {
+      const filename = path.join(fixture.temp, name);
+      await fs.writeFile(filename, png);
+      await fs.truncate(filename, 256 * 1024 ** 2 + (name === "oversized.png" ? 1 : 0));
+      if (name !== "oversized.png") limitFiles.batch.push(filename);
+    }
+    await uploader.locator('.album-drop-zone input[type="file"]').nth(1).setInputFiles([]);
+    await checkAlbumFileLimits(uploader, limitFiles);
+    await page.screenshot({ path: path.join(fixture.output, "album-limits-inline.png") });
+    pass("inline album upload accepts 256 MiB files and 768 MiB batches, rejects one extra byte");
+
     for (const entry of [
       { name: "dropped-master.mp4", type: "video/mp4", url: "/upload", content: "video selection fixture" },
       { name: "dropped-photo.png", type: "image/png", url: "/albums?dialog=upload", content: "photo selection fixture" },
@@ -281,7 +318,13 @@ async function main() {
 
     await page.goto(`${fixture.url}/albums?dialog=upload`, { waitUntil: "networkidle" });
     const photoDialog = page.getByRole("dialog", { name: "上传照片", exact: true });
-    const png = await sharp({ create: { width: 32, height: 24, channels: 3, background: "#777777" } }).png().toBuffer();
+    await checkAlbumFileLimits(photoDialog, limitFiles);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await photoDialog.locator('.album-drop-zone input[type="file"]').first().setInputFiles(limitFiles.oversized);
+    await photoDialog.getByText("“oversized.png”超过 256 MiB。", { exact: true }).waitFor();
+    await page.screenshot({ path: path.join(fixture.output, "album-limits-mobile.png") });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    pass("album upload dialog shares the file cap, has no batch cap, and displays the updated mobile error");
     await photoDialog.locator('.album-drop-zone input[type="file"]').first().setInputFiles({ name: "session-photo.png", mimeType: "image/png", buffer: png });
     const [photoResponse] = await Promise.all([
       page.waitForResponse(response => /\/api\/albums\/\d+\/photos$/.test(response.url()) && response.request().method() === "POST"),
@@ -291,6 +334,32 @@ async function main() {
     await photoDialog.getByRole("button", { name: "关闭", exact: true }).click();
     await page.waitForURL(`${fixture.url}/albums`); await page.waitForLoadState("networkidle");
     pass("session creates albums/uploads real PNGs; Bearer remains valid, manual errors do not fall back, maintenance stays token-only");
+
+    const uploadedAlbum = fixture.collections.albums.find(album => album.id === fixture.collections.album_photos[0].album_id);
+    await page.goto(`${fixture.url}/albums/${uploadedAlbum.slug}?action=upload`, { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "进入管理模式", exact: true }).click();
+    await page.getByRole("button", { name: "编辑", exact: true }).first().click();
+    const editPhoto = page.getByRole("dialog", { name: "编辑照片信息", exact: true });
+    const hdrInput = editPhoto.locator('input[type="file"]');
+    await hdrInput.setInputFiles(limitFiles.oversized);
+    await editPhoto.getByRole("button", { name: "上传并配对", exact: true }).click();
+    await editPhoto.getByText("HDR 文件不能超过 256 MiB。", { exact: true }).waitFor();
+    // Return a deliberate server error after client validation. This isolates
+    // the HDR size gate without publishing a synthetic 256 MiB image to CMS.
+    const hdrRoute = /\/api\/albums\/[^/]+\/photos\/[^/]+\/hdr$/;
+    let hdrRequests = 0;
+    await page.route(hdrRoute, route => {
+      hdrRequests++;
+      return route.fulfill({ status: 422, json: { error: "HDR limit fixture reached the upload request." } });
+    });
+    await hdrInput.setInputFiles(limitFiles.batch[0]);
+    await editPhoto.getByRole("button", { name: "上传并配对", exact: true }).click();
+    await editPhoto.getByText("HDR limit fixture reached the upload request.", { exact: true }).waitFor();
+    assert.equal(hdrRequests, 1);
+    await page.screenshot({ path: path.join(fixture.output, "album-limits-hdr.png") });
+    await page.unroute(hdrRoute);
+    await editPhoto.getByRole("button", { name: "关闭", exact: true }).click();
+    pass("manual HDR upload uses the same 256 MiB boundary and preserves server failure feedback");
 
     await page.goto(`${fixture.url}/upload`, { waitUntil: "networkidle" });
     await page.getByText("已作为作者登录", { exact: true }).waitFor();

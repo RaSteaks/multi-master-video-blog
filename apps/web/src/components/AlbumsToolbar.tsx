@@ -27,7 +27,6 @@ import {
 import { ManagedAlbumGallery } from "@/components/AlbumGallery";
 import {
   FileDropZone,
-  MAX_BATCH_BYTES,
   MAX_FILE_BYTES,
   MAX_PHOTOS,
   UploadPairEditor,
@@ -519,11 +518,7 @@ function UploadAlbumPhotosForm({
     }
     const oversized = allFiles.find((file) => file.size > MAX_FILE_BYTES);
     if (oversized) {
-      errors.push(`“${oversized.name}”超过 64 MiB。`);
-    }
-    const totalBytes = allFiles.reduce((sum, file) => sum + file.size, 0);
-    if (totalBytes > MAX_BATCH_BYTES) {
-      errors.push("本批文件总量超过 512 MiB。");
+      errors.push(`“${oversized.name}”超过 ${MAX_FILE_BYTES / 1024 ** 2} MiB。`);
     }
     return errors;
   }, [hdrFiles, pairing.errors, pairing.pairs.length, sdrFiles]);

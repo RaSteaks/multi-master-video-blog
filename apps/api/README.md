@@ -176,9 +176,11 @@ non-HDR AVIF. HDR accepts static AV1 AVIF with PQ or HLG transfer metadata
 and exactly 10- or 12-bit samples. File signatures, FFprobe metadata, frame
 count, and paired aspect ratios are validated before the first Directus write.
 
-Defaults are 24 photos, 64 MiB per file, and 512 MiB for the complete request.
-Override them with `MAX_ALBUM_PHOTOS`, `MAX_ALBUM_IMAGE_BYTES`, and
-`MAX_ALBUM_UPLOAD_BYTES`. Album files receive a unique reconciliation tag.
+Defaults are 24 photos and 256 MiB per file, including manual HDR uploads.
+Override them with `MAX_ALBUM_PHOTOS` and `MAX_ALBUM_IMAGE_BYTES`.
+There is no aggregate request/batch byte cap; `MAX_ALBUM_UPLOAD_BYTES` is no
+longer used and health diagnostics report `albumLimits.requestBytes: null`.
+Album files receive a unique reconciliation tag.
 If Directus commits a file or photo but loses the response, the API resolves
 the tag and SDR relation before rollback, then removes photo records first and
 files second. Photo deletion returns HTTP 202 with `cleanupRequired` and

@@ -60,7 +60,6 @@ function validateAlbumBatchLimits(sdrFiles, hdrFiles, limits) {
   const hdr = Array.isArray(hdrFiles) ? hdrFiles : [];
   const maxPhotos = Number(limits?.maxPhotos);
   const maxFileBytes = Number(limits?.maxFileBytes);
-  const maxBatchBytes = Number(limits?.maxBatchBytes);
 
   if (Number.isFinite(maxPhotos) && (sdr.length > maxPhotos || hdr.length > maxPhotos)) {
     throw new Error(`At most ${maxPhotos} photos are allowed per batch.`);
@@ -75,10 +74,6 @@ function validateAlbumBatchLimits(sdrFiles, hdrFiles, limits) {
       );
     }
     totalBytes += size;
-  }
-
-  if (Number.isFinite(maxBatchBytes) && totalBytes > maxBatchBytes) {
-    throw new Error(`Album upload exceeds ${maxBatchBytes} bytes.`);
   }
 
   return { photoCount: sdr.length, fileCount: sdr.length + hdr.length, totalBytes };

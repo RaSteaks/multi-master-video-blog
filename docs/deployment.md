@@ -353,18 +353,21 @@ retain selected files/text when a session expires.
 For album uploads, configure:
 
 ```env
-MAX_ALBUM_UPLOAD_BYTES=536870912
-MAX_ALBUM_IMAGE_BYTES=67108864
+MAX_ALBUM_IMAGE_BYTES=268435456
 MAX_ALBUM_PHOTOS=24
 ```
 
-Set Nginx `client_max_body_size` to at least the complete-request limit and
-allow enough proxy time for 512 MiB uploads. After changing API environment
-variables, restart both runtime services:
+Album batches have no aggregate byte cap; `MAX_ALBUM_UPLOAD_BYTES` is no longer
+used. The default single-file limit is 256 MiB for both batch and manual HDR
+uploads. The Nginx templates disable `client_max_body_size` only on these photo
+upload routes; apply those route changes and reload Nginx on existing deployments.
+Keep sufficient proxy time for large batches. When changing the frontend limit,
+update `MAX_FILE_BYTES` in `AlbumPhotoUploader.tsx` as well. Apply API environment
+changes and rebuild/restart the frontend after source changes:
 
 ```powershell
 npm run api:restart
-npm run web:restart
+npm run web:rebuild-restart
 npm run health
 ```
 

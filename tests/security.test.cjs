@@ -476,6 +476,49 @@ test("video cover parsing rejects active or forged files and preserves valid ima
   assert.deepEqual(await fsp.readFile(parsed.files.cover.tempPath), bytes);
 });
 
+test("album multipart accepts per-file equality and aggregate bytes while retaining upload safeguards", async t => {
+  const dir = await temp(t);
+  const api = apiFixture(["parseAlbumMultipart", "assertAlbumImageContents", "safeFileName", "assertInside", "httpError"], {
+    ROOT: dir, MAX_ALBUM_PHOTOS: 2, MAX_ALBUM_IMAGE_BYTES: 32,
+    // A stale deployment setting must no longer impose a request/batch limit.
+    MAX_ALBUM_UPLOAD_BYTES: 64,
+    ...require("../apps/api/src/album-utils.cjs"),
+    createMultipartParser: require("../apps/api/src/multipart-utils.cjs").createMultipartParser
+  });
+  const sdr = { field: "sdrFiles", name: "a.jpg", mime: "image/jpeg", bytes: Buffer.alloc(32) };
+  sdr.bytes.set([255, 216, 255, 224]);
+  const hdr = { field: "hdrFiles", name: "a.avif", mime: "image/avif", bytes: Buffer.alloc(32) };
+  hdr.bytes.write("ftypavif", 4, "ascii");
+  function upload(files, declared = false, field = "") {
+    const boundary = "album-limit-fixture";
+    const chunks = files.flatMap(file => [
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.name}"\r\nContent-Type: ${file.mime}\r\n\r\n`),
+      file.bytes, Buffer.from("\r\n")
+    ]);
+    if (field) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="manifest"\r\n\r\n${field}\r\n`));
+    chunks.push(Buffer.from(`--${boundary}--\r\n`));
+    const req = Readable.from(chunks);
+    req.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+    if (declared) req.headers["content-length"] = String(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+    return api.parseAlbumMultipart(req);
+  }
+  for (const declared of [false, true]) {
+    const parsed = await upload([sdr, { ...sdr, name: "b.jpg" }, hdr], declared);
+    assert.equal(parsed.files.sdrFiles.length, 2);
+    assert.equal(parsed.files.hdrFiles[0].size, 32);
+    assert.deepEqual(await fsp.readFile(parsed.files.sdrFiles[0].tempPath), sdr.bytes);
+    await fsp.rm(parsed.tempDir, { recursive: true });
+  }
+  for (const file of [sdr, hdr]) {
+    await assert.rejects(upload([{ ...file, bytes: Buffer.concat([file.bytes, Buffer.from([0])]) }]), { statusCode: 413 });
+  }
+  await assert.rejects(upload([sdr, sdr, sdr]), { statusCode: 413 });
+  await assert.rejects(upload([sdr, sdr, hdr, hdr, hdr]), { statusCode: 413 });
+  await assert.rejects(upload([{ ...sdr, bytes: Buffer.from("forged image") }]), { statusCode: 415 });
+  await assert.rejects(upload([sdr], false, "x".repeat(512 * 1024 + 1)), { statusCode: 413 });
+  assert.deepEqual(await fsp.readdir(path.join(dir, "tmp")), [], "Rejected uploads clean temporary files.");
+});
+
 test("legacy video disconnect handles the subsequent socket error and cleans its spool", async t => {
   const dir = await temp(t);
   const api = apiFixture(["parseMultipart", "safeFileName", "safeRelativePath", "assertInside", "httpError"], {
@@ -568,13 +611,14 @@ test("health requests share a short probe, cache failures and refresh once after
     sendJson: (res, code, payload) => { res.payload = payload; }
   };
   for (const name of ["MAX_ARTICLE_UPLOAD_BYTES", "MAX_ARTICLE_IMAGE_BYTES", "MAX_ARTICLE_MARKDOWN_BYTES", "MAX_ARTICLE_IMAGES",
-    "MAX_ALBUM_UPLOAD_BYTES", "MAX_ALBUM_IMAGE_BYTES", "MAX_ALBUM_PHOTOS", "MAX_FILM_SCAN_SOURCE_BYTES", "MAX_FILM_SCAN_JOB_BYTES", "MAX_FILM_SCAN_SOURCES"]) extra[name] = 1;
+    "MAX_ALBUM_IMAGE_BYTES", "MAX_ALBUM_PHOTOS", "MAX_FILM_SCAN_SOURCE_BYTES", "MAX_FILM_SCAN_JOB_BYTES", "MAX_FILM_SCAN_SOURCES"]) extra[name] = 1;
   const api = apiFixture(["commandAvailable", "handleHealth"], extra);
   vm.runInContext(apiSource.match(/^const getMediaHealth = createCachedProbe\([\s\S]*?^  \]\)\);/m)[0], api);
   const responses = Array.from({ length: 20 }, () => ({}));
   const pending = responses.map(res => api.handleHealth(res, true));
   await Promise.resolve(); assert.equal(calls, 2); release(); await Promise.all(pending);
   assert.equal(responses[0].payload.ffmpeg.available, true);
+  assert.equal(responses[0].payload.albumLimits.requestBytes, null);
   await api.handleHealth({}, true); assert.equal(calls, 2);
   clock = 60001; succeed = false;
   const res = {}; await Promise.all([api.handleHealth(res, true), api.handleHealth({}, true)]);

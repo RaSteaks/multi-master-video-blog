@@ -159,13 +159,9 @@ const MAX_ARTICLE_MARKDOWN_BYTES = positiveInteger(
   2 * 1024 * 1024
 );
 const MAX_ARTICLE_IMAGES = positiveInteger(env.MAX_ARTICLE_IMAGES, 24);
-const MAX_ALBUM_UPLOAD_BYTES = positiveInteger(
-  env.MAX_ALBUM_UPLOAD_BYTES,
-  512 * 1024 * 1024
-);
 const MAX_ALBUM_IMAGE_BYTES = positiveInteger(
   env.MAX_ALBUM_IMAGE_BYTES,
-  64 * 1024 * 1024
+  256 * 1024 * 1024
 );
 const MAX_ALBUM_PHOTOS = positiveInteger(env.MAX_ALBUM_PHOTOS, 24);
 const MAX_FILM_SCAN_SOURCE_BYTES = positiveInteger(
@@ -1269,17 +1265,6 @@ async function parseAlbumMultipart(req) {
     throw httpError(415, "Album photo uploads must use multipart/form-data.");
   }
 
-  const declaredLength = Number(req.headers["content-length"] || 0);
-  if (
-    Number.isFinite(declaredLength) &&
-    declaredLength > MAX_ALBUM_UPLOAD_BYTES
-  ) {
-    throw httpError(
-      413,
-      `Album upload exceeds ${MAX_ALBUM_UPLOAD_BYTES} bytes.`
-    );
-  }
-
   const tempDir = path.join(ROOT, "tmp", `album-${crypto.randomUUID()}`);
   await fsp.mkdir(tempDir, { recursive: true });
 
@@ -1289,7 +1274,6 @@ async function parseAlbumMultipart(req) {
     const pendingWrites = [];
     const activeWrites = new Set();
     let fileSequence = 0;
-    let requestBytes = 0;
     let settled = false;
     let busboy;
 
@@ -1299,7 +1283,9 @@ async function parseAlbumMultipart(req) {
         limits: {
           files: MAX_ALBUM_PHOTOS * 2,
           fields: 2,
-          fileSize: MAX_ALBUM_IMAGE_BYTES,
+          // Busboy emits "limit" at equality; accept exactly the advertised cap.
+          // File/field/part caps bound storage without a separate batch byte cap.
+          fileSize: MAX_ALBUM_IMAGE_BYTES + 1,
           fieldSize: 512 * 1024,
           parts: MAX_ALBUM_PHOTOS * 2 + 2
         }
@@ -1312,7 +1298,6 @@ async function parseAlbumMultipart(req) {
     }
 
     const removeRequestListeners = () => {
-      req.off("data", onRequestData);
       req.off("aborted", onRequestAborted);
     };
 
@@ -1335,18 +1320,6 @@ async function parseAlbumMultipart(req) {
         .then(() => fsp.rm(tempDir, { recursive: true, force: true }))
         .finally(() => reject(error));
     };
-
-    function onRequestData(chunk) {
-      requestBytes += chunk.length;
-      if (requestBytes > MAX_ALBUM_UPLOAD_BYTES) {
-        rejectOnce(
-          httpError(
-            413,
-            `Album upload exceeds ${MAX_ALBUM_UPLOAD_BYTES} bytes.`
-          )
-        );
-      }
-    }
 
     function onRequestAborted() {
       rejectOnce(httpError(400, "Album photo upload was interrupted."));
@@ -1478,7 +1451,6 @@ async function parseAlbumMultipart(req) {
       }
     });
 
-    req.on("data", onRequestData);
     req.once("aborted", onRequestAborted);
     req.pipe(busboy);
   });
@@ -4353,8 +4325,7 @@ async function validateAlbumUpload(parsed) {
       parsed.files.hdrFiles,
       {
         maxPhotos: MAX_ALBUM_PHOTOS,
-        maxFileBytes: MAX_ALBUM_IMAGE_BYTES,
-        maxBatchBytes: MAX_ALBUM_UPLOAD_BYTES
+        maxFileBytes: MAX_ALBUM_IMAGE_BYTES
       }
     );
   } catch (error) {
@@ -4847,8 +4818,7 @@ async function handleAlbumPhotoHdrUpload(req, res, albumId, photoId) {
     try {
       validateAlbumBatchLimits([], [hdrUpload], {
         maxPhotos: 1,
-        maxFileBytes: MAX_ALBUM_IMAGE_BYTES,
-        maxBatchBytes: MAX_ALBUM_IMAGE_BYTES
+        maxFileBytes: MAX_ALBUM_IMAGE_BYTES
       });
     } catch (error) {
       throw httpError(413, error.message);
@@ -8268,7 +8238,7 @@ async function handleHealth(res, detailed = false) {
     },
     albumPublishingEnabled: Boolean(UPLOAD_API_TOKEN),
     albumLimits: {
-      requestBytes: MAX_ALBUM_UPLOAD_BYTES,
+      requestBytes: null, // No aggregate byte cap; file and photo limits still apply.
       imageBytes: MAX_ALBUM_IMAGE_BYTES,
       photosPerBatch: MAX_ALBUM_PHOTOS,
       assetPresets: [...ASSET_PRESETS]
