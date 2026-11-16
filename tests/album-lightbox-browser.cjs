@@ -256,6 +256,30 @@ let base;
     assert.ok(loaded[3].y - loaded[0].bottom <= 21, "No blank area from a portrait in the preceding row.");
     assert.ok(Math.abs(loaded[6].x - loaded[0].x) < 1 && loaded[6].height <= 261, "Last row stays left aligned at the target height.");
     assert.ok(control.requests.slice(before).every(request => request.thumb), "Layout never fetches full originals.");
+    {
+      // Rows fill the list exactly, and the pre-hydration script reaches the same widths as React.
+      const list = p.locator(".album-photo-grid");
+      const edges = await list.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        const images = [...element.querySelectorAll("img")].map(image => image.getBoundingClientRect());
+        return { left: box.left, right: box.right, firstRowRight: images[2].right, secondRowRight: images[5].right };
+      });
+      assert.ok(edges.right - edges.firstRowRight < 2 && edges.right - edges.secondRowRight < 2, `Full rows end at the right edge, got ${JSON.stringify(edges)}.`);
+      const widths = () => list.evaluate(element => [...element.children].map(item => [item.style.getPropertyValue("--album-photo-width"), item.style.getPropertyValue("--album-photo-end")]));
+      const fromReact = await widths();
+      assert.ok(fromReact.every(([width]) => width.endsWith("px")));
+      const fromScript = await list.evaluate(element => {
+        const source = element.nextElementSibling.textContent;
+        element.removeAttribute("data-arranged");
+        for (const item of element.children) for (const name of ["width", "end", "grow"]) item.style.removeProperty(`--album-photo-${name}`);
+        const script = document.createElement("script");
+        script.textContent = source;
+        element.after(script);
+        script.remove();
+        return [...element.children].map(item => [item.style.getPropertyValue("--album-photo-width"), item.style.getPropertyValue("--album-photo-end")]);
+      });
+      assert.deepEqual(fromScript, fromReact, "The inline script and React agree.");
+    }
     control.thumbnailDelay = 0;
     await loadGalleryThumbnails(p);
     await p.locator(".album-photo-grid").screenshot({ path: path.join(output, "justified-desktop.png") });
@@ -315,18 +339,88 @@ let base;
   {
     const before = control.requests.length;
     const { context, page: p } = await newPage({ layout: "mixed", managed: true });
-    const controls = p.locator('[data-photo-tile="13"]').locator("..").locator(".album-photo-controls");
-    await controls.scrollIntoViewIfNeeded();
-    assert.ok(await controls.evaluate(element => element.scrollWidth <= element.clientWidth + 1));
-    await controls.getByRole("button", { name: "向前移动", exact: true }).click();
-    assert.deepEqual(await p.locator(".album-photo-open").evaluateAll(items => items.map(item => Number(item.dataset.photoTile))), [11, 13, 12, 14, 15, 16, 17]);
-    await controls.getByRole("button", { name: "编辑", exact: true }).click();
+    const initial = [11, 12, 13, 14, 15, 16, 17];
+    assert.equal(await p.locator(".album-photo-controls, [aria-label='向前移动']").count(), 0, "Arrows and the button row are gone.");
+    const managedHeights = await p.locator(".album-photo-open img").evaluateAll(images => images.map(image => image.getBoundingClientRect().height));
+    assert.ok(managedHeights.every(height => height <= 251), `Management rows are compact, got ${managedHeights}.`);
+    {
+      // Drag photo 11 by its handle onto photo 14's slot: only CSS order changes until the drop.
+      const tileOrder = () => p.locator(".album-photo-open").evaluateAll(items => items.map(item => Number(item.dataset.photoTile)));
+      const visualOrder = () => p.locator(".album-photo-grid > li").evaluateAll(items => items
+        .map(item => ({ id: Number(item.dataset.sortId), box: item.getBoundingClientRect() }))
+        .sort((a, b) => a.box.top - b.box.top || a.box.left - b.box.left).map(item => item.id));
+      const save = p.getByRole("button", { name: "保存照片顺序", exact: true });
+      const handle = p.locator('li[data-sort-id="11"] .sort-handle');
+      // Mid-window, clear of the zones near the edges that scroll the page during a drag.
+      await handle.evaluate(element => element.scrollIntoView({ block: "center", behavior: "instant" }));
+      const from = await handle.boundingBox();
+      const target = await p.locator('li[data-sort-id="14"] .album-photo-open').boundingBox();
+      await p.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await p.mouse.down();
+      await p.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 12 });
+      await p.waitForTimeout(120);
+      assert.deepEqual(await tileOrder(), initial, "The DOM holds still during a drag.");
+      assert.equal(await p.locator("li[data-dragging]").count(), 1);
+      await p.locator(".album-photo-grid").screenshot({ path: path.join(output, "justified-dragging.png") });
+      await p.mouse.up();
+      const dropped = await tileOrder();
+      assert.notDeepEqual(dropped, initial, "Dropping commits a new order.");
+      assert.ok(dropped.indexOf(11) > 0, `Photo 11 left the first slot, got ${dropped}.`);
+      await p.waitForTimeout(400);
+      assert.deepEqual(await visualOrder(), dropped, "Rows follow the committed order.");
+      assert.ok(await save.isEnabled(), "A drag marks the order as unsaved.");
+      // Escape cancels and keyboard arrows on the handle move the photo.
+      const second = p.locator(`li[data-sort-id="${dropped[1]}"] .sort-handle`);
+      await second.evaluate(element => element.scrollIntoView({ block: "center", behavior: "instant" }));
+      const start = await second.boundingBox();
+      await p.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+      await p.mouse.down();
+      await p.mouse.move(start.x + 400, start.y + 300, { steps: 8 });
+      await p.keyboard.press("Escape");
+      await p.mouse.up();
+      assert.deepEqual(await tileOrder(), dropped, "Escape cancels a drag.");
+      await second.focus();
+      await p.keyboard.press("Home");
+      assert.equal((await tileOrder())[0], dropped[1], "Home moves a focused handle's photo first.");
+      const arranged = await tileOrder();
+      let posted = null;
+      const current = await p.evaluate(() => window.__LIGHTBOX_CONFIG__.props.initialManagedAlbum);
+      await p.route("**/api/albums/7/photos/reorder", route => {
+        posted = JSON.parse(route.request().postData()).photoIds;
+        return route.fulfill({ json: { ok: true } });
+      });
+      await p.route("**/api/albums/7/manage", route => route.fulfill({ json: { album: {
+        ...current, photos: posted.map((id, index) => ({ ...current.photos.find(photo => photo.id === id), sortOrder: index })),
+      } } }));
+      await save.click();
+      await p.getByText("照片顺序已保存。").waitFor();
+      assert.deepEqual(posted, arranged, "Saving posts the full arranged order.");
+      assert.deepEqual(await tileOrder(), arranged);
+      await p.unrouteAll({ behavior: "wait" });
+      assert.equal(await p.locator(".album-photo-grid").evaluate(list => list.lastElementChild.getBoundingClientRect().right < list.getBoundingClientRect().right - 40), true,
+        "The final row stays left aligned after reordering.");
+    }
+    {
+      // Each tile's actions live in one menu that stays inside the page beside a portrait photo.
+      const tile = p.locator('li[data-sort-id="13"]');
+      const trigger = tile.locator(".album-photo-menu .action-menu-trigger");
+      await trigger.scrollIntoViewIfNeeded();
+      await trigger.click();
+      const panel = tile.locator(".action-menu-panel");
+      await panel.getByRole("button", { name: "删除", exact: true }).waitFor();
+      assert.equal(await panel.getByRole("button", { name: "设为封面", exact: true }).count(), 1);
+      const box = await panel.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= 1280, `The menu stays on screen, got ${box.x}+${box.width}.`);
+      await p.waitForTimeout(600);
+      await p.screenshot({ path: path.join(output, "justified-managed-menu.png") });
+      await panel.getByRole("button", { name: "编辑", exact: true }).click();
+    }
     await p.getByRole("dialog", { name: "编辑照片信息", exact: true }).waitFor();
     await p.getByRole("dialog", { name: "编辑照片信息", exact: true }).getByRole("button", { name: "关闭", exact: true }).click();
     await loadGalleryThumbnails(p);
     await p.locator(".album-photo-grid").screenshot({ path: path.join(output, "justified-managed.png") });
     assert.ok(control.requests.slice(before).every(request => request.auth === `Bearer ${TOKEN}`));
-    pass("Portrait management controls wrap, reorder/edit work, and protected thumbnails retain authentication");
+    pass("Management rows are compact; drag, keyboard, save and the tile menu work; protected thumbnails retain authentication");
     await context.close();
   }
 

@@ -1404,13 +1404,15 @@ h3 {
   }
 }
 
-.content-grid[data-sorting] {
+.content-grid[data-sorting],
+.album-photo-grid[data-sorting] {
   overflow-anchor: none;
   -webkit-user-select: none;
   user-select: none;
 }
 
-.content-grid[data-sorting] .content-card {
+.content-grid[data-sorting] .content-card,
+.album-photo-grid[data-sorting] .album-photo-tile {
   pointer-events: none;
 }
 
@@ -1421,7 +1423,8 @@ h3 {
   outline-offset: -1px;
 }
 
-.content-grid > li[data-dragging] > * {
+.content-grid > li[data-dragging] > *,
+.album-photo-grid > li[data-dragging] > * {
   translate: var(--drag-x, 0) var(--drag-y, 0);
 }
 
@@ -1430,7 +1433,8 @@ h3 {
   box-shadow: 0 18px 36px -12px rgba(0, 0, 0, 0.8);
 }
 
-.content-grid > li[data-dragging] .sort-handle {
+.content-grid > li[data-dragging] .sort-handle,
+.album-photo-grid > li[data-dragging] .sort-handle {
   color: #ffffff;
   cursor: grabbing;
 }
@@ -6299,7 +6303,6 @@ h3 {
 .album-action-button,
 .album-text-button,
 .album-icon-button,
-.album-photo-controls button,
 .album-lightbox button {
   appearance: none;
   border: 0;
@@ -6354,8 +6357,7 @@ h3 {
 }
 
 .album-action-button:disabled,
-.album-text-button:disabled,
-.album-photo-controls button:disabled {
+.album-text-button:disabled {
   cursor: not-allowed;
   opacity: 0.42;
 }
@@ -7155,8 +7157,10 @@ h3 {
 .album-photo-grid {
   --album-grid-gap: 16px;
   --album-row-target: 260px;
-  /* Proportional bases and growth give each row equal image heights without
-     measuring the viewport or changing DOM, keyboard, or lightbox order. */
+  --album-row-max: 360px;
+  /* Proportional bases and growth give each row equal image heights with CSS alone.
+     Once the list is measured, justifyRows() replaces them with exact widths
+     (--album-photo-width / -grow / -end) whose row breaks keep heights even. */
   display: flex;
   flex-wrap: wrap;
   gap: 20px var(--album-grid-gap);
@@ -7167,9 +7171,30 @@ h3 {
 }
 
 .album-photo-grid > li {
-  flex: var(--album-photo-ratio) 1 calc(var(--album-photo-ratio) * var(--album-row-target));
-  max-width: min(100%, calc(var(--album-photo-ratio) * 360px));
+  flex: var(--album-photo-grow, var(--album-photo-ratio)) 1
+    var(--album-photo-width, calc(var(--album-photo-ratio) * var(--album-row-target)));
+  max-width: min(100%, calc(var(--album-photo-ratio) * var(--album-row-max)));
+  margin-inline-end: var(--album-photo-end, 0px);
   min-width: 0;
+  /* Anchors the management drag handle. */
+  position: relative;
+}
+
+.album-photo-grid > li[data-dragging] {
+  z-index: 5;
+  outline: 1px dashed var(--line-light);
+  outline-offset: -1px;
+}
+
+.album-photo-grid > li[data-dragging] .album-photo-tile {
+  background: var(--background);
+  box-shadow: 0 18px 36px -12px rgba(0, 0, 0, 0.8);
+}
+
+.album-photo-grid--managed {
+  /* More photos per screen shorten the drag when arranging. */
+  --album-row-target: 180px;
+  --album-row-max: 250px;
 }
 
 .album-photo-grid::after {
@@ -7178,6 +7203,8 @@ h3 {
   content: "";
   flex: 10000 1 0%;
   margin-inline-start: calc(-1 * var(--album-grid-gap));
+  /* A drag previews positions with CSS `order`; the filler must stay last. */
+  order: 2147483647;
 }
 
 .album-photo-tile {
@@ -7234,8 +7261,11 @@ h3 {
 }
 
 .album-photo-draft {
+  /* Top left: the drag handle holds the top right corner in management. */
   top: 10px;
+  right: auto;
   bottom: auto;
+  left: 10px;
   border-color: rgba(215, 160, 82, 0.42);
   color: var(--album-amber);
 }
@@ -7268,40 +7298,49 @@ h3 {
   letter-spacing: 0.05em;
 }
 
-.album-photo-controls {
-  /* Portrait tiles can be much narrower than landscape tiles in the same row. */
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-  padding: 8px 0;
+.album-photo-menu {
+  /* The panel hangs from the tile, so it is never narrower than a portrait photo. */
+  position: static;
+  flex: 0 0 auto;
 }
 
-.album-photo-controls > div {
-  display: flex;
-  gap: 4px;
-}
-
-.album-photo-controls button {
-  min-height: 34px;
+.album-photo-menu .action-menu-trigger {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-secondary);
-  padding: 6px 8px;
-  font-size: 0.67rem;
-  font-weight: 700;
+  cursor: pointer;
+}
+
+.album-photo-menu .action-menu-trigger:focus-visible {
+  outline: 2px solid var(--album-amber);
+  outline-offset: 2px;
+}
+
+.album-photo-menu .action-menu-panel {
+  top: calc(100% + 4px);
+  right: auto;
+  left: 0;
+  width: max-content;
+  min-width: max(100%, 132px);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .album-photo-controls button:hover:not(:disabled) {
+  .album-photo-menu .action-menu-trigger:hover {
     border-color: rgba(215, 160, 82, 0.34);
     color: var(--album-amber);
   }
+}
 
-  .album-photo-controls button.is-danger:hover:not(:disabled) {
-    border-color: rgba(212, 82, 82, 0.4);
-    color: #ed8a7d;
+@media (pointer: coarse) {
+  .album-photo-menu .action-menu-trigger {
+    width: 40px;
+    height: 40px;
   }
 }
 
@@ -7755,6 +7794,11 @@ h3 {
     --album-grid-gap: 12px;
     --album-row-target: 210px;
   }
+
+  .album-photo-grid--managed {
+    --album-row-target: 160px;
+    --album-row-max: 220px;
+  }
 }
 
 @media (max-width: 640px) {
@@ -7890,19 +7934,11 @@ h3 {
 
   .album-photo-grid > li {
     max-width: none;
+    margin-inline-end: 0;
   }
 
   .album-photo-grid::after {
     display: none;
-  }
-
-  .album-photo-controls {
-    display: grid;
-    grid-template-columns: auto 1fr 1fr;
-  }
-
-  .album-photo-controls .is-danger {
-    grid-column: 1 / -1;
   }
 
   .album-manual-hdr > header {
@@ -9052,7 +9088,6 @@ object {
   .album-drop-zone > small,
   .album-pairing > header > small,
   .album-pair-copy small,
-  .album-photo-controls button,
   .album-manual-hdr-actions > span,
   .album-lightbox-toolbar {
     font-size: 12px;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent, type LiHTMLAttributes, type OlHTMLAttributes, type PointerEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type LiHTMLAttributes, type OlHTMLAttributes, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import { useAuthorSession } from "@/lib/author-session";
@@ -15,7 +15,14 @@ const EDGE_SCROLL_SPEED = 14;
 // The sticky header covers the top of the window.
 const HEADER_HEIGHT = 76;
 
-type Drag = { id: number; pointerX: number; pointerY: number; grabX: number; grabY: number; order: number[]; start: number[]; frame: number };
+// A swap can resize the rows (justified album photos), which may leave another slot nearest
+// to a pointer that has not moved. The pointer must travel before the next swap, and
+// farther before a swap that only undoes the last one.
+const SWAP_TRAVEL = 12;
+const UNDO_TRAVEL = 64;
+
+type Drag = { id: number; pointerX: number; pointerY: number; grabX: number; grabY: number; order: number[]; start: number[]; frame: number;
+  swap: { x: number; y: number; from: number[] } | null };
 
 function motion(list: HTMLElement) {
   const style = getComputedStyle(list);
@@ -34,11 +41,18 @@ function glideIn(card: HTMLElement, dx: number, dy: number, list: HTMLElement) {
   }
 }
 
-/** The author's manual ordering for one list. Visitors get the same list without a handle. */
-export function SortableGrid({ section, items, label, className, listRef, listProps, refreshes = true }: {
-  section: ContentSection; items: SortableItem[]; label: string; className: string;
+/**
+ * The author's manual ordering for one list. Visitors get the same list without a handle.
+ * With `section` the grid keeps and saves its own order. With `onReorder` the owner holds
+ * the order in `items` and decides when to save; `enabled` then replaces the session check.
+ * `arrange` styles each card for the order on screen, so a layout that depends on the
+ * order (the album's justified rows) also follows a drag's preview.
+ */
+export function SortableGrid({ section, items, label, className, listRef, listProps, refreshes = true, onReorder, enabled, arrange }: {
+  section?: ContentSection; items: SortableItem[]; label: string; className: string;
   listRef?: RefObject<HTMLOListElement | null>; listProps?: OlHTMLAttributes<HTMLOListElement> & Record<`data-${string}`, unknown>;
-  refreshes?: boolean;
+  refreshes?: boolean; onReorder?: (ids: number[]) => void; enabled?: boolean;
+  arrange?: (ids: number[]) => Map<number, CSSProperties> | null;
 }) {
   const router = useRouter();
   const session = useAuthorSession();
@@ -59,14 +73,15 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
   const flushRef = useRef<() => void>(() => {});
 
   const byId = new Map(items.map(item => [item.id, item]));
-  const order = applyOrder(items.map(item => item.id), saved);
+  const order = applyOrder(items.map(item => item.id), onReorder ? null : saved);
   const titleOf = (id: number) => byId.get(id)?.title ?? "";
-  const sortable = session.author && items.length > 1;
+  const sortable = (enabled ?? session.author) && items.length > 1;
+  const commit = (next: number[]) => (onReorder ? onReorder(next) : setSaved(next));
 
   async function flush() {
     clearTimeout(saveTimer.current);
     const ids = unsent.current;
-    if (sending.current || !ids) return;
+    if (sending.current || !ids || !section) return;
     sending.current = true;
     unsent.current = null;
     try {
@@ -94,6 +109,7 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
   useEffect(() => () => flushRef.current(), []);
 
   function queueSave(ids: number[], delay = 0) {
+    if (onReorder) return;
     unsent.current = ids;
     clearTimeout(saveTimer.current);
     if (delay) saveTimer.current = setTimeout(() => void flush(), delay);
@@ -126,9 +142,16 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
       const { left: x, top: y, width, height } = item.getBoundingClientRect();
       return { id: Number(item.dataset.sortId), left: x, top: y, width, height };
     }), current.id, left + slot.width / 2, top + slot.height / 2);
-    if (target !== null) {
+    const next = target === null ? null : moveId(current.order, current.id, current.order.indexOf(target));
+    // Page coordinates, so edge scrolling under a still pointer counts as travel.
+    const pageX = current.pointerX + scrollX;
+    const pageY = current.pointerY + scrollY;
+    const travel = current.swap ? Math.hypot(pageX - current.swap.x, pageY - current.swap.y) : Infinity;
+    const undoes = next !== null && current.swap?.from.every((id, index) => id === next[index]);
+    if (next && travel >= (undoes ? UNDO_TRAVEL : SWAP_TRAVEL)) {
       const before = measure();
-      current.order = moveId(current.order, current.id, current.order.indexOf(target));
+      current.swap = { x: pageX, y: pageY, from: current.order };
+      current.order = next;
       flushSync(() => setPreview(current.order));
       glideFrom(before, current.id);
     }
@@ -156,7 +179,7 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
     event.currentTarget.setPointerCapture(event.pointerId);
     const box = card.getBoundingClientRect();
     drag.current = { id, pointerX: event.clientX, pointerY: event.clientY, grabX: event.clientX - box.left, grabY: event.clientY - box.top,
-      order, start: order, frame: requestAnimationFrame(tick) };
+      order, start: order, frame: requestAnimationFrame(tick), swap: null };
     setPreview(order);
     setDragging(id);
     setError("");
@@ -181,7 +204,7 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
     flushSync(() => {
       setPreview(null);
       setDragging(null);
-      if (changed) setSaved(next);
+      if (changed) commit(next);
     });
     card?.style.removeProperty("--drag-x");
     card?.style.removeProperty("--drag-y");
@@ -216,7 +239,7 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
     const next = moveId(order, id, clamped);
     const handle = event.currentTarget;
     const before = measure();
-    flushSync(() => setSaved(next));
+    flushSync(() => commit(next));
     glideFrom(before);
     handle.focus({ preventScroll: true });
     handle.closest("li")?.scrollIntoView({ block: "nearest" });
@@ -225,6 +248,8 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
     queueSave(next, KEYBOARD_SAVE_DELAY_MS);
   }
 
+  const arranged = arrange?.(preview ?? order);
+
   return <>
     {error ? <p className="sortable-error" role="alert">{error}</p> : null}
     {sortable ? <p className="visually-hidden" role="status">{announcement}</p> : null}
@@ -232,7 +257,9 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
       {order.map(id => {
         const item = byId.get(id);
         if (!item) return null;
-        const { style, ...props } = item.props ?? {};
+        const { style: ownStyle, ...props } = item.props ?? {};
+        const placed = arranged?.get(id);
+        const style = placed ? { ...ownStyle, ...placed } : ownStyle;
         const position = preview?.indexOf(id);
         return <li key={id} {...props} data-sort-id={id} data-dragging={dragging === id ? "" : undefined}
           style={position === undefined ? style : { ...style, order: position }}>

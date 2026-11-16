@@ -23,6 +23,8 @@ import {
   type ManagedPhoto,
 } from "@/lib/album-management";
 import { ActionMenu } from "@/components/ActionMenu";
+import { SortableGrid } from "@/components/SortableGrid";
+import { albumLayoutScript, justifyRows, readAlbumGridMetrics, type AlbumGridMetrics } from "@/lib/album-layout";
 import { canAuthorize, requestAuthorSignIn, useAuthorDevice, useAuthorSession } from "@/lib/author-session";
 import { AuthorCredential } from "@/components/AuthorCredential";
 import { AlbumPhotoUploader, MAX_FILE_BYTES, UploadIcon } from "@/components/AlbumPhotoUploader";
@@ -132,6 +134,8 @@ export function AlbumGallery({
   const lastTrigger = useRef<HTMLButtonElement | null>(null);
   const uploadPanelRef = useRef<HTMLDivElement | null>(null);
   const galleryRef = useRef<HTMLElement | null>(null);
+  const gridRef = useRef<HTMLOListElement | null>(null);
+  const [gridMetrics, setGridMetrics] = useState<AlbumGridMetrics | null>(null);
   // The lightbox morphs to and from the current photo's tile; null means it fades instead.
   const findTile = useCallback(
     (photoId: number) =>
@@ -157,6 +161,42 @@ export function AlbumGallery({
   const photos = visibleAlbum.photos;
   const publishedCount = photos.filter((photo) => photo.published).length;
   const hdrCount = photos.filter((photo) => photo.hdrImage).length;
+
+  const ratioOf = (photo: GalleryPhoto) => photo.width && photo.height
+    ? photo.width / photo.height
+    : loadedRatios[photo.sdrImage] ?? 4 / 5;
+  const ratios = new Map(photos.map((photo) => [photo.id, ratioOf(photo)]));
+  const hasPhotos = photos.length > 0;
+  const managing = Boolean(managedAlbum);
+
+  // Row breaks depend on the list's width and its CSS row heights (smaller in management).
+  useLayoutEffect(() => {
+    const list = gridRef.current;
+    if (!list) return;
+    const measure = () => {
+      const next = readAlbumGridMetrics(list);
+      setGridMetrics((current) => (
+        current && next && current.width === next.width && current.gap === next.gap
+          && current.target === next.target && current.max === next.max ? current : next
+      ));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [hasPhotos, managing]);
+
+  /** Widths for the order on screen, which during a drag is the preview. */
+  function arrangePhotos(ids: number[]) {
+    if (!gridMetrics) return null;
+    const { width, gap, target, max } = gridMetrics;
+    const placed = justifyRows(ids.map((id) => ratios.get(id) ?? 4 / 5), width, gap, target, max);
+    return new Map(ids.map((id, index) => [id, {
+      "--album-photo-grow": 0,
+      "--album-photo-width": `${placed[index * 2]}px`,
+      "--album-photo-end": `${Math.max(0, placed[index * 2 + 1])}px`,
+    } as CSSProperties]));
+  }
 
   useEffect(() => {
     if (lightboxIndex !== null && lightboxIndex >= photos.length) {
@@ -262,12 +302,12 @@ export function AlbumGallery({
     window.setTimeout(() => lastTrigger.current?.focus({ preventScroll: true }), 0);
   }
 
-  function movePhoto(index: number, direction: -1 | 1) {
+  /** The drag handle only rearranges locally; "保存照片顺序" sends the result. */
+  function reorderPhotos(ids: number[]) {
     if (!managedAlbum) return;
-    const target = index + direction;
-    if (target < 0 || target >= managedAlbum.photos.length) return;
-    const next = [...managedAlbum.photos];
-    [next[index], next[target]] = [next[target], next[index]];
+    const byId = new Map(managedAlbum.photos.map((photo) => [photo.id, photo]));
+    const next = ids.flatMap((id) => byId.get(id) ?? []);
+    if (next.length !== managedAlbum.photos.length) return;
     setManagedAlbum({
       ...managedAlbum,
       photos: next.map((photo, photoIndex) => ({
@@ -277,6 +317,7 @@ export function AlbumGallery({
     });
     setOrderDirty(true);
   }
+
 
   async function saveOrder() {
     if (!managedAlbum) return;
@@ -507,7 +548,7 @@ export function AlbumGallery({
               />
               <div className="album-admin-order">
                 <p>
-                  使用每张照片下方的箭头调整顺序，再统一保存。封面只能使用已发布
+                  拖动照片右上角的手柄（或聚焦后用方向键）调整顺序，再统一保存。封面只能使用已发布
                   SDR 照片。
                 </p>
                 <button
@@ -532,18 +573,27 @@ export function AlbumGallery({
       ) : null}
 
       {photos.length ? (
-        <ol className="album-photo-grid">
-          {photos.map((photo, index) => {
+        <><SortableGrid
+          label="照片"
+          className={`album-photo-grid${managing ? " album-photo-grid--managed" : ""}`}
+          listRef={gridRef}
+          listProps={{ "data-arranged": gridMetrics ? "" : undefined, suppressHydrationWarning: true }}
+          enabled={managing && !adminBusy}
+          onReorder={reorderPhotos}
+          arrange={arrangePhotos}
+          items={photos.map((photo, index) => {
             const isCover = visibleAlbum.coverImage === photo.sdrImage;
-            const ratio = photo.width && photo.height
-              ? photo.width / photo.height
-              : loadedRatios[photo.sdrImage] ?? 4 / 5;
-            return (
-              <li
-                className={!photo.published ? "is-draft" : undefined}
-                key={photo.id}
-                style={{ "--album-photo-ratio": ratio } as CSSProperties}
-              >
+            const ratio = ratioOf(photo);
+            return {
+              id: photo.id,
+              title: photo.caption || photo.altText || `第 ${index + 1} 张照片`,
+              props: {
+                className: !photo.published ? "is-draft" : undefined,
+                style: { "--album-photo-ratio": ratio } as CSSProperties,
+                // The inline script below sets the row widths before hydration.
+                suppressHydrationWarning: true,
+              },
+              content: (
                 <article className="album-photo-tile">
                   <button
                     className="album-photo-open"
@@ -589,6 +639,8 @@ export function AlbumGallery({
                     ) : null}
                     {!photo.published ? (
                       <span className="album-photo-draft">草稿</span>
+                    ) : managedAlbum && isCover ? (
+                      <span className="album-photo-draft">封面</span>
                     ) : null}
                   </button>
                   <div className="album-photo-caption">
@@ -597,61 +649,39 @@ export function AlbumGallery({
                     </span>
                     <p>{photo.caption || photo.altText || "未命名照片"}</p>
                     {photo.hdrImage ? <span>SDR + HDR</span> : null}
+                    {managedAlbum ? (
+                      <ActionMenu
+                        label={`第 ${index + 1} 张照片的操作`}
+                        className="album-photo-menu"
+                        trigger={<MoreIcon />}
+                        groups={[
+                          {
+                            items: [
+                              ...(photo.published && !isCover
+                                ? [{ label: "设为封面", icon: null, onSelect: () => { if (!adminBusy) void setCover(photo); } }]
+                                : []),
+                              {
+                                label: "编辑",
+                                icon: null,
+                                onSelect: () => {
+                                  const managed = managedAlbum.photos.find((item) => item.id === photo.id);
+                                  if (managed && !adminBusy) setEditingPhoto(managed);
+                                },
+                              },
+                            ],
+                          },
+                          { items: [{ label: "删除", icon: null, onSelect: () => { if (!adminBusy) void deletePhoto(photo); } }] },
+                        ]}
+                      />
+                    ) : null}
                   </div>
-                  {managedAlbum ? (
-                    <div className="album-photo-controls">
-                      <div>
-                        <button
-                          type="button"
-                          aria-label="向前移动"
-                          disabled={adminBusy || index === 0}
-                          onClick={() => movePhoto(index, -1)}
-                        >
-                          ←
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="向后移动"
-                          disabled={adminBusy || index === photos.length - 1}
-                          onClick={() => movePhoto(index, 1)}
-                        >
-                          →
-                        </button>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={adminBusy || !photo.published || isCover}
-                        onClick={() => void setCover(photo)}
-                      >
-                        {isCover ? "当前封面" : "设为封面"}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={adminBusy}
-                        onClick={() => {
-                          const managed = managedAlbum.photos.find(
-                            (item) => item.id === photo.id,
-                          );
-                          if (managed) setEditingPhoto(managed);
-                        }}
-                      >
-                        编辑
-                      </button>
-                      <button
-                        className="is-danger"
-                        type="button"
-                        disabled={adminBusy}
-                        onClick={() => void deletePhoto(photo)}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  ) : null}
                 </article>
-              </li>
-            );
+              ),
+            };
           })}
-        </ol>
+        />
+        {/* Server-rendered pages arrange their rows before the first paint. */}
+        <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: albumLayoutScript }} /></>
       ) : (
         <section className="album-empty-state" role="status">
           <span className="album-empty-mark" aria-hidden="true">
@@ -2114,6 +2144,14 @@ function managedAlbumToGallery(album: ManagedAlbum): GalleryAlbum {
     published: album.published,
     photos: album.photos.map(managedPhotoToGallery),
   };
+}
+
+function MoreIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
+      <circle cx="3" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle cx="13" cy="8" r="1.4" />
+    </svg>
+  );
 }
 
 function ChevronIcon() {

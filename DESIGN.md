@@ -404,15 +404,29 @@ readout controls and the em-relative station signs use the `support*` radii.
   summaries; management loads the selected album before switching dialogs, retains
   the current form on failure, and ignores canceled responses. Its justified flex
   rows use the SDR aspect ratio for both basis and growth, keeping image heights
-  equal within a row without viewport measurements or DOM reordering. The target
-  height is 260px (210px up to 900px), capped at 360px; the final row stays left
-  aligned without enlarging a lone image. At 640px and below, a single-column
+  equal within a row without DOM reordering. That CSS is the fallback; once the
+  list has a width, `justifyRows` (`lib/album-layout.ts`) chooses every row break
+  at once so heights stay near the target instead of swinging with greedy
+  wrapping, and sets exact widths through custom properties. An inline script
+  applies the same result to server-rendered markup before first paint, and a
+  `ResizeObserver` keeps it current. The target
+  height is 260px (210px up to 900px), capped at 360px; management uses 180px
+  (160px), capped at 250px (220px), so more photos fit while arranging. The final
+  row stays left aligned without enlarging a lone image. At 640px and below, a single-column
   grid preserves each image's natural height. Numbering, keyboard focus, lightbox
   navigation and the first three eager images share the same source order.
   Photos and their embedded white borders remain uncropped, including on hover;
   there is no extra tile border, shadow, scale or saturation effect. The 32px
-  caption row owns numbering and optional HDR availability; management actions
-  wrap on narrow portrait tiles. Directus display dimensions reserve space in
+  caption row owns numbering and optional HDR availability; in management it also
+  holds one `ActionMenu` trigger per tile (set cover, edit, delete) whose panel
+  hangs from the tile's left edge, and the cover is badged on its image. There are
+  no per-tile button rows or arrow buttons. In management the tiles render through
+  `SortableGrid` in its owner-controlled mode: the same top-right handle, dashed
+  slot, glide, Escape and arrow-key behaviour as the lists, but a drop only
+  rearranges local state (rows are re-justified for the drag preview; a swap needs
+  12px of pointer travel, 64px to undo the last one) and the explicit "保存照片顺序" action posts the full
+  order. The draft badge sits top left so the handle keeps its corner, and the
+  last-row filler carries the highest `order` so drag previews cannot displace it. Directus display dimensions reserve space in
   both modes; legacy missing dimensions are learned from the thumbnail on load.
   Responsive source sizes follow the ratio and row-height ceiling. Named thumbnail
   parameters come from `config/directus-asset-presets.json`, shared with CMS setup
