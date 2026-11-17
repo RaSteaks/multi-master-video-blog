@@ -29,8 +29,14 @@ function photo(id, { hdr = false, hlg = false, width = 1200, height = 800 } = {}
 }
 const photos = [photo(1), photo(2), photo(3, { hdr: true, hlg: true }), photo(4)];
 const layoutPhotos = [
-  photo(11), photo(12), photo(13, { width: 800, height: 1200 }),
+  photo(11), photo(12), photo(13, { width: 800, height: 1200, hdr: true }),
   photo(14), photo(15, { width: 800, height: 1200 }), photo(16), photo(17),
+];
+// Moving the first landscape into a later row changes its width substantially.
+const dragPhotos = [
+  photo(21), photo(22), photo(23), photo(24),
+  photo(25, { width: 800, height: 1200 }), photo(26, { width: 800, height: 1200 }),
+  photo(27), photo(28, { width: 800, height: 1200 }),
 ];
 const album = { id: 7, title: "灯箱测试相簿", slug: "lightbox-test", description: "", coverImage: "p1", published: true, photos };
 const managedAlbum = {
@@ -49,7 +55,7 @@ const managedAlbum = {
 const control = { delays: {}, failures: new Set(), requests: [], thumbnailDelay: 0, thumbnailFailures: new Set() };
 const colors = ["#3b4a56", "#5a4636", "#2f5446", "#4e3f5c"];
 function svg(id, thumb) {
-  const layoutPhoto = layoutPhotos.find(photo => photo.sdrImage === id);
+  const layoutPhoto = [...layoutPhotos, ...dragPhotos].find(photo => photo.sdrImage === id);
   if (layoutPhoto) {
     const { width, height } = layoutPhoto;
     const scale = thumb ? Math.min(600 / width, 600 / height) : 1;
@@ -106,11 +112,13 @@ const server = http.createServer((req, res) => {
   const managed = url.searchParams.get("mode") === "managed";
   const props = managed ? { initialAlbum: album, initialManagedAlbum: managedAlbum, initialToken: TOKEN } : { initialAlbum: album };
   if (url.searchParams.has("layout")) {
-    const selected = url.searchParams.get("layout") === "single" ? layoutPhotos.slice(-1) : layoutPhotos;
-    const items = selected.map(photo => url.searchParams.has("unknown") && photo.id === 13 ? { ...photo, width: null, height: null } : photo);
+    const selected = url.searchParams.get("layout") === "drag" ? dragPhotos : layoutPhotos;
+    const subset = url.searchParams.get("layout") === "single" ? selected.slice(-1) : selected;
+    const items = subset.map(photo => url.searchParams.has("unknown") && photo.id === 13 ? { ...photo, width: null, height: null } : photo);
     props.initialAlbum = { ...album, title: "横竖照片排布验收", photos: items };
-    if (managed) props.initialManagedAlbum = { ...managedAlbum, photoCount: items.length, publishedPhotoCount: items.length, hdrPhotoCount: 0, photos: items.map(photo => ({
+    if (managed) props.initialManagedAlbum = { ...managedAlbum, photoCount: items.length, publishedPhotoCount: items.length, hdrPhotoCount: items.filter(photo => photo.hdrImage).length, photos: items.map(photo => ({
       ...managedAlbum.photos[0], id: photo.id, sdrImage: photo.sdrImage, width: photo.width, height: photo.height,
+      hdrImage: photo.hdrImage, hdrTransfer: photo.hdrTransfer, hdrPrimaries: photo.hdrPrimaries, hdrBitDepth: photo.hdrBitDepth,
       caption: photo.caption, altText: photo.altText, sortOrder: photo.sortOrder,
     })) };
   }
@@ -421,6 +429,77 @@ let base;
     await p.locator(".album-photo-grid").screenshot({ path: path.join(output, "justified-managed.png") });
     assert.ok(control.requests.slice(before).every(request => request.auth === `Bearer ${TOKEN}`));
     pass("Management rows are compact; drag, keyboard, save and the tile menu work; protected thumbnails retain authentication");
+    await context.close();
+  }
+
+  for (const touch of [false, true]) {
+    for (const width of [800, 641, 390]) {
+      const { context, page: p } = await newPage({ layout: "mixed", managed: true, touch, viewport: { width, height: 1100 } });
+      assert.equal(await p.evaluate(() => matchMedia("(pointer: coarse)").matches), touch);
+      const geometry = await p.locator(".album-photo-grid > li").evaluateAll(items => items.map(item => {
+        const tile = item.getBoundingClientRect();
+        const caption = item.querySelector(".album-photo-caption");
+        const trigger = item.querySelector(".action-menu-trigger").getBoundingClientRect();
+        return { id: item.dataset.sortId, left: tile.left, right: tile.right, triggerLeft: trigger.left,
+          triggerRight: trigger.right, captionWidth: caption.clientWidth, captionScrollWidth: caption.scrollWidth };
+      }));
+      for (const item of geometry) {
+        assert.ok(item.triggerLeft >= item.left - 1 && item.triggerRight <= item.right + 1, `The action button stays inside photo ${item.id}: ${JSON.stringify(item)}.`);
+        assert.ok(item.captionScrollWidth <= item.captionWidth + 1, `Photo ${item.id}'s caption does not overflow.`);
+      }
+      assert.ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      const hdrTile = p.locator('li[data-sort-id="13"]');
+      assert.equal(await hdrTile.locator(".album-photo-range").innerText(), "PQ", "HDR availability remains visible on the photo.");
+      await hdrTile.scrollIntoViewIfNeeded();
+      await hdrTile.screenshot({ path: path.join(output, `managed-hdr-${width}-${touch ? "touch" : "mouse"}.png`) });
+      await hdrTile.locator(".action-menu-trigger").click();
+      const panel = hdrTile.locator(".action-menu-panel");
+      await panel.getByRole("button", { name: "设为封面", exact: true }).waitFor();
+      await panel.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+      const box = await panel.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width, `Portrait menu stays in the ${width}px viewport.`);
+      assert.ok(await panel.getByRole("button", { name: "设为封面", exact: true }).evaluate(button => button.scrollWidth <= button.clientWidth), "Menu labels fit or wrap inside their button.");
+      await panel.screenshot({ path: path.join(output, `managed-hdr-menu-${width}-${touch ? "touch" : "mouse"}.png`) });
+      await panel.getByRole("button", { name: "编辑", exact: true }).click();
+      await p.getByRole("dialog", { name: "编辑照片信息", exact: true }).waitFor();
+      pass(`Managed HDR portrait captions and menus fit ${width}px with ${touch ? "coarse" : "fine"} pointer controls`, geometry);
+      await context.close();
+    }
+  }
+  for (const reducedMotion of ["no-preference", "reduce"]) {
+    const { context, page: p } = await newPage({ layout: "drag", managed: true, viewport: { width: 641, height: 2200 } });
+    await p.emulateMedia({ reducedMotion });
+    const tile = p.locator('li[data-sort-id="21"]');
+    const handle = tile.locator(".sort-handle");
+    const initial = await p.locator(".album-photo-grid > li").evaluateAll(items => items.map(item => item.dataset.sortId));
+    await handle.evaluate(element => element.scrollIntoView({ block: "center", behavior: "instant" }));
+    const from = await handle.boundingBox();
+    const target = await p.locator('li[data-sort-id="26"] .sort-handle').boundingBox();
+    const originalWidth = (await tile.boundingBox()).width;
+    const start = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+    const end = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
+    await p.mouse.move(start.x, start.y);
+    await p.mouse.down();
+    const samples = [];
+    for (let step = 1; step <= 20; step++) {
+      // Await a drag frame before reading the handle, including the swap's new row width.
+      const point = { x: Math.round(start.x + (end.x - start.x) * step / 20), y: Math.round(start.y + (end.y - start.y) * step / 20) };
+      await p.mouse.move(point.x, point.y);
+      await p.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const grip = await handle.boundingBox();
+      const sample = { step, width: (await tile.boundingBox()).width,
+        dx: grip.x + grip.width / 2 - point.x, dy: grip.y + grip.height / 2 - point.y };
+      samples.push(sample);
+      assert.ok(Math.abs(sample.dx) < 2 && Math.abs(sample.dy) < 2, `The grip stays under the pointer after reflow: ${JSON.stringify(sample)}.`);
+    }
+    assert.ok(samples.some(sample => Math.abs(sample.width - originalWidth) > 40), "The fixture must actually resize the dragged photo.");
+    assert.deepEqual(await p.locator(".album-photo-grid > li").evaluateAll(items => items.map(item => item.dataset.sortId)), initial, "Reflow does not move DOM nodes mid-drag.");
+    await p.screenshot({ path: path.join(output, `managed-reflow-drag-${reducedMotion}.png`) });
+    await p.keyboard.press("Escape");
+    await p.mouse.up();
+    assert.deepEqual(await p.locator(".album-photo-grid > li").evaluateAll(items => items.map(item => item.dataset.sortId)), initial);
+    assert.ok(await p.getByRole("button", { name: "顺序未更改", exact: true }).isDisabled(), "Canceling a reflowing drag leaves the saved order clean.");
+    pass(`Reflowing rows keep the drag grip anchored (${reducedMotion}) and Escape cancels`, samples);
     await context.close();
   }
 

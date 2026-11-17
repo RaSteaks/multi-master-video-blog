@@ -7299,7 +7299,7 @@ h3 {
 }
 
 .album-photo-menu {
-  /* The panel hangs from the tile, so it is never narrower than a portrait photo. */
+  /* Anchor the panel to the tile rather than the small trigger. */
   position: static;
   flex: 0 0 auto;
 }
@@ -7326,8 +7326,13 @@ h3 {
   top: calc(100% + 4px);
   right: auto;
   left: 0;
-  width: max-content;
-  min-width: max(100%, 132px);
+  /* A last-column portrait may be narrower than the shared menu minimum. */
+  width: 100%;
+  min-width: 0;
+}
+
+.album-photo-menu .action-menu-item {
+  white-space: normal;
 }
 
 @media (hover: hover) and (pointer: fine) {

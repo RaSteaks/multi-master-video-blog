@@ -21,7 +21,7 @@ const HEADER_HEIGHT = 76;
 const SWAP_TRAVEL = 12;
 const UNDO_TRAVEL = 64;
 
-type Drag = { id: number; pointerX: number; pointerY: number; grabX: number; grabY: number; order: number[]; start: number[]; frame: number;
+type Drag = { id: number; pointerX: number; pointerY: number; grabRight: number; grabY: number; order: number[]; start: number[]; frame: number;
   swap: { x: number; y: number; from: number[] } | null };
 
 function motion(list: HTMLElement) {
@@ -136,12 +136,14 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
     const card = current && cardOf(current.id);
     if (!current || !card) return;
     const slot = card.getBoundingClientRect();
-    const left = current.pointerX - current.grabX;
+    // Handles are anchored to the top right. Keep that grip when justified rows
+    // resize this card, including the layout change made by setPreview below.
+    const right = current.pointerX + current.grabRight;
     const top = current.pointerY - current.grabY;
     const target = nearestSlot(cards().map(item => {
       const { left: x, top: y, width, height } = item.getBoundingClientRect();
       return { id: Number(item.dataset.sortId), left: x, top: y, width, height };
-    }), current.id, left + slot.width / 2, top + slot.height / 2);
+    }), current.id, right - slot.width / 2, top + slot.height / 2);
     const next = target === null ? null : moveId(current.order, current.id, current.order.indexOf(target));
     // Page coordinates, so edge scrolling under a still pointer counts as travel.
     const pageX = current.pointerX + scrollX;
@@ -156,7 +158,7 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
       glideFrom(before, current.id);
     }
     const settled = card.getBoundingClientRect();
-    card.style.setProperty("--drag-x", `${left - settled.left}px`);
+    card.style.setProperty("--drag-x", `${right - settled.right}px`);
     card.style.setProperty("--drag-y", `${top - settled.top}px`);
   }
 
@@ -178,7 +180,7 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     const box = card.getBoundingClientRect();
-    drag.current = { id, pointerX: event.clientX, pointerY: event.clientY, grabX: event.clientX - box.left, grabY: event.clientY - box.top,
+    drag.current = { id, pointerX: event.clientX, pointerY: event.clientY, grabRight: box.right - event.clientX, grabY: event.clientY - box.top,
       order, start: order, frame: requestAnimationFrame(tick), swap: null };
     setPreview(order);
     setDragging(id);

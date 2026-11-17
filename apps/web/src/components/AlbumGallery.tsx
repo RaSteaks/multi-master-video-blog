@@ -648,7 +648,9 @@ export function AlbumGallery({
                       {String(index + 1).padStart(2, "0")}
                     </span>
                     <p>{photo.caption || photo.altText || "未命名照片"}</p>
-                    {photo.hdrImage ? <span>SDR + HDR</span> : null}
+                    {/* Management uses the HDR badge on the image, leaving narrow
+                        portrait captions enough room for their action button. */}
+                    {photo.hdrImage && !managedAlbum ? <span>SDR + HDR</span> : null}
                     {managedAlbum ? (
                       <ActionMenu
                         label={`第 ${index + 1} 张照片的操作`}

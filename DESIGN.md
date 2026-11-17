@@ -417,13 +417,15 @@ readout controls and the em-relative station signs use the `support*` radii.
   navigation and the first three eager images share the same source order.
   Photos and their embedded white borders remain uncropped, including on hover;
   there is no extra tile border, shadow, scale or saturation effect. The 32px
-  caption row owns numbering and optional HDR availability; in management it also
-  holds one `ActionMenu` trigger per tile (set cover, edit, delete) whose panel
-  hangs from the tile's left edge, and the cover is badged on its image. There are
+  caption row owns numbering and optional HDR availability; management keeps HDR
+  availability on the image badge to leave room for the title and one `ActionMenu`
+  trigger per tile (set cover, edit, delete). Its panel matches the tile width and
+  allows labels to wrap on narrow portraits, and the cover is badged on its image. There are
   no per-tile button rows or arrow buttons. In management the tiles render through
   `SortableGrid` in its owner-controlled mode: the same top-right handle, dashed
   slot, glide, Escape and arrow-key behaviour as the lists, but a drop only
-  rearranges local state (rows are re-justified for the drag preview; a swap needs
+  rearranges local state (rows are re-justified for the drag preview while the grip
+  stays anchored to the card's top-right edge; a swap needs
   12px of pointer travel, 64px to undo the last one) and the explicit "保存照片顺序" action posts the full
   order. The draft badge sits top left so the handle keeps its corner, and the
   last-row filler carries the highest `order` so drag previews cannot displace it. Directus display dimensions reserve space in
