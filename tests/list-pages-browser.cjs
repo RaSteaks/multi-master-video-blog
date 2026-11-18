@@ -90,8 +90,8 @@ async function main() {
     pass("a coverless preview that loads quickly is already on the card when the wipe starts");
     assert.deepEqual(await arrive(1500), { frames: 1, pending: 1 });
     await page.waitForFunction(() => document.querySelector("main iframe") && !document.querySelector("main [data-media-pending]"));
-    assert.equal(await page.evaluate(() => Boolean(document.documentElement.dataset.vtDirection)), true, "The frame should fade in under the wipe.");
-    pass("a slow preview starts on arrival, does not block the wipe and fades in during it");
+    assert.equal(await page.evaluate(() => Boolean(document.documentElement.dataset.vtDirection)), true, "The frame should load during the wipe.");
+    pass("a slow preview starts on arrival and finishes during the wipe");
 
     fixture.collections.external_projects.push(...[2, 3, 4].map(id => ({ ...fixture.collections.external_projects[0],
       id, title: `无说明网站${id}`, description: "", sort_order: id })));

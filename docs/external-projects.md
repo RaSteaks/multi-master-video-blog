@@ -139,10 +139,12 @@ blank frame, so give it a cover or a `preview_url` that can be framed.
 
 A preview takes priority over the cover: up to three preview-enabled cards on screen
 start their frames once scrolling settles, without hover or focus; at widths up to
-700px the budget is one. Visible cards are selected in stable list order. The cover shows
-until the frame fires `load`, and remains the fallback when no load event arrives within
-12 seconds. Reduced motion keeps posters, and a card without one shows the ◇
-placeholder. Preview frames are inert and pointer-transparent, rendered at a
+700px the budget is one. Visible cards are selected in stable list order. A cover stays
+visible until the frame fires `load`. If `load` is still pending after 12 seconds,
+the frame is removed and the cover stays visible. A coverless frame shows the
+browser's first paint with its fallback underneath. It can finish loading after
+12 seconds while it still has a preview slot. Reduced motion keeps covers or the
+◇ placeholder. Preview frames are inert and pointer-transparent, rendered at a
 1280px-wide desktop viewport and scaled into the picture. The default 16:10 picture
 uses 800px height; mosaic/masonry ratios adjust the frame height rather than stretch
 the webpage. Cards waiting for a slot
@@ -150,9 +152,8 @@ keep their cover/placeholder and never hold the route wipe. A heavy site can set
 a lighter `preview_url`. Leaving the
 viewport, hiding the page or opening a dialog unmounts the frames rather than
 pretending a hidden frame is paused. On arrival, on-screen frames start at once,
-without the scroll settle: a route wipe holds up to 300ms for a coverless card,
-then proceeds and the frame fades in whenever it loads. A cover is what guarantees
-a picture under the wipe.
+without the scroll settle. A route wipe holds up to 300ms for a coverless card,
+then proceeds while the frame can continue loading.
 
 Clicking an iframe-mode card opens a native modal filling the browser content
 viewport. The blog owns the fixed **返回实验室**, title and **独立打开** toolbar. The

@@ -175,7 +175,8 @@ readout controls and the em-relative station signs use the `support*` radii.
   up to 700px; unscheduled cards keep their cover/placeholder. Frame `load` is an
   unverified compatibility signal, never proof of a rendered picture. Targets need
   no custom script. The viewer keeps retry and independent opening reachable after
-  that signal, and unanswered thumbnail loads return to their fallback after 12s.
+  that signal. A card with a cover falls back to it after 12s. Coverless cards show
+  the browser's first paint and can finish loading after 12s while on screen.
 
 - `ActionMenu` owns the shared disclosure panel, keyboard focus and the same
   circular reveal/conceal as `AppearanceControl`; its radius follows live panel

@@ -12,10 +12,18 @@ async function main() {
   const report = { browser: `headless ${engine.name()}`, checks: [], errors: [], errorDetails: [], failedRequests: [], passed: false };
   const pass = name => { report.checks.push(name); console.log(`PASS ${name}`); };
   let blockedRequests = 0;
+  let pendingPreviewImage;
   // A real second origin with a continuously changing picture; no target-site modifications.
   const exhibit = http.createServer((req, res) => {
     // Leave a real navigation pending to exercise timeout without synthetic iframe events.
     if (req.url === "/slow") return;
+    if (req.url === "/preview-image") { pendingPreviewImage = res; return; }
+    if (req.url === "/progressive") {
+      // Paint the document while an image keeps the iframe's load event pending.
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end('<!doctype html><body style="background:#287e73"><h1>预览首屏</h1><img src="/preview-image" width="1" height="1" alt=""></body>');
+      return;
+    }
     if (req.url === "/blocked") blockedRequests++;
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...(req.url === "/blocked" ? { "X-Frame-Options": "DENY" } : {}) });
     res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
@@ -229,7 +237,7 @@ async function main() {
     }).length), 5);
     const idleCards = page.locator('ol[aria-label="网站作品"] [data-preview-state="idle"]');
     assert.equal(await idleCards.count(), 2);
-    assert.equal(await idleCards.locator("[data-waiting], [data-media-pending]").count(), 0);
+    assert.equal(await idleCards.and(page.locator("[data-media-pending]")).count(), 0);
     assert.equal(await idleCards.locator('[aria-hidden="true"] > span').first().isVisible(), true);
     await page.screenshot({ path: path.join(fixture.output, "preview-budget-desktop.png") });
     await page.setViewportSize({ width: 390, height: 2600 });
@@ -244,7 +252,25 @@ async function main() {
     } });
     assert.equal(slowResponse.status(), 201);
     const slowProject = (await slowResponse.json()).project;
-    await page.goto(`${fixture.url}/project`, { waitUntil: "domcontentloaded" });
+    const progressiveResponse = await context.request.post(`${fixture.url}/api/external-projects`, { headers, data: {
+      title: "渐进加载展品", url: "http://127.0.0.1:18098/site", preview_url: "http://127.0.0.1:18098/progressive",
+      published: true, sort_order: -2,
+    } });
+    assert.equal(progressiveResponse.status(), 201);
+    const progressiveProject = (await progressiveResponse.json()).project;
+    await page.goto(`${fixture.url}/albums`, { waitUntil: "networkidle" });
+    await page.getByRole("navigation", { name: "主要导航" }).getByRole("link", { name: "实验室", exact: true }).click();
+    await page.waitForURL(`${fixture.url}/project`, { waitUntil: "domcontentloaded" });
+    const progressiveCard = page.getByRole("button", { name: "查看渐进加载展品", exact: true });
+    const progressiveMedia = progressiveCard.locator("[data-preview-state]");
+    await progressiveMedia.frameLocator("iframe").locator("h1").waitFor();
+    await page.waitForFunction(() => !document.documentElement.dataset.vtDirection);
+    const firstPaint = await progressiveMedia.screenshot({ path: path.join(fixture.output, "preview-before-load.png") });
+    assert.equal(await progressiveMedia.getAttribute("data-preview-state"), "loading");
+    // A child DOM can be visible to Playwright even while its parent hides its pixels.
+    const pixel = await sharp(firstPaint).extract({ left: 32, top: 48, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
+    assert.deepEqual([...pixel], [40, 126, 115], "A coverless card should show the painted page before the iframe load event.");
+
     const slowCard = page.getByRole("button", { name: "查看超时展品", exact: true });
     await slowCard.locator('[data-preview-state="timeout"]').waitFor({ timeout: 20_000 });
     assert.equal(await slowCard.locator("iframe").count(), 0);
@@ -255,6 +281,14 @@ async function main() {
     await page.screenshot({ path: path.join(fixture.output, "preview-timeout-fallback.png") });
     await context.request.patch(`${fixture.url}/api/external-projects/${slowProject.id}`, { headers, data: { published: false } });
     pass("an unanswered frame returns to its cover after 12 seconds while ordinary sites stay compatible without a handshake");
+    await progressiveCard.locator('[data-preview-state="timeout"] iframe').waitFor();
+    assert.equal(await progressiveMedia.getAttribute("data-media-pending"), null);
+    assert.ok(pendingPreviewImage && !pendingPreviewImage.destroyed, "The original navigation must survive the preview timeout.");
+    pendingPreviewImage.writeHead(200, { "Content-Type": "image/png" });
+    pendingPreviewImage.end(png);
+    await progressiveCard.locator('[data-preview-state="unverified"] iframe').waitFor();
+    await context.request.patch(`${fixture.url}/api/external-projects/${progressiveProject.id}`, { headers, data: { published: false } });
+    pass("after switching sections, a coverless card paints before load and keeps its frame past the timeout");
 
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.goto(fixture.url, { waitUntil: "networkidle" });

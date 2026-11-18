@@ -37,21 +37,21 @@ export function ProjectPreview({ project, active, auto, coverOverride, fallback 
     const timer = setTimeout(() => setStatus(current => current === "loading" ? "timeout" : current), 12_000);
     return () => clearTimeout(timer);
   }, [allowed, src]);
-  // Only a frame actually scheduled to run may hold the route wipe or hide the fallback.
-  const waiting = allowed && status === "loading";
-  const pending = auto && !cover && waiting;
+  // A cover replaces a timed-out frame. Coverless frames can still paint while they have a slot.
+  const showFrame = allowed && scale > 0 && status !== "error" && (status !== "timeout" || !cover);
+  const pending = auto && !cover && showFrame && status === "loading";
   return <div ref={ref} className={styles.preview} data-media-pending={pending ? "" : undefined}
     data-preview-state={allowed ? status : "idle"}>
     {cover ? <AuthenticatedAssetImage src={cover} token={project.published ? undefined : ""} alt="" loading="lazy" />
-      : fallback ?? <div className={styles.placeholder} data-waiting={auto && waiting ? "" : undefined} aria-hidden="true"><span>◇</span></div>}
-    {allowed && scale > 0 && (status === "loading" || status === "unverified") ? <div inert aria-hidden="true" className={styles.previewFrame}
-      style={{ opacity: status === "unverified" ? 1 : 0 }}>
+      : fallback ?? <div className={styles.placeholder} aria-hidden="true"><span>◇</span></div>}
+    {showFrame ? <div inert aria-hidden="true" className={styles.previewFrame}
+      style={{ opacity: !cover || status === "unverified" ? 1 : 0 }}>
       <iframe key={src} src={src} title={`${project.title}动态预览`} tabIndex={-1}
         width={1280} height={frameHeight} style={{ transform: `scale(${scale})` }}
         sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer"
         allow="autoplay 'none'; fullscreen 'none'; camera 'none'; microphone 'none'; geolocation 'none'"
-        // Keep arbitrary sites compatible; load can also mean a CSP/network error page.
-        onLoad={() => setStatus(current => current === "loading" ? "unverified" : current)}
+        // A late load can recover from timeout. Load can also report a browser error page.
+        onLoad={() => setStatus("unverified")}
         onError={() => setStatus("error")} />
     </div> : null}
   </div>;
