@@ -15,6 +15,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import { flushSync } from "react-dom";
 import { defaultUrlTransform, type Components } from "react-markdown";
 import { MarkdownContent } from "./MarkdownContent";
 import { SiteDialog } from "./SiteDialog";
@@ -304,13 +305,14 @@ const ArticlePreview = memo(function ArticlePreview({
   );
 });
 
-function MarkdownFolderButton({ label, onSelect, disabled = false }: {
-  label: string; onSelect: (files: File[]) => void; disabled?: boolean;
+function MarkdownPickerButton({ label, folder = false, onSelect }: {
+  label: string; folder?: boolean; onSelect: (files: File[]) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   return <>
-    <button type="button" className={styles.toolButton} disabled={disabled} onClick={() => input.current?.click()}>{label}</button>
-    <input ref={input} type="file" multiple {...{ webkitdirectory: "" }} hidden aria-label={label}
+    <button type="button" className="album-action-button" onClick={() => input.current?.click()}>{label}</button>
+    <input ref={input} type="file" multiple hidden aria-label={label}
+      {...(folder ? { webkitdirectory: "" } : { accept: ".md,.markdown,.jpg,.jpeg,.png,.webp,.gif,.avif" })}
       onChange={event => {
         onSelect(Array.from(event.currentTarget.files ?? []));
         event.currentTarget.value = "";
@@ -375,6 +377,7 @@ export function ArticleEditor() {
 
   const [phase, setPhase] = useState<SubmitPhase>("idle");
   const [message, setMessage] = useState("尚未保存");
+  const [importPickerOpen, setImportPickerOpen] = useState(false);
   const [pendingImport, setPendingImport] = useState<MarkdownImport | null>(null);
   const [importError, setImportError] = useState("");
   useDroppedFiles("article", importMarkdown);
@@ -390,7 +393,6 @@ export function ArticleEditor() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const previewContentRef = useRef<HTMLDivElement>(null);
-  const markdownInputRef = useRef<HTMLInputElement>(null);
   const importSequence = useRef(0);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -610,6 +612,7 @@ export function ArticleEditor() {
 
   async function importMarkdown(files: File[], original?: File) {
     if (isUploading || !files.length) return;
+    setImportPickerOpen(false);
     const sequence = ++importSequence.current;
     setImportError("");
     let imported: MarkdownImport;
@@ -748,39 +751,73 @@ export function ArticleEditor() {
     const source = textareaRef.current?.value ?? content;
     const start = Math.max(0, Math.min(range.start, source.length));
     const end = Math.max(start, Math.min(range.end, source.length));
-    setContent(source.slice(0, start) + replacement + source.slice(end));
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(selectionStart, selectionEnd);
+    // Commit the controlled value before selecting it so rapid edits keep their own selection.
+    flushSync(() => {
+      if (viewMode === "preview") setViewMode("write");
+      setContent(source.slice(0, start) + replacement + source.slice(end));
     });
+    textareaRef.current?.focus();
+    textareaRef.current?.setSelectionRange(selectionStart, selectionEnd);
   }
 
   function wrapSelection(before: string, after: string, placeholder: string) {
     const range = selection();
     const source = textareaRef.current?.value ?? content;
-    const selected = source.slice(range.start, range.end) || placeholder;
+    let selected = source.slice(range.start, range.end);
+    if (before === "~~" && selected) {
+      // GFM requires non-whitespace immediately inside both strikethrough delimiters.
+      const text = selected.trim();
+      if (!text) return;
+      range.start += selected.indexOf(text);
+      range.end = range.start + text.length;
+      selected = text;
+    }
+    selected ||= placeholder;
     const replacement = `${before}${selected}${after}`;
     const innerStart = range.start + before.length;
     replaceRange(range, replacement, innerStart, innerStart + selected.length);
   }
 
-  function prefixLines(prefix: string) {
+  function prefixLines(prefix: string | ((index: number) => string), { placeholder = "", list = false } = {}) {
     const source = textareaRef.current?.value ?? content;
     const range = selection();
-    const lineStart = source.lastIndexOf("\n", Math.max(0, range.start - 1)) + 1;
-    const nextBreak = source.indexOf("\n", range.end);
+    const lineStart = range.start === 0 ? 0 : source.lastIndexOf("\n", range.start - 1) + 1;
+    // A selection ending at the start of the next line excludes that line.
+    const lastOffset = Math.max(range.start, range.end - 1);
+    const nextBreak = source.indexOf("\n", lastOffset);
     const lineEnd = nextBreak === -1 ? source.length : nextBreak;
     const selected = source.slice(lineStart, lineEnd);
-    const replacement = selected
-      .split("\n")
-      .map((line) => `${prefix}${line}`)
-      .join("\n");
+    const emptyCaret = range.start === range.end && !selected;
+    let itemIndex = 0;
+    const replacement = selected.split("\n").map(line => {
+      if (!emptyCaret && !line.trim() && (placeholder || list)) return line;
+      const mark = typeof prefix === "string" ? prefix : prefix(itemIndex++);
+      return mark + (emptyCaret ? placeholder : line);
+    }).join("\n");
+    // Without a blank line, GFM can absorb following prose into the last list item.
+    const followingLine = source.slice(lineEnd + 1).split("\n", 1)[0];
+    const separateList = list && replacement.slice(replacement.lastIndexOf("\n") + 1).trim() && followingLine.trim() &&
+      !/^ {0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/.test(followingLine);
     replaceRange(
       { start: lineStart, end: lineEnd },
-      replacement,
-      lineStart,
+      separateList ? replacement + "\n" : replacement,
+      emptyCaret && placeholder ? lineStart + replacement.length - placeholder.length : lineStart,
       lineStart + replacement.length,
     );
+  }
+
+  function insertCodeBlock() {
+    const range = selection();
+    const source = textareaRef.current?.value ?? content;
+    const code = source.slice(range.start, range.end) || "代码";
+    // The outer fence must survive backticks in pasted Markdown examples.
+    const runs = code.match(/`+/g) ?? [];
+    const fence = "`".repeat(runs.reduce((size, run) => Math.max(size, run.length + 1), 3));
+    const leading = range.start > 0 && source[range.start - 1] !== "\n" ? "\n" : "";
+    const trailing = range.end < source.length && source[range.end] !== "\n" ? "\n" : "";
+    const opening = leading + fence + "\n";
+    const start = range.start + opening.length;
+    replaceRange(range, opening + code + (code.endsWith("\n") ? "" : "\n") + fence + trailing, start, start + code.length);
   }
 
   function openLinkEditor() {
@@ -1355,7 +1392,7 @@ export function ArticleEditor() {
                   <button type="button" disabled={isUploading} onClick={() => coverInputRef.current?.click()}>
                     <span className={styles.coverMark} aria-hidden="true">＋</span>
                     <strong>{coverDragging ? "松开以选择封面" : "选择或拖入封面"}</strong>
-                    <small>JPG、PNG、WebP、GIF、AVIF · 最大 12 MB</small>
+                    <small>JPG、PNG、WebP、GIF、AVIF · 最大&nbsp;12&nbsp;MB</small>
                   </button>
                 )}
               </div>
@@ -1379,20 +1416,19 @@ export function ArticleEditor() {
           <div className={styles.editorControls}>
             <div className={styles.toolbar} role="toolbar" aria-label="Markdown 格式工具">
               <button className={styles.toolButton} type="button" disabled={isUploading}
-                onClick={() => markdownInputRef.current?.click()}>导入 Markdown</button>
-              <input ref={markdownInputRef} type="file" accept=".md,.markdown,.jpg,.jpeg,.png,.webp,.gif,.avif" multiple hidden
-                aria-label="选择 Markdown 文件" onChange={event => {
-                  void importMarkdown(Array.from(event.currentTarget.files ?? []));
-                  event.currentTarget.value = "";
-                }} />
-              <MarkdownFolderButton label="导入文件夹" disabled={isUploading} onSelect={importMarkdown} />
+                aria-haspopup="dialog" onClick={() => setImportPickerOpen(true)}>导入文件</button>
               <span className={styles.toolbarDivider} aria-hidden="true" />
               <ToolbarButton label="二级标题" mark="H₂" onClick={() => prefixLines("## ")} />
+              <ToolbarButton label="三级标题" mark="H₃" onClick={() => prefixLines("### ", { placeholder: "标题" })} />
               <ToolbarButton label="粗体" mark="B" shortcut="Ctrl/⌘ B" onClick={() => wrapSelection("**", "**", "粗体文本")} />
               <ToolbarButton label="斜体" mark="I" shortcut="Ctrl/⌘ I" onClick={() => wrapSelection("*", "*", "斜体文本")} />
+              <ToolbarButton label="删除线" mark="S̶" onClick={() => wrapSelection("~~", "~~", "删除线文本")} />
               <ToolbarButton label="引用" mark="❞" onClick={() => prefixLines("> ")} />
-              <ToolbarButton label="无序列表" mark="•—" onClick={() => prefixLines("- ")} />
+              <ToolbarButton label="无序列表" mark="•—" onClick={() => prefixLines("- ", { list: true })} />
+              <ToolbarButton label="有序列表" mark="1." onClick={() => prefixLines(index => `${index + 1}. `, { list: true, placeholder: "列表项" })} />
+              <ToolbarButton label="任务列表" mark="☐" onClick={() => prefixLines("- [ ] ", { list: true, placeholder: "待办事项" })} />
               <ToolbarButton label="行内代码" mark="</>" onClick={() => wrapSelection("`", "`", "code")} />
+              <ToolbarButton label="代码块" mark="代码块" onClick={insertCodeBlock} />
               <span className={styles.toolbarDivider} aria-hidden="true" />
               <ToolbarButton label="插入链接" mark="链接" shortcut="Ctrl/⌘ K" onClick={openLinkEditor} />
               <ToolbarButton label="插入本地图片" mark="＋图片" onClick={openImagePicker} />
@@ -1631,21 +1667,35 @@ export function ArticleEditor() {
           </div>
         </footer>
       </form>
+      {importPickerOpen && (
+        <SiteDialog title="导入文件" onRequestClose={() => setImportPickerOpen(false)}>
+          <p>选择一篇 Markdown，可同时选取同目录的配图。配图分布在子目录时，选择包含文章和配图的文件夹。</p>
+          <div className={styles.importChoices}>
+            <MarkdownPickerButton label="选择 Markdown 文件" onSelect={importMarkdown} />
+            <MarkdownPickerButton label="选择文件夹" folder onSelect={importMarkdown} />
+          </div>
+        </SiteDialog>
+      )}
       {pendingImport && (
         <SiteDialog title={pendingImport.missing.length ? "未找到引用的本地图片" : "替换当前正文？"} closeLabel="取消"
           onRequestClose={() => { ++importSequence.current; setPendingImport(null); }}>
-          {pendingImport.missing.length > 0 && <>
-            <p>请选择包含「{pendingImport.document.name}」和配图的文件夹，以匹配以下相对路径。</p>
-            <ul className={styles.missingPaths}>{pendingImport.missing.map(path => <li key={path}>{path}</li>)}</ul>
-            <MarkdownFolderButton label="选择文章和图片所在文件夹"
-              onSelect={files => void importMarkdown(files, pendingImport.document)} />
-          </>}
-          {(content || images.length > 0) && <p>导入「{pendingImport.document.name}」将替换当前正文。{pendingImport.images.length > 0 && "只保留新正文引用的图片附件。"}</p>}
-          {importError && <p role="alert">{importError}</p>}
-          <button type="button" className="album-action-button album-action-button--primary"
-            onClick={() => applyMarkdown(pendingImport)}>
-            {pendingImport.missing.length ? "保留未匹配路径并导入" : "替换正文"}
-          </button>
+          <div className={styles.importConfirmBody}>
+            {pendingImport.missing.length > 0 && <>
+              <p>请选择包含「{pendingImport.document.name}」和配图的文件夹，以匹配以下相对路径。</p>
+              <ul className={styles.missingPaths}>{pendingImport.missing.map(path => <li key={path}>{path}</li>)}</ul>
+            </>}
+            {(content || images.length > 0) && <p>导入「{pendingImport.document.name}」将替换当前正文。{pendingImport.images.length > 0 && "只保留新正文引用的图片附件。"}</p>}
+            {importError && <p className={styles.importConfirmError} role="alert">{importError}</p>}
+            <div className={styles.importConfirmActions}>
+              {pendingImport.missing.length > 0 && <MarkdownPickerButton folder label="选择文章和图片所在文件夹"
+                onSelect={files => void importMarkdown(files, pendingImport.document)} />}
+              {/* album-action-button--primary reads album-page tokens that the editor does not define. */}
+              <button type="button" className={`album-action-button ${styles.importConfirmButton}`}
+                onClick={() => applyMarkdown(pendingImport)}>
+                {pendingImport.missing.length ? "保留未匹配路径并导入" : "替换正文"}
+              </button>
+            </div>
+          </div>
         </SiteDialog>
       )}
     </main>

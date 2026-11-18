@@ -61,7 +61,7 @@ export async function readMarkdown(files: File[], original?: File): Promise<Mark
     ? `请选择包含「${original.name}」及其图片的文件夹。` : "请选择 .md 或 .markdown 文件。");
   if (documents.length !== 1) throw new Error(original
     ? "文件夹中有多份同名文章，请选择范围更小的文件夹。"
-    : "一次只能导入一篇 Markdown。文件夹中有多篇时，请先用「导入 Markdown」选择文章。");
+    : "一次只能导入一篇 Markdown。文件夹中有多篇时，请先在「导入文件」中单独选择目标文章。");
   const document = original ?? documents[0];
   if (document.size > MAX_MARKDOWN_BYTES) throw new Error("Markdown 文件不能超过 2 MiB。");
 

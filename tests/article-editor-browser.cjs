@@ -25,16 +25,11 @@ async function main(fixture) {
     const editor = page.locator("#article-content");
     const preview = page.getByRole("region", { name: "文章预览", exact: true });
 
-    const input = page.getByLabel("选择 Markdown 文件");
     const title = page.locator("#article-title");
     const slug = page.locator("#article-slug");
     const imported = "```sh\n# example\n```\n\n# Camera **Notes**\n\n正文";
     const file = { name: "camera.MARKDOWN", mimeType: "text/plain", buffer: Buffer.from("\uFEFF" + imported.replaceAll("\n", "\r\n")) };
-    const [chooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
-      page.getByRole("button", { name: "导入 Markdown" }).click(),
-    ]);
-    await chooser.setFiles(file);
+    await chooseImport(page, "选择 Markdown 文件", file);
     await preview.getByRole("heading", { name: "Camera Notes" }).waitFor();
     assert.equal(await title.inputValue(), "Camera Notes");
     assert.equal(await slug.inputValue(), "camera-notes");
@@ -54,11 +49,11 @@ async function main(fixture) {
       ["malformed.md", Buffer.from([0xff]), "Markdown 读取失败，请选择 UTF-8 编码的文本文件。"],
       ["large.md", Buffer.alloc(2 * 1024 * 1024 + 1), "Markdown 文件不能超过 2 MiB。"],
     ]) {
-      await input.setInputFiles({ name, mimeType: "text/plain", buffer });
+      await chooseImport(page, "选择 Markdown 文件", { name, mimeType: "text/plain", buffer });
       await page.getByText(error, { exact: true }).waitFor();
       assert.equal(await editor.inputValue(), original);
     }
-    await input.setInputFiles(file);
+    await chooseImport(page, "选择 Markdown 文件", file);
     const confirm = page.getByRole("dialog", { name: "替换当前正文？" });
     await confirm.getByRole("button", { name: "取消" }).click();
     assert.equal(await editor.inputValue(), original);
@@ -78,7 +73,7 @@ async function main(fixture) {
 
     await editor.fill("");
     await title.fill("");
-    await input.setInputFiles({
+    await chooseImport(page, "选择 Markdown 文件", {
       name: "拍摄手记.md", mimeType: "text/markdown",
       buffer: Buffer.from("## 雨后的街道\n\n傍晚的路面积着水，反射出招牌的颜色。\n\n- 固定白平衡\n- 保留灯光在水面的倒影"),
     });
@@ -89,6 +84,9 @@ async function main(fixture) {
       path: path.join(output, "markdown-import.png"),
     });
     report.checks.push({ name: "filename-title-and-custom-slug", status: "passed" });
+
+    await verifyWritingTools(page, editor, preview);
+    report.checks.push({ name: "writing-tools-selection-and-rendering", status: "passed" });
 
     await editor.fill(content);
     await preview.getByRole("heading", { name: "文章预览滚动测试", exact: true }).waitFor();
@@ -250,6 +248,69 @@ async function main(fixture) {
   }
 }
 
+async function chooseImport(page, label, files) {
+  await page.getByRole("button", { name: "导入文件", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "导入文件", exact: true });
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    dialog.getByRole("button", { name: label, exact: true }).click(),
+  ]);
+  await chooser.setFiles(files);
+  await dialog.waitFor({ state: "hidden" });
+}
+
+async function verifyWritingTools(page, editor, preview) {
+  async function format(label, source, start, end) {
+    await editor.fill(source);
+    await editor.evaluate((element, range) => element.setSelectionRange(...range), [start, end]);
+    await page.getByRole("button", { name: label, exact: true }).click();
+  }
+
+  for (const [label, source, end, markdown, selector, rendered] of [
+    ["三级标题", "", 0, "### 标题", "h3", "标题"],
+    ["删除线", "删除此字", 2, "~~删除~~此字", "del", "删除"],
+    ["任务列表", "剪辑", 2, "- [ ] 剪辑", "li input[type=checkbox]", ""],
+    ["代码块", "```\n示例\n```", 10, "````\n```\n示例\n```\n````", "pre > code", "```\n示例\n```"],
+  ]) {
+    await format(label, source, 0, end);
+    await preview.locator(selector).waitFor();
+    assert.equal(await editor.inputValue(), markdown);
+    assert.equal((await preview.locator(selector).textContent()).trim(), rendered);
+    if (label === "三级标题") {
+      await page.keyboard.insertText("剪辑笔记");
+      await preview.getByRole("heading", { name: "剪辑笔记", level: 3 }).waitFor();
+    }
+  }
+
+  const selectedLines = "拍摄\n \t\n剪辑\n";
+  for (const [label, markdown, list] of [
+    ["有序列表", "1. 拍摄\n \t\n2. 剪辑", "ol"],
+    ["任务列表", "- [ ] 拍摄\n \t\n- [ ] 剪辑", "ul"],
+    ["无序列表", "- 拍摄\n \t\n- 剪辑", "ul"],
+  ]) {
+    await format(label, selectedLines + "结束", 0, selectedLines.length);
+    assert.equal(await editor.inputValue(), markdown + "\n\n结束");
+    await preview.locator(`article > ${list} + p`).filter({ hasText: /^结束$/ }).waitFor();
+    assert.deepEqual((await preview.locator(`${list} > li`).allTextContents()).map(text => text.trim()), ["拍摄", "剪辑"]);
+  }
+
+  await format("三级标题", "拍摄\n\n剪辑", 0, 6);
+  assert.equal(await editor.inputValue(), "### 拍摄\n\n### 剪辑");
+  await preview.getByRole("heading", { name: "剪辑", level: 3 }).waitFor();
+
+  await format("有序列表", "拍摄\n\n结束", 0, 2);
+  assert.equal(await editor.inputValue(), "1. 拍摄\n\n结束");
+  await format("有序列表", "拍摄\n2. 剪辑", 0, 2);
+  assert.equal(await editor.inputValue(), "1. 拍摄\n2. 剪辑");
+
+  await format("删除线", "keep old text next", 4, 14);
+  assert.equal(await editor.inputValue(), "keep ~~old text~~ next");
+  await preview.locator("del").filter({ hasText: /^old text$/ }).waitFor();
+  assert.equal(await editor.evaluate(el => el.value.slice(el.selectionStart, el.selectionEnd)), "old text");
+  await format("删除线", "keep  next", 4, 6);
+  assert.equal(await editor.inputValue(), "keep  next");
+}
+
 async function verifyFolderImport(page, fixture) {
   const sharp = require("sharp");
   const root = path.join(fixture.temp, "图文稿");
@@ -272,12 +333,12 @@ async function verifyFolderImport(page, fixture) {
     const [chooser] = await Promise.all([page.waitForEvent("filechooser"), button.click()]);
     await chooser.setFiles(root);
   }
-  await chooseFolder(page.getByRole("button", { name: "导入文件夹", exact: true }));
+  await chooseImport(page, "选择文件夹", root);
   const confirm = page.getByRole("dialog", { name: "替换当前正文？" });
   await confirm.getByRole("button", { name: "取消" }).click();
   assert.equal(await editor.inputValue(), "保留到确认替换");
   assert.equal(await page.getByText("正文已引用", { exact: true }).count(), 0);
-  await page.getByLabel("选择 Markdown 文件").setInputFiles(doc);
+  await chooseImport(page, "选择 Markdown 文件", doc);
   const missing = page.getByRole("dialog", { name: "未找到引用的本地图片" });
   await missing.getByText("../hdr/图 1.png", { exact: true }).waitFor();
   await chooseFolder(missing.getByRole("button", { name: "选择文章和图片所在文件夹" }));

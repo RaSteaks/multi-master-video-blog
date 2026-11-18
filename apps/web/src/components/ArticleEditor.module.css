@@ -5,6 +5,9 @@
   --desk-panel-soft: rgba(20, 24, 28, 0.68);
   --desk-paper: #f2eee4;
   --desk-ink: #20201e;
+  /* Shared dialog buttons hover with an album-page token; without it the hover
+     background is invalid and turns transparent. */
+  --album-amber-soft: var(--accent-soft);
   position: relative;
   width: min(1440px, calc(100% - 48px));
   margin: 0 auto;
@@ -359,10 +362,17 @@
   background: rgb(var(--accent-rgb) / .18);
 }
 
+/* One 16:9 frame for both states, matching the crop used by post cards and the
+   article hero. No fixed min-height: with aspect-ratio it would be transferred
+   into a min-width (252px × ratio) and push the frame out of narrow columns.
+   overflow: clip (not hidden) keeps a content-based minimum height, so the
+   empty-state prompt can still grow the frame if the column gets very narrow. */
 .coverDrop {
   position: relative;
-  overflow: hidden;
-  min-height: 250px;
+  display: grid;
+  overflow: clip;
+  min-width: 0;
+  aspect-ratio: 16 / 9;
   border: 1px dashed var(--desk-border-strong);
   border-radius: 9px;
   background:
@@ -380,13 +390,13 @@
 .coverDrop > button {
   display: grid;
   width: 100%;
-  min-height: 250px;
+  min-width: 0;
   place-items: center;
   align-content: center;
-  gap: 8px;
+  gap: 7px;
   border: 0;
   background: transparent;
-  padding: 22px;
+  padding: 18px;
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -399,14 +409,15 @@
 .coverDrop > button small {
   color: var(--muted);
   font-size: .68rem;
+  text-wrap: balance;
 }
 
 .coverMark {
   display: grid;
-  width: 54px;
-  height: 54px;
+  width: 46px;
+  height: 46px;
   place-items: center;
-  margin-bottom: 5px;
+  margin-bottom: 3px;
   border: 1px solid rgb(var(--accent-rgb) / .28);
   border-radius: 50%;
   background: var(--accent-soft);
@@ -414,9 +425,9 @@
   font-size: 1.4rem;
 }
 
-.coverDrop[data-has-cover="true"] {
-  min-height: 252px;
-  aspect-ratio: 16 / 10;
+.coverDrop[data-has-cover="true"]:not([data-dragging="true"]) {
+  border-style: solid;
+  border-color: var(--desk-border);
 }
 
 .coverDrop > img {
@@ -429,9 +440,10 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 3px 12px;
-  background: linear-gradient(transparent, rgba(4,6,8,.94) 30%);
-  padding: 50px 16px 14px;
+  gap: 2px 10px;
+  min-width: 0;
+  background: linear-gradient(transparent, rgba(4,6,8,.82) 55%);
+  padding: 34px 12px 11px;
 }
 
 .coverOverlay strong {
@@ -459,11 +471,20 @@
 .coverOverlay button {
   border: 1px solid rgba(255,255,255,.18);
   border-radius: 5px;
-  background: rgba(255,255,255,.1);
-  padding: 7px 9px;
+  background: rgba(10,12,15,.42);
+  padding: 6px 9px;
   color: white;
   font-size: .68rem;
+  white-space: nowrap;
   cursor: pointer;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.coverOverlay button:hover:not(:disabled) {
+  border-color: rgba(255,255,255,.32);
+  background: rgba(255,255,255,.16);
 }
 
 .coverDrop button:disabled {
@@ -520,14 +541,13 @@
   flex: 1 1 auto;
   gap: 4px;
   min-width: 0;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-  scrollbar-color: auto;
-  scrollbar-width: none;
+  flex-wrap: wrap;
 }
 
-.toolbar::-webkit-scrollbar {
-  display: none;
+.importChoices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .toolButton,
@@ -1020,6 +1040,51 @@
   color: var(--text-secondary);
 }
 
+.importConfirmBody {
+  display: grid;
+  gap: 14px;
+}
+
+.importConfirmBody > p,
+.importConfirmBody > ul {
+  margin: 0;
+}
+
+.importConfirmBody > p {
+  color: var(--text-secondary);
+  font-size: .92rem;
+  line-height: 1.75;
+}
+
+.importConfirmBody > .importConfirmError {
+  color: color-mix(in srgb, var(--danger) 82%, white);
+}
+
+.importConfirmActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* Two classes outrank the global .album-action-button rules in either load order. */
+.importConfirmActions .importConfirmButton {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.22),
+    0 8px 24px rgb(var(--accent-rgb) / .2);
+  color: var(--on-accent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .importConfirmActions .importConfirmButton:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent-base) 82%, white);
+    background: color-mix(in srgb, var(--accent-base) 88%, white);
+  }
+}
+
 .trayHeading {
   display: flex;
   align-items: start;
@@ -1283,7 +1348,8 @@
 @media (max-width: 1080px) {
   .page { width: min(920px, calc(100% - 36px)); }
   .setupGrid { grid-template-columns: 1fr; }
-  .assetsPanel { grid-template-columns: minmax(0, .8fr) minmax(300px, 1.2fr); }
+  /* Side by side, the token field keeps its own height instead of matching the cover. */
+  .assetsPanel { grid-template-columns: minmax(0, .8fr) minmax(300px, 1.2fr); align-items: start; }
   .assetsPanel .panelHeading { grid-column: 1 / -1; }
   .actionBar { grid-template-columns: minmax(220px, 1fr) auto; }
   .progressTrack { grid-column: 1 / -1; grid-row: 2; }
@@ -1346,6 +1412,7 @@
   .attachment { grid-template-columns: 62px minmax(0, 1fr); }
   .attachment > img { width: 62px; height: 62px; }
   .attachmentActions { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
+  .importConfirmActions > button { flex: 1 1 auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {
