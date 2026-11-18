@@ -15,8 +15,8 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { defaultUrlTransform, type Components } from "react-markdown";
+import { MarkdownContent } from "./MarkdownContent";
 import styles from "./ArticleEditor.module.css";
 import { AuthenticatedAssetImage } from "./AuthenticatedAssetImage";
 import { useDroppedFiles } from "@/lib/dropped-files";
@@ -83,7 +83,6 @@ const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTICLE_IMAGE_PREFIX = "article-image://";
 const ARTICLE_IMAGE_MARKDOWN_PATTERN =
   /!\[[^\]\r\n]*\]\(article-image:\/\/([a-zA-Z0-9_-]+)\)/g;
-const MARKDOWN_PLUGINS = [remarkGfm];
 
 function slugify(value: string) {
   return value
@@ -310,13 +309,9 @@ const ArticlePreview = memo(function ArticlePreview({
 
   return (
     <article className={styles.previewBody}>
-      <ReactMarkdown
-        components={components}
-        remarkPlugins={MARKDOWN_PLUGINS}
-        urlTransform={previewUrlTransform}
-      >
+      <MarkdownContent components={components} urlTransform={previewUrlTransform}>
         {content}
-      </ReactMarkdown>
+      </MarkdownContent>
     </article>
   );
 });

@@ -108,6 +108,32 @@ async function main() {
     await preview.getByText("预览区等待内容", { exact: true }).waitFor();
     await page.screenshot({ path: path.join(output, "mobile-empty.png") });
     report.checks.push({ name: "short-and-empty-preview", status: "passed" });
+
+    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    const fraction = String.raw`V=\frac{L^{1/2.4}-L_B^{1/2.4}}{L_W^{1/2.4}-L_B^{1/2.4}}`;
+    const matrix = String.raw`\begin{bmatrix}1 & 0 \\ 0 & 1\end{bmatrix}`;
+    const coefficients = String.raw`y'=0.2126R'+0.7152G'+0.0722B',\qquad c_b=\frac{B'-y'}{2(1-0.0722)},\qquad c_r=\frac{R'-y'}{2(1-0.2126)}`;
+    await editor.fill([
+      "黑位为 $L_B$。", `$$ ${fraction} $$`, `$$\n${matrix}\n$$`, `$$ ${coefficients} $$`,
+      "源码 `$x$`，价格 \\$5。", "```text\n$$ original $$\n```", String.raw`$\frac{1}{$`, "后续段落。",
+    ].join("\n\n"));
+    await page.getByRole("button", { name: "预览", exact: true }).click();
+    await preview.locator("math msub").first().waitFor({ state: "attached" });
+    const displayMath = preview.locator(".katex-display");
+    assert.equal(await displayMath.count(), 3);
+    assert.equal(await displayMath.first().locator("math mfrac").count(), 1);
+    assert.equal(await preview.locator(".katex-display math mtable").count(), 1);
+    assert.ok(await displayMath.last().evaluate(element => {
+      element.scrollLeft = element.scrollWidth;
+      return element.scrollLeft > 0;
+    }), "a wide equation can scroll inside the mobile preview");
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    assert.equal(await preview.locator("p code").textContent(), "$x$");
+    assert.equal(await preview.locator("pre code").textContent(), "$$ original $$\n");
+    assert.ok(await preview.getByText("源码 $x$，价格 $5。").isVisible());
+    assert.equal(await preview.locator(".katex-error").count(), 1);
+    assert.ok(await preview.getByText("后续段落。").isVisible());
+    report.checks.push({ name: "inline-and-display-math", status: "passed" });
     assert.deepEqual(report.errors, []);
     report.status = "passed";
     console.log(`Passed ${report.checks.length} article editor browser scenarios (headless WebKit).`);

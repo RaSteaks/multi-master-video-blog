@@ -1,8 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import Image from "next/image";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { AnalyticsTracker } from "@/components/AnalyticsTracker";
 import { assetIdsFromMarkdown, assetUrl, getAssetDimensions, getPost } from "@/lib/directus";
 import { markdownImageComponent } from "@/components/MarkdownImage";
@@ -79,7 +78,7 @@ export default async function AboutPage() {
               : <img {...cover} />)}
 
             <article className="markdown-body">
-              <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+              <MarkdownContent components={components}>{content}</MarkdownContent>
             </article>
           </div>
         </main>
@@ -103,7 +102,7 @@ export default async function AboutPage() {
         </header>
 
         <article className="markdown-body">
-          <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>{about.content}</ReactMarkdown>
+          <MarkdownContent components={components}>{about.content}</MarkdownContent>
         </article>
       </div>
     </main>

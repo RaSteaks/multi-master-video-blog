@@ -1,0 +1,14 @@
+.katex {
+  font-size: 1.1em;
+}
+
+/* Keep a wide equation scrollable from its first symbol on narrow screens. */
+.katex-display {
+  overflow-x: auto;
+  padding-block: 0.2em;
+}
+
+.katex-display > .katex {
+  width: max-content;
+  min-width: 100%;
+}

@@ -6,9 +6,8 @@ import {
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from "react";
-import ReactMarkdown from "react-markdown";
-import type { Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
+import type { Components, ExtraProps } from "react-markdown";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { markdownImageComponent } from "@/components/MarkdownImage";
 import { ArticleAnchors } from "@/components/ArticleAnchors";
 import { ArticleToc } from "@/components/ArticleToc";
@@ -37,6 +36,8 @@ type TocItem = {
   level: number;
   text: string;
 };
+
+const ATX_HEADING = /^ {0,3}(#{1,6})(?:\s+|$)(.*)$/;
 
 export async function generateMetadata({ params }: PostPageProps) {
   const { slug } = await params;
@@ -70,7 +71,7 @@ export default async function PostPage({ params }: PostPageProps) {
   const assetDimensions = await getAssetDimensions(
     assetIdsFromMarkdown(content),
   );
-  const markdownComponents = createMarkdownComponents(assetDimensions);
+  const markdownComponents = createMarkdownComponents(assetDimensions, content);
 
   return (
     <>
@@ -122,9 +123,9 @@ export default async function PostPage({ params }: PostPageProps) {
             </header>
 
             <article className={`markdown-body ${readingStyles.body}`}>
-              <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+              <MarkdownContent components={markdownComponents}>
                 {content}
-              </ReactMarkdown>
+              </MarkdownContent>
             </article>
           </div>
         </div>
@@ -150,9 +151,9 @@ export default async function PostPage({ params }: PostPageProps) {
           ) : null}
 
           <article className={`markdown-body ${readingStyles.body}`}>
-            <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+            <MarkdownContent components={markdownComponents}>
               {content}
-            </ReactMarkdown>
+            </MarkdownContent>
           </article>
         </div>
       )}
@@ -163,16 +164,17 @@ export default async function PostPage({ params }: PostPageProps) {
 
 function createMarkdownComponents(
   assetDimensions: Map<string, AssetDimensions>,
+  content: string,
 ): Components {
   const slugHeading = createSlugger();
 
   return {
-    h1: headingComponent("h1", 1, slugHeading),
-    h2: headingComponent("h2", 2, slugHeading),
-    h3: headingComponent("h3", 3, slugHeading),
-    h4: headingComponent("h4", 4, slugHeading),
-    h5: headingComponent("h5", 5, slugHeading),
-    h6: headingComponent("h6", 6, slugHeading),
+    h1: headingComponent("h1", 1, slugHeading, content),
+    h2: headingComponent("h2", 2, slugHeading, content),
+    h3: headingComponent("h3", 3, slugHeading, content),
+    h4: headingComponent("h4", 4, slugHeading, content),
+    h5: headingComponent("h5", 5, slugHeading, content),
+    h6: headingComponent("h6", 6, slugHeading, content),
     pre: markdownPreComponent,
     img: markdownImageComponent(assetDimensions),
   };
@@ -213,13 +215,18 @@ function markdownPreComponent({
 function headingComponent(
   Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6",
   level: number,
-  slugHeading: (text: string) => string
+  slugHeading: (text: string) => string,
+  content: string,
 ) {
   return function Heading({
     children,
+    node,
     ...props
-  }: ComponentPropsWithoutRef<typeof Tag>) {
-    const text = textFromChildren(children);
+  }: ComponentPropsWithoutRef<typeof Tag> & ExtraProps) {
+    // Match the TOC's source text even when KaTeX emits both visible HTML and MathML.
+    const position = node?.position;
+    const source = position && content.slice(position.start.offset, position.end.offset).match(ATX_HEADING);
+    const text = source?.[2].includes("$") ? cleanHeadingText(source[2]) : textFromChildren(children);
     const id = slugHeading(text || `heading-${level}`);
 
     return (
@@ -257,7 +264,7 @@ function extractTocItems(markdown: string): TocItem[] {
 
     if (fence) continue;
 
-    const headingMatch = line.match(/^ {0,3}(#{1,6})(?:\s+|$)(.*)$/);
+    const headingMatch = line.match(ATX_HEADING);
     if (!headingMatch) continue;
 
     const level = headingMatch[1].length;
