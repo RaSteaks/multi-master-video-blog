@@ -8,6 +8,8 @@ describe("author file routing", () => {
     expect(classifyDroppedFiles([file("frame.JPG"), file("frame.AVIF"), file("other.heif")], true)).toBe("photo");
     expect(classifyDroppedFiles([file("roll.TIFF")], true)).toBe("film");
     expect(classifyDroppedFiles([file("article.md", "text/markdown")], true)).toBe("article");
+    expect(classifyDroppedFiles([file("draft.MARKDOWN")], true)).toBe("article");
+    expect(classifyDroppedFiles([file("frame.gif"), file("draft.md"), file("print.PNG")], true)).toBe("article");
   });
   it("rejects mixed workflows, unknown files, multiple articles and production film import", () => {
     for (const files of [[file("a.mp4"), file("b.png")], [file("a.exe")], [file("a.md"), file("b.md")], []]) {

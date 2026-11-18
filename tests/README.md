@@ -67,7 +67,7 @@ Compose 解析检查需要 Docker CLI，镜像构建另行执行。
 
 上述流程自行创建隔离 fixture。以下检查需要额外准备：
 
-- `article-editor-browser.cjs`：先启动测试用 Web 服务，地址可由 `ARTICLE_EDITOR_BASE_URL` 指定。
+- `article-editor-browser.cjs`：已有测试用 Web 服务时，可由 `ARTICLE_EDITOR_BASE_URL` 指定地址。加 `--fixture` 会构建生产版并启动隔离的 Web、API 和临时 CMS，额外验证 Markdown 文件夹配图的预览、缺图补选及草稿保存。
 - `motion-panels-browser.cjs`：使用测试用 Web 服务，地址可由 `MOTION_TEST_URL` 指定。
 - `npm run test:cms-security`：临时 SQLite 和真实 Directus；使用 `--no-node-snapshot`。
   如需接着运行 `security-browser.cjs`，先用 `HOLD_FIXTURE=1` 保留该隔离 fixture。

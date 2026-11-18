@@ -211,9 +211,7 @@ const ARTICLE_IMAGE_MIME_EXTENSIONS = new Map([
   ["image/gif", new Set([".gif"])],
   ["image/avif", new Set([".avif"])]
 ]);
-const ARTICLE_IMAGE_PREFIX = "article-image://";
-const ARTICLE_IMAGE_TARGET_PATTERN =
-  /!\[([^\]\r\n]*)\]\(article-image:\/\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,127})\)/g;
+const { ARTICLE_IMAGE_PREFIX, ARTICLE_IMAGE_TARGET_PATTERN } = require("../../../shared/article-image-target.cjs");
 // Accept exactly the named presets installed by the schema setup script.
 const ASSET_PRESETS = new Set(
   require("../../../config/directus-asset-presets.json").map((preset) => preset.key)

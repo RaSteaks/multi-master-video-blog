@@ -17,9 +17,13 @@ import {
 } from "react";
 import { defaultUrlTransform, type Components } from "react-markdown";
 import { MarkdownContent } from "./MarkdownContent";
+import { SiteDialog } from "./SiteDialog";
 import styles from "./ArticleEditor.module.css";
 import { AuthenticatedAssetImage } from "./AuthenticatedAssetImage";
-import { useDroppedFiles } from "@/lib/dropped-files";
+import { MARKDOWN_EXTENSION, useDroppedFiles } from "@/lib/dropped-files";
+import { createImageKey, imageLabel, MAX_IMAGE_BYTES, MAX_INLINE_IMAGES, MAX_MARKDOWN_BYTES, readMarkdown, type MarkdownImport } from "@/lib/markdown-import";
+import { ARTICLE_IMAGE_PREFIX, ARTICLE_IMAGE_TARGET_PATTERN } from "../../../../shared/article-image-target.cjs";
+import { markdownHeadings } from "@/lib/markdown-headings";
 import { authorHeaders, canAuthorize, observeAuthorResponse, useAuthorSession } from "@/lib/author-session";
 import { AuthorCredential } from "@/components/AuthorCredential";
 
@@ -74,16 +78,9 @@ type EditorFingerprint = {
   }>;
 };
 
-const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_ARTICLE_UPLOAD_BYTES = 64 * 1024 * 1024;
-const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024;
-const MAX_INLINE_IMAGES = 24;
 const MAX_TAG_LENGTH = 64;
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const ARTICLE_IMAGE_PREFIX = "article-image://";
-const ARTICLE_IMAGE_MARKDOWN_PATTERN =
-  /!\[[^\]\r\n]*\]\(article-image:\/\/([a-zA-Z0-9_-]+)\)/g;
-
 function slugify(value: string) {
   return value
     .normalize("NFKD")
@@ -114,9 +111,9 @@ function normalizeTags(values: string[]) {
 
 function imageKeysIn(markdown: string) {
   const keys = new Set<string>();
-  const pattern = new RegExp(ARTICLE_IMAGE_MARKDOWN_PATTERN.source, "g");
+  const pattern = new RegExp(ARTICLE_IMAGE_TARGET_PATTERN.source, "g");
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(markdown))) keys.add(match[1]);
+  while ((match = pattern.exec(markdown))) keys.add(match[2]);
   return keys;
 }
 
@@ -134,15 +131,6 @@ function cleanAlt(value: string) {
 
 function altFromFile(file: File) {
   return cleanAlt(file.name.replace(/\.[^.]+$/, "")) || "文章插图";
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function createImageKey() {
-  return globalThis.crypto?.randomUUID?.() ??
-    `img-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function fileIdentity(file: File | undefined) {
@@ -232,8 +220,8 @@ function persistUploadedImageUrls(
   );
 
   return markdown.replace(
-    new RegExp(ARTICLE_IMAGE_MARKDOWN_PATTERN.source, "g"),
-    (imageMarkdown, key: string) => {
+    new RegExp(ARTICLE_IMAGE_TARGET_PATTERN.source, "g"),
+    (imageMarkdown, _alt: string, key: string) => {
       const url = urls.get(key);
       return url
         ? imageMarkdown.replace(`${ARTICLE_IMAGE_PREFIX}${key}`, url)
@@ -316,6 +304,20 @@ const ArticlePreview = memo(function ArticlePreview({
   );
 });
 
+function MarkdownFolderButton({ label, onSelect, disabled = false }: {
+  label: string; onSelect: (files: File[]) => void; disabled?: boolean;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  return <>
+    <button type="button" className={styles.toolButton} disabled={disabled} onClick={() => input.current?.click()}>{label}</button>
+    <input ref={input} type="file" multiple {...{ webkitdirectory: "" }} hidden aria-label={label}
+      onChange={event => {
+        onSelect(Array.from(event.currentTarget.files ?? []));
+        event.currentTarget.value = "";
+      }} />
+  </>;
+}
+
 function ToolbarButton({
   label,
   mark,
@@ -373,15 +375,9 @@ export function ArticleEditor() {
 
   const [phase, setPhase] = useState<SubmitPhase>("idle");
   const [message, setMessage] = useState("尚未保存");
-  useDroppedFiles("article", files => {
-    const file = files[0];
-    if (file.size > MAX_MARKDOWN_BYTES) { setMessage("Markdown 文件不能超过 2 MiB。"); return; }
-    void file.text().then(text => {
-      setContent(text);
-      setTitle(text.match(/^#\s+(.+)$/m)?.[1] || file.name.replace(/\.md$/i, ""));
-      setMessage("已导入 Markdown，请检查后保存。");
-    }).catch(() => setMessage("Markdown 读取失败，请重新选择文件。"));
-  });
+  const [pendingImport, setPendingImport] = useState<MarkdownImport | null>(null);
+  const [importError, setImportError] = useState("");
+  useDroppedFiles("article", importMarkdown);
   const [progress, setProgress] = useState(0);
   const [attemptedAction, setAttemptedAction] = useState<"draft" | "publish" | null>(null);
   const [lastArticle, setLastArticle] = useState<ArticleResult | null>(null);
@@ -392,12 +388,59 @@ export function ArticleEditor() {
   const titleRef = useRef<HTMLInputElement>(null);
   const slugRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const previewContentRef = useRef<HTMLDivElement>(null);
+  const markdownInputRef = useRef<HTMLInputElement>(null);
+  const importSequence = useRef(0);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const imageRangeRef = useRef<SelectionRange>({ start: 0, end: 0 });
   const linkRangeRef = useRef<SelectionRange>({ start: 0, end: 0 });
   const objectUrlsRef = useRef(new Set<string>());
   const xhrRef = useRef<XMLHttpRequest | null>(null);
+
+  useEffect(() => {
+    const editor = textareaRef.current;
+    const preview = previewRef.current;
+    if (viewMode !== "split" || !editor || !preview) return;
+
+    let source: HTMLElement = editor;
+    let mirrored: { pane: HTMLElement; top: number } | undefined;
+    const alignPanes = () => {
+      const target = source === editor ? preview : editor;
+      const range = source.scrollHeight - source.clientHeight;
+      if (range <= 0) return;
+      const fraction = Math.max(0, Math.min(1, source.scrollTop / range));
+      const top = fraction * (target.scrollHeight - target.clientHeight);
+      if (Math.abs(target.scrollTop - top) < 0.5) return;
+      target.scrollTop = top;
+      // Browsers round fractional offsets. Ignore the echo at the actual applied position.
+      mirrored = { pane: target, top: target.scrollTop };
+    };
+    function followPane(event: Event) {
+      const pane = event.currentTarget as HTMLElement;
+      if (event.type === "scroll" && mirrored?.pane === pane && mirrored.top === pane.scrollTop) return;
+      mirrored = undefined;
+      source = pane;
+      alignPanes();
+    }
+
+    // Deferred Markdown layout, loaded images and pane resizing can change the scroll range.
+    const observer = new ResizeObserver(alignPanes);
+    observer.observe(editor);
+    observer.observe(preview);
+    if (previewContentRef.current) observer.observe(previewContentRef.current);
+    // Typing takes the lead even when the caret is visible and the textarea doesn't scroll.
+    editor.addEventListener("input", followPane);
+    editor.addEventListener("scroll", followPane);
+    preview.addEventListener("scroll", followPane);
+    return () => {
+      observer.disconnect();
+      editor.removeEventListener("input", followPane);
+      editor.removeEventListener("scroll", followPane);
+      preview.removeEventListener("scroll", followPane);
+    };
+  }, [viewMode]);
 
   const effectiveTags = useMemo(
     () => normalizeTags([...tags, tagInput]),
@@ -488,6 +531,7 @@ export function ArticleEditor() {
   useEffect(() => {
     const objectUrls = objectUrlsRef.current;
     return () => {
+      importSequence.current += 1;
       for (const url of objectUrls) URL.revokeObjectURL(url);
       const request = xhrRef.current;
       if (request) {
@@ -562,6 +606,75 @@ export function ArticleEditor() {
   function handleTitle(value: string) {
     setTitle(value);
     if (!slugTouched) setSlug(slugify(value));
+  }
+
+  async function importMarkdown(files: File[], original?: File) {
+    if (isUploading || !files.length) return;
+    const sequence = ++importSequence.current;
+    setImportError("");
+    let imported: MarkdownImport;
+    try {
+      imported = await readMarkdown(files, original);
+    } catch (error) {
+      if (sequence !== importSequence.current || xhrRef.current) return;
+      setPhase("error");
+      const reason = error instanceof Error ? error.message : "Markdown 读取失败，请重新选择文件。";
+      setImportError(reason);
+      setMessage(reason);
+      return;
+    }
+    if (sequence !== importSequence.current || xhrRef.current) return;
+    // Check after reading so a first keystroke during file selection is protected too.
+    const current = latestFingerprintRef.current;
+    if (imported.missing.length || (current.content && current.content !== imported.content) ||
+      (imported.images.length && current.images.length)) {
+      setPendingImport(imported);
+      return;
+    }
+    applyMarkdown(imported);
+  }
+
+  function applyMarkdown(imported: MarkdownImport) {
+    const referenced = imageKeysIn(imported.content);
+    const retained = images.filter(image => referenced.has(image.key));
+    const contentBytes = new TextEncoder().encode(imported.content).byteLength;
+    const imageBytes = [...retained, ...imported.images].reduce((sum, image) => sum + image.file.size, 0);
+    const totalBytes = contentBytes + imageBytes + (cover && !cover.persistedId ? cover.file.size : 0);
+    let limitError = "";
+    if (contentBytes > MAX_MARKDOWN_BYTES) limitError = "导入后的 Markdown 正文超过 2 MiB 限制。";
+    else if (retained.length + imported.images.length > MAX_INLINE_IMAGES) limitError = "每篇文章最多添加 24 张正文图片。";
+    else if (totalBytes > MAX_ARTICLE_UPLOAD_BYTES) limitError = "文章、封面与正文图片合计超过 64 MiB 限制。";
+    if (limitError) {
+      setPhase("error");
+      setMessage(limitError);
+      setImportError(limitError);
+      return;
+    }
+    // Allocate previews only after approval. Replacing an illustrated manuscript frees its old blobs.
+    if (imported.images.length) {
+      for (const image of images) {
+        if (!referenced.has(image.key)) releasePreviewUrl(image.previewUrl);
+      }
+      setImages([...retained, ...imported.images.map(image => ({ ...image, previewUrl: makePreviewUrl(image.file) }))]);
+    }
+    if (!latestFingerprintRef.current.title.trim()) {
+      let suggested = imported.document.name.replace(MARKDOWN_EXTENSION, "");
+      for (const heading of markdownHeadings(imported.content)) {
+        if (heading.level === 1) {
+          suggested = heading.text;
+          break;
+        }
+      }
+      handleTitle(suggested.slice(0, 200));
+    }
+    setContent(imported.content);
+    setPendingImport(null);
+    setPhase("idle");
+    const imageCount = imported.images.length ? `，已匹配 ${imported.images.length} 张图片` : "";
+    const missing = imported.missing.length ? `，${imported.missing.length} 个图片路径保留原文` : "";
+    setMessage(`已导入「${imported.document.name}」${imageCount}${missing}，请检查后保存。`);
+    if (textareaRef.current) textareaRef.current.scrollTop = 0;
+    if (previewRef.current) previewRef.current.scrollTop = 0;
   }
 
   function regenerateSlug() {
@@ -734,7 +847,7 @@ export function ArticleEditor() {
     }
 
     const markdown = accepted
-      .map((image) => `![${image.alt}](${ARTICLE_IMAGE_PREFIX}${image.key})`)
+      .map((image) => `![${imageLabel(image.alt)}](${ARTICLE_IMAGE_PREFIX}${image.key})`)
       .join("\n\n");
     const leading = at.start > 0 && source[at.start - 1] !== "\n" ? "\n\n" : "";
     const trailing = at.end < source.length && source[at.end] !== "\n" ? "\n\n" : "";
@@ -773,11 +886,13 @@ export function ArticleEditor() {
   }
 
   function handleEditorDrop(event: ReactDragEvent<HTMLTextAreaElement>) {
-    const files = Array.from(event.dataTransfer.files).filter((file) =>
-      file.type.startsWith("image/"),
-    );
+    const files = Array.from(event.dataTransfer.files);
     if (!files.length) return;
     event.preventDefault();
+    if (files.some(file => MARKDOWN_EXTENSION.test(file.name))) {
+      void importMarkdown(files);
+      return;
+    }
     queueInlineImages(files, {
       start: event.currentTarget.selectionStart,
       end: event.currentTarget.selectionEnd,
@@ -789,23 +904,21 @@ export function ArticleEditor() {
     setImages((current) =>
       current.map((image) => (image.key === key ? { ...image, alt } : image)),
     );
-    const url = `${ARTICLE_IMAGE_PREFIX}${key}`;
-    const pattern = new RegExp(`!\\[[^\\]]*\\]\\(${escapeRegExp(url)}\\)`, "g");
-    setContent((current) => current.replace(pattern, `![${alt}](${url})`));
+    setContent(current => current.replace(ARTICLE_IMAGE_TARGET_PATTERN, (match, _alt, target, title = "") =>
+      target === key ? `![${imageLabel(alt)}](${ARTICLE_IMAGE_PREFIX}${key}${title})` : match));
   }
 
   function removeInlineImage(key: string) {
     const image = images.find((item) => item.key === key);
     if (image) releasePreviewUrl(image.previewUrl);
     setImages((current) => current.filter((item) => item.key !== key));
-    const url = `${ARTICLE_IMAGE_PREFIX}${key}`;
-    const pattern = new RegExp(`!\\[[^\\]]*\\]\\(${escapeRegExp(url)}\\)`, "g");
-    setContent((current) => current.replace(pattern, "").replace(/\n{3,}/g, "\n\n"));
+    setContent(current => current.replace(ARTICLE_IMAGE_TARGET_PATTERN,
+      (match, _alt, target) => target === key ? "" : match).replace(/\n{3,}/g, "\n\n"));
   }
 
   function reinsertInlineImage(image: PendingImage) {
     const range = selection();
-    const markdown = `![${image.alt}](${ARTICLE_IMAGE_PREFIX}${image.key})`;
+    const markdown = `![${imageLabel(image.alt)}](${ARTICLE_IMAGE_PREFIX}${image.key})`;
     replaceRange(range, markdown, range.start + markdown.length);
   }
 
@@ -1265,6 +1378,15 @@ export function ArticleEditor() {
 
           <div className={styles.editorControls}>
             <div className={styles.toolbar} role="toolbar" aria-label="Markdown 格式工具">
+              <button className={styles.toolButton} type="button" disabled={isUploading}
+                onClick={() => markdownInputRef.current?.click()}>导入 Markdown</button>
+              <input ref={markdownInputRef} type="file" accept=".md,.markdown,.jpg,.jpeg,.png,.webp,.gif,.avif" multiple hidden
+                aria-label="选择 Markdown 文件" onChange={event => {
+                  void importMarkdown(Array.from(event.currentTarget.files ?? []));
+                  event.currentTarget.value = "";
+                }} />
+              <MarkdownFolderButton label="导入文件夹" disabled={isUploading} onSelect={importMarkdown} />
+              <span className={styles.toolbarDivider} aria-hidden="true" />
               <ToolbarButton label="二级标题" mark="H₂" onClick={() => prefixLines("## ")} />
               <ToolbarButton label="粗体" mark="B" shortcut="Ctrl/⌘ B" onClick={() => wrapSelection("**", "**", "粗体文本")} />
               <ToolbarButton label="斜体" mark="I" shortcut="Ctrl/⌘ I" onClick={() => wrapSelection("*", "*", "斜体文本")} />
@@ -1355,7 +1477,7 @@ export function ArticleEditor() {
             <div className={styles.writePane}>
               <div className={styles.paneLabel}>
                 <span title={documentName}>{documentName}</span>
-                <small>可粘贴或拖入图片</small>
+                <small>可拖入 Markdown 或粘贴、拖入图片</small>
               </div>
               <label className={styles.visuallyHidden} htmlFor="article-content">Markdown 正文</label>
               <textarea
@@ -1366,6 +1488,9 @@ export function ArticleEditor() {
                 onChange={(event) => setContent(event.target.value)}
                 onKeyDown={handleEditorKeyDown}
                 onPaste={handleEditorPaste}
+                onDragOver={event => {
+                  if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+                }}
                 onDrop={handleEditorDrop}
                 placeholder={"# 从这里开始\n\n写下正文，或从工具栏插入链接和图片。"}
                 spellCheck
@@ -1392,13 +1517,16 @@ export function ArticleEditor() {
               </div>
               <div
                 className={styles.previewScroller}
+                ref={previewRef}
                 role="region"
                 aria-label="文章预览"
                 tabIndex={0}
               >
                 {/* CSS hiding alone still parses Markdown and creates image elements while typing. */}
                 {viewMode !== "write" ? (
-                  <ArticlePreview content={deferredContent} images={images} token={token} />
+                  <div ref={previewContentRef}>
+                    <ArticlePreview content={deferredContent} images={images} token={token} />
+                  </div>
                 ) : null}
               </div>
             </div>
@@ -1503,6 +1631,23 @@ export function ArticleEditor() {
           </div>
         </footer>
       </form>
+      {pendingImport && (
+        <SiteDialog title={pendingImport.missing.length ? "未找到引用的本地图片" : "替换当前正文？"} closeLabel="取消"
+          onRequestClose={() => { ++importSequence.current; setPendingImport(null); }}>
+          {pendingImport.missing.length > 0 && <>
+            <p>请选择包含「{pendingImport.document.name}」和配图的文件夹，以匹配以下相对路径。</p>
+            <ul className={styles.missingPaths}>{pendingImport.missing.map(path => <li key={path}>{path}</li>)}</ul>
+            <MarkdownFolderButton label="选择文章和图片所在文件夹"
+              onSelect={files => void importMarkdown(files, pendingImport.document)} />
+          </>}
+          {(content || images.length > 0) && <p>导入「{pendingImport.document.name}」将替换当前正文。{pendingImport.images.length > 0 && "只保留新正文引用的图片附件。"}</p>}
+          {importError && <p role="alert">{importError}</p>}
+          <button type="button" className="album-action-button album-action-button--primary"
+            onClick={() => applyMarkdown(pendingImport)}>
+            {pendingImport.missing.length ? "保留未匹配路径并导入" : "替换正文"}
+          </button>
+        </SiteDialog>
+      )}
     </main>
   );
 }

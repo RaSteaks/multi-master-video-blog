@@ -23,6 +23,7 @@ import {
   type AssetDimensions,
 } from "@/lib/directus";
 import { parseGaussianSplatConfig } from "@/lib/gaussian-splat";
+import { ATX_HEADING, cleanHeadingText, markdownHeadings } from "@/lib/markdown-headings";
 import { siteConfig } from "@/lib/site-config";
 
 type PostPageProps = {
@@ -30,14 +31,6 @@ type PostPageProps = {
     slug: string;
   }>;
 };
-
-type TocItem = {
-  id: string;
-  level: number;
-  text: string;
-};
-
-const ATX_HEADING = /^ {0,3}(#{1,6})(?:\s+|$)(.*)$/;
 
 export async function generateMetadata({ params }: PostPageProps) {
   const { slug } = await params;
@@ -63,7 +56,8 @@ export default async function PostPage({ params }: PostPageProps) {
   }
 
   const content = post.content || "";
-  const tocItems = extractTocItems(content);
+  const slugHeading = createSlugger();
+  const tocItems = Array.from(markdownHeadings(content), heading => ({ ...heading, id: slugHeading(heading.text) }));
   const hasToc = tocItems.length > 0;
   const coverImageUrl = assetUrl(post.cover_image, "content-hero");
   const bgImageUrl = assetUrl(post.backgroundimage, "site-background");
@@ -236,61 +230,6 @@ function headingComponent(
       </Tag>
     );
   };
-}
-
-function extractTocItems(markdown: string): TocItem[] {
-  const slugHeading = createSlugger();
-  const items: TocItem[] = [];
-  let fence: { marker: "`" | "~"; length: number } | null = null;
-
-  for (const line of markdown.split(/\r?\n/)) {
-    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
-
-    if (fenceMatch) {
-      const marker = fenceMatch[1][0] as "`" | "~";
-      const length = fenceMatch[1].length;
-
-      if (!fence) {
-        fence = { marker, length };
-        continue;
-      }
-
-      if (fence.marker === marker && length >= fence.length) {
-        fence = null;
-      }
-
-      continue;
-    }
-
-    if (fence) continue;
-
-    const headingMatch = line.match(ATX_HEADING);
-    if (!headingMatch) continue;
-
-    const level = headingMatch[1].length;
-    const text = cleanHeadingText(headingMatch[2]);
-    if (!text) continue;
-
-    items.push({
-      id: slugHeading(text),
-      level,
-      text,
-    });
-  }
-
-  return items;
-}
-
-function cleanHeadingText(value: string) {
-  return value
-    .replace(/\s+#+\s*$/, "")
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/[*_~]/g, "")
-    .replace(/<[^>]+>/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function textFromChildren(children: ReactNode): string {

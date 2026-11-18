@@ -1011,6 +1011,15 @@
   contain-intrinsic-size: auto 320px;
 }
 
+.missingPaths {
+  max-height: 28vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding-inline-start: 1.5em;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
 .trayHeading {
   display: flex;
   align-items: start;
