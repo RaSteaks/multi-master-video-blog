@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { flushSync } from "react-dom";
+import dynamic from "next/dynamic";
 import { COLOR_MODELS, COLOR_MODEL_LABELS } from "@/lib/color-volume";
 import {
   CHROMATICITY_CHOICES,
@@ -23,6 +24,13 @@ import {
   type HomeDiagramPreferences,
 } from "@/lib/home-diagram";
 import { animatePanelChange, cancelPanelMotion } from "@/lib/panel-motion";
+
+// The drawing code loads with the first preview, not with every page's panel.
+// The placeholder holds the preview's height so the rows do not jump on arrival.
+const HomeDiagramPreview = dynamic(
+  () => import("./HomeDiagram").then(module => module.HomeDiagramPreview),
+  { ssr: false, loading: () => <div className="home-diagram-preview" aria-hidden="true" /> },
+);
 
 const DIAGRAM_LABELS: Record<HomeDiagramKind, string> = {
   off: "关闭", random: "随机", vectorscope: "矢量图", waveform: "波形", volume: "体积",
@@ -48,16 +56,19 @@ function columns(count: number) {
   return count <= 5 ? count : Math.ceil(count / Math.ceil(count / 5));
 }
 
-function Options<T extends string>({ label, options, labels, value, onSelect }: {
+function Options<T extends string>({ label, options, labels, value, onSelect, children }: {
   label: string;
   options: readonly T[];
   labels: Record<T, string>;
   value: T;
   onSelect: (value: T) => void;
+  /** Shown between the label and the options. */
+  children?: ReactNode;
 }) {
   return (
     <div className="home-diagram-group">
       <span>{label}</span>
+      {children}
       <div className="home-diagram-options" role="group" aria-label={label}
         style={{ "--options": columns(options.length) } as CSSProperties}>
         {options.map(option => (
@@ -94,7 +105,17 @@ export function HomeDiagramSettings() {
   return (
     <div className="home-diagram-settings">
       <Options label="首页图示" options={HOME_DIAGRAMS} labels={DIAGRAM_LABELS} value={settings.diagram}
-        onSelect={selectDiagram} />
+        onSelect={selectDiagram}>
+        {/* Above every option it reflects, at one height whatever is chosen, so
+            picking a diagram never moves the buttons under the pointer. */}
+        {settings.diagram === "off" ? (
+          <div className="home-diagram-preview" data-empty="">
+            <p>首页不显示图示</p>
+          </div>
+        ) : (
+          <HomeDiagramPreview settings={settings} />
+        )}
+      </Options>
       <div ref={rowsRef} className="home-diagram-rows"><div>
       {settings.diagram === "volume" ? (
         <>

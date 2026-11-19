@@ -2,15 +2,13 @@
 
 import Image from "next/image";
 
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { ContactFrame } from "@/lib/contact-sheet";
-import { WEBSITE_PREVIEW_LIMIT, WEBSITE_PREVIEW_MOBILE_QUERY } from "@/lib/external-projects";
+import { useWebsitePreviews } from "@/lib/use-website-previews";
 import { ProjectPreview } from "./ProjectPreview";
 
-/** Frames only passing through the viewport during a scroll should not load. */
-const PREVIEW_SETTLE_MS = 250;
 /** A pointer travelling along the strip should not fetch every frame it crosses. */
 const INTENT_MS = 90;
 
@@ -47,10 +45,20 @@ function FrameLink({ href, children }: { href: string; children: ReactNode }) {
   );
 }
 
+// The lamp is the strip's one selection: the frame's rise and its label are read from
+// how near the lamp is (--lamp-i, in frames), so a look moving along the strip hands
+// over in the lamp's own glide instead of one frame dropping as the next one pops.
 function aimLamp(track: HTMLElement, target: EventTarget) {
   const frame = (target as Element).closest("li");
-  if (!frame) return;
+  // Bare film past either end: nothing there to look at.
+  if (!frame) { douseLamp(track); return; }
+  // A lamp still dimming from the last look glides from where it is, rather than
+  // leaving that frame to drop at once.
+  if (!track.dataset.lamp && parseFloat(getComputedStyle(track).getPropertyValue("--lamp-glow")) > 0) {
+    track.dataset.lamp = "on";
+  }
   track.style.setProperty("--lamp-x", `${frame.offsetLeft + frame.offsetWidth / 2}px`);
+  track.style.setProperty("--lamp-i", frame.style.getPropertyValue("--i"));
   if (track.dataset.lamp) return;
   // Flush, so an unlit lamp comes on under the frame rather than gliding to it.
   getComputedStyle(track).getPropertyValue("--lamp-x");
@@ -63,48 +71,25 @@ function douseLamp(track: HTMLElement) {
 
 export function ContactStrip({ frames }: { frames: ContactFrame[] }) {
   const trackRef = useRef<HTMLOListElement>(null);
-  const [live, setLive] = useState<string[]>([]);
+  const [live, observeBudget] = useWebsitePreviews<string>();
 
   useEffect(() => {
-    const reduced = matchMedia("(prefers-reduced-motion: reduce)");
-    const mobile = matchMedia(WEBSITE_PREVIEW_MOBILE_QUERY);
     const visible = new Set<string>();
-    let settle: ReturnType<typeof setTimeout>;
-    function selectPreviews() {
-      if (reduced.matches || document.hidden) return [];
-      return frames.filter(frame => visible.has(frame.key))
-        .slice(-(mobile.matches ? 1 : WEBSITE_PREVIEW_LIMIT)).map(frame => frame.key);
-    }
-    function update() {
-      clearTimeout(settle);
-      if (reduced.matches || document.hidden) { setLive([]); return; }
-      settle = setTimeout(() => {
-        setLive(selectPreviews());
-      }, PREVIEW_SETTLE_MS);
-    }
-    function resize() {
-      clearTimeout(settle);
-      setLive(selectPreviews());
-    }
+    const budget = observeBudget(limit => frames.filter(frame => visible.has(frame.key))
+      .slice(-limit).map(frame => frame.key));
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
         const key = (entry.target as HTMLElement).dataset.previewKey ?? "";
         if (entry.isIntersecting) visible.add(key); else visible.delete(key);
       }
-      update();
+      budget.update();
     });
     trackRef.current?.querySelectorAll("[data-preview-key]").forEach(frame => observer.observe(frame));
-    document.addEventListener("visibilitychange", update);
-    reduced.addEventListener("change", update);
-    mobile.addEventListener("change", resize);
     return () => {
-      clearTimeout(settle);
       observer.disconnect();
-      document.removeEventListener("visibilitychange", update);
-      reduced.removeEventListener("change", update);
-      mobile.removeEventListener("change", resize);
+      budget.disconnect();
     };
-  }, [frames]);
+  }, [frames, observeBudget]);
 
   if (!frames.length) return null;
   return (
@@ -113,11 +98,15 @@ export function ContactStrip({ frames }: { frames: ContactFrame[] }) {
         onPointerOver={event => { if (event.pointerType === "mouse") aimLamp(event.currentTarget, event.target); }}
         onPointerLeave={event => douseLamp(event.currentTarget)}
         onFocus={event => { if (event.target.matches(":focus-visible")) aimLamp(event.currentTarget, event.target); }}
-        onBlur={event => douseLamp(event.currentTarget)}>
-        {frames.map(frame => {
+        onBlur={event => {
+          // Tabbing to the next frame keeps the lamp on, so it glides there.
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) douseLamp(event.currentTarget);
+        }}>
+        {frames.map((frame, index) => {
           const content = <FrameContent frame={frame} live={live.includes(frame.key)} />;
           return (
-            <li key={frame.key} data-preview-key={frame.preview ? frame.key : undefined}>
+            <li key={frame.key} data-preview-key={frame.preview ? frame.key : undefined}
+              style={{ "--i": index } as CSSProperties}>
               {frame.external ? (
                 <a className="contact-frame" href={frame.href} target="_blank" rel="noopener noreferrer"
                   aria-label={`独立打开${frame.title}（新标签页）`}>

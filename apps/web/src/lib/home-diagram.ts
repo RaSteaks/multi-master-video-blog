@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { CHROMATICITY_VIEWS, type ChromaticityView } from "./chromaticity";
 import { TRANSFORMS, type TransformId } from "./color-transform";
 import { COLOR_MODELS, GAMUTS, VOLUME_OVERLAYS, type ColorModelId, type GamutId, type VolumeOverlay } from "./color-volume";
@@ -106,6 +106,28 @@ export function randomDrawing(random = Math.random): HomeDrawing {
     pixel: pick(PIXEL_VIEWS),
     seed: Math.floor(random() * 2 ** 32),
   };
+}
+
+// The home page's draw for this visit, so the appearance preview fills in the
+// same random choices the page shows.
+let visitChance: HomeDrawing | null = null;
+const VISIT_EVENT = "home-diagram-visit";
+
+export function shareVisitChance(chance: HomeDrawing) {
+  if (visitChance === chance) return;
+  visitChance = chance;
+  window.dispatchEvent(new Event(VISIT_EVENT));
+}
+
+function subscribeVisit(notify: () => void) {
+  window.addEventListener(VISIT_EVENT, notify);
+  return () => window.removeEventListener(VISIT_EVENT, notify);
+}
+
+/** The home page's draw once it has made one; until then, one of the caller's own. */
+export function useVisitChance() {
+  const [own] = useState(() => visitChance ?? randomDrawing());
+  return useSyncExternalStore(subscribeVisit, () => visitChance, () => null) ?? own;
 }
 
 const CHANCE_FIELDS = ["gamut", "signal", "vectorStyle", "waveStyle", "phosphor", "overlay", "transform", "chromaticity", "spectrum", "curve", "pixel"] as const;

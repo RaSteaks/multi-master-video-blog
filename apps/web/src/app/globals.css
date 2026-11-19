@@ -9517,11 +9517,20 @@ object {
    opens a long strip at that position without script. Pictures stay unfiltered
    and uncovered; a label prints in the rail below. Hovering is a light table: a
    lamp under the film follows the frame being looked at, lighting the base and
-   the sprocket holes around it, and that frame rises from the film. */
+   the sprocket holes around it. The lamp is the only selection: a frame rises
+   and its label shows by how near the lamp is, so moving along the strip hands
+   over on the lamp's own glide, with nothing timed on its own. */
 @property --lamp-x {
   syntax: "<length>";
   inherits: true;
   initial-value: 0px;
+}
+
+/* The lamp's place in frames, gliding with --lamp-x; each frame carries its --i. */
+@property --lamp-i {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
 }
 
 @property --lamp-glow {
@@ -9604,12 +9613,29 @@ object {
   bottom: 5px;
 }
 
+/* --lit: 1 with the lamp under the frame, 0 a frame away, crossing over midway.
+   --print turns on only in the middle of that, so two labels never show at once,
+   and the eased glide leaves the old label quickly and settles the new one. */
+.contact-strip-track > li {
+  --lamp-off: max(var(--lamp-i) - var(--i), var(--i) - var(--lamp-i));
+  --lit: calc(max(0, 1 - var(--lamp-off)) * var(--lamp-glow));
+  --print: calc(clamp(0, 1 - 2.5 * var(--lamp-off), 1) * var(--lamp-glow));
+}
+
 .contact-frame {
   position: relative;
   display: block;
   width: 93px;
   color: var(--text-secondary);
   text-decoration: none;
+}
+
+/* The frame's reach covers half the gap on each side and the rails, so a look
+   moving between frames never falls onto bare film and drops the lamp. */
+.contact-frame::before {
+  position: absolute;
+  inset: -15px -5px;
+  content: "";
 }
 
 .contact-frame-picture {
@@ -9652,28 +9678,28 @@ object {
   overflow-wrap: anywhere;
 }
 
-/* Hangs from the frame past the film's lower edge, into the strip's clear margin,
-   so the film itself keeps its height. */
+/* One line printed in the rail under the frame, inside the film's lower edge, so
+   it never reaches the scrollbar. The film behind it feathers out at both ends,
+   so the sprocket holes fade under the print instead of breaking off. */
 .contact-frame-label {
   position: absolute;
   z-index: 1;
   top: calc(100% + 1px);
   left: 50%;
-  display: grid;
+  display: flex;
   width: max-content;
-  max-width: 150px;
-  justify-items: center;
-  border-radius: 0 0 3px 3px;
-  background: var(--strip-film);
-  padding: 0 6px 1px;
+  max-width: 220px;
+  gap: 0.6em;
+  /* Feathered over one sprocket pitch, so no hole is cut part-way. */
+  background: linear-gradient(to right, transparent, var(--strip-film) 18px calc(100% - 18px), transparent);
+  padding: 0 18px 1px;
   color: var(--text);
   font-size: 0.62rem;
   line-height: 12px;
-  text-align: center;
   white-space: nowrap;
-  opacity: 0;
+  opacity: var(--print);
   transform: translateX(-50%);
-  transition: opacity var(--transition-fast);
+  pointer-events: none;
 }
 
 .contact-frame-label time {
@@ -9683,15 +9709,10 @@ object {
 }
 
 .contact-frame-label strong {
-  max-width: 100%;
+  min-width: 0;
   overflow: hidden;
   font-weight: 500;
   text-overflow: ellipsis;
-}
-
-.contact-frame:hover .contact-frame-label,
-.contact-frame:focus-visible .contact-frame-label {
-  opacity: 1;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -9715,21 +9736,20 @@ object {
 
 @media (prefers-reduced-motion: no-preference) {
   .contact-strip-track[data-lamp] {
-    transition: --lamp-glow var(--motion-panel-duration) var(--motion-ease), --lamp-x var(--motion-panel-duration) var(--motion-ease);
+    transition: --lamp-glow var(--motion-panel-duration) var(--motion-ease),
+      --lamp-x var(--motion-panel-duration) var(--motion-ease),
+      --lamp-i var(--motion-panel-duration) var(--motion-ease);
   }
 
+  /* The rise rides the lamp, so it has no transition of its own; only a press does. */
   .contact-frame-picture {
-    transition: border-color var(--transition-fast), transform var(--motion-media-duration) var(--motion-ease),
-      box-shadow var(--motion-media-duration) var(--motion-ease);
+    scale: calc(1 + 0.14 * var(--lit));
+    box-shadow: 0 8px 14px -4px rgb(0 0 0 / calc(0.75 * var(--lit)));
+    transition: border-color var(--transition-fast), transform var(--motion-media-duration) var(--motion-ease);
   }
 
   .contact-frame:focus-visible {
     z-index: 2;
-  }
-
-  .contact-frame:focus-visible .contact-frame-picture {
-    transform: scale(1.14);
-    box-shadow: 0 8px 14px -4px rgb(0 0 0 / 0.75);
   }
 
   @media (hover: hover) and (pointer: fine) {
@@ -9737,14 +9757,9 @@ object {
       z-index: 2;
     }
 
-    .contact-frame:hover .contact-frame-picture {
-      transform: scale(1.14);
-      box-shadow: 0 8px 14px -4px rgb(0 0 0 / 0.75);
-    }
-
     .contact-frame:active .contact-frame-picture {
-      transform: scale(1.08);
-      transition-duration: var(--motion-control-duration), 80ms, 80ms;
+      transform: scale(0.95);
+      transition-duration: var(--motion-control-duration), 80ms;
     }
   }
 }
@@ -9768,6 +9783,50 @@ object {
 
 .home-diagram-rows[data-panel-animating="true"] {
   overflow: clip;
+}
+
+/* The chosen diagram, live, on the same opaque reference surface as a pinned
+   page diagram. It only shows the choice; turning stays on the page. It sits
+   above the diagram options, so every state (loading, off, a one-line caption)
+   holds the same height and the options never move when one is picked. */
+.home-diagram-preview {
+  --preview-side: 240px;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  min-height: calc(var(--preview-side) + 6px + 16px + 18px + 2px);
+  margin: 0 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--background);
+  padding: 8px 8px 10px;
+}
+
+.home-diagram-preview[data-empty] {
+  place-items: center;
+}
+
+.home-diagram-preview[data-empty] p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.home-diagram-preview canvas {
+  display: block;
+  width: min(100%, var(--preview-side));
+  aspect-ratio: 1;
+  pointer-events: none;
+}
+
+.home-diagram-preview figcaption {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-wrap: balance;
 }
 
 .home-diagram-group {

@@ -248,6 +248,10 @@ async function main() {
     await looks.getByRole("button", { name: "标准", exact: true }).click();
     await phosphors.getByRole("button", { name: "白", exact: true }).click();
     assert.equal(await drawingCaption(), "矢量图 · 标准 · 75% 彩条 · Rec.709");
+    // The panel covers the page's diagram, so it previews the same drawing itself.
+    assert.equal(await page.locator(".home-diagram-preview figcaption").innerText(), await drawingCaption());
+    assert.equal(await page.locator(".home-diagram-preview canvas").evaluate(canvas => canvas.getContext("2d")
+      .getImageData(0, 0, canvas.width, canvas.height).data.some(value => value !== 0)), true, "The preview paints.");
     const seenLooks = new Set([await drawingPixels()]);
     for (const [group, name] of [[looks, "点阵"], [looks, "×2"], [signals, "色相环"], [signals, "色卡"], [phosphors, "信号色"]]) {
       const previous = await drawingPixels();

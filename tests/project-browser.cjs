@@ -6,6 +6,55 @@ const sharp = require("sharp");
 const { webkit, firefox } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const { startFixture } = require("./helpers/create-menu-fixture.cjs");
 
+async function checkBackgroundPreviews(browser, url, selector) {
+  const page = await browser.newPage({ viewport: { width: 1920, height: 1600 } });
+  try {
+    await page.clock.install();
+    // Headless tabs stay visible even when another page is brought to the front.
+    // Supply only the OS visibility signal; iframe navigation and layout stay real.
+    const setHidden = hidden => page.evaluate(value => {
+      Object.defineProperty(document, "hidden", { configurable: true, value });
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: value ? "hidden" : "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }, hidden);
+    let navigations = 0;
+    page.on("request", request => {
+      if (request.isNavigationRequest() && request.url().startsWith("http://127.0.0.1:18098/")) navigations++;
+    });
+    await page.goto(url, { waitUntil: "networkidle" });
+    const frames = page.locator(selector);
+    const waitForCount = count => page.waitForFunction(({ selector, count }) =>
+      document.querySelectorAll(selector).length === count, { selector, count });
+    await waitForCount(3);
+    const originals = await frames.elementHandles();
+    const initialNavigations = navigations;
+    for (let i = 0; i < 2; i++) {
+      await setHidden(true);
+      await page.clock.fastForward(20_000);
+      await setHidden(false);
+      await page.clock.fastForward(500);
+    }
+    for (const frame of originals) assert.equal(await frame.evaluate(node => node.isConnected), true);
+    assert.equal(navigations, initialNavigations, "Quick returns must reuse the original iframe documents.");
+
+    await setHidden(true);
+    await page.clock.fastForward(20_000);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await waitForCount(1);
+    await page.setViewportSize({ width: 1920, height: 1600 });
+    await page.clock.fastForward(500);
+    assert.equal(await frames.count(), 1, "A larger budget cannot start new frames in the background.");
+    await page.clock.fastForward(10_000);
+    await waitForCount(0);
+    assert.equal(navigations, initialNavigations);
+    await setHidden(false);
+    await waitForCount(3);
+    for (const frame of originals) assert.equal(await frame.evaluate(node => node.isConnected), false);
+  } finally {
+    await page.close();
+  }
+}
+
 async function main() {
   const engine = process.env.PROJECT_BROWSER === "firefox" ? firefox : webkit;
   const fixture = await startFixture({ name: engine === firefox ? "project-firefox" : "project", cmsPort: 18097, apiPort: 18096, webPort: 13006 });
@@ -301,6 +350,11 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".contact-strip iframe").length === 1);
     await page.screenshot({ path: path.join(fixture.output, "home-budget-mobile.png") });
     pass("home contact strip shares desktop/mobile budgets and reduced-motion behavior");
+
+    await checkBackgroundPreviews(browser, fixture.url, ".contact-strip iframe");
+    pass("contact strip reuses iframe documents on quick returns and releases them after a continuous background stay");
+    await checkBackgroundPreviews(browser, `${fixture.url}/project`, 'ol[aria-label="网站作品"] iframe');
+    pass("laboratory reuses iframe documents on quick returns and releases them after a continuous background stay");
 
     const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: engine === webkit, hasTouch: true });
     const phone = await mobile.newPage();

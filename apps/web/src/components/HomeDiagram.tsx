@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import {
   CHROMATICITY_FRAMES,
   CURVE_FRAMES,
@@ -21,7 +21,16 @@ import {
   type WireSegment,
 } from "@/lib/color-volume";
 import { STILL_SECONDS, morph, morphFrames } from "@/lib/diagram-motion";
-import { TURNABLE_DIAGRAMS, homeDrawing, randomDrawing, useHomeDiagram, type HomeDrawing } from "@/lib/home-diagram";
+import {
+  TURNABLE_DIAGRAMS,
+  homeDrawing,
+  randomDrawing,
+  shareVisitChance,
+  useHomeDiagram,
+  useVisitChance,
+  type HomeDiagramPreferences,
+  type HomeDrawing,
+} from "@/lib/home-diagram";
 import { PIXEL_LABELS } from "@/lib/pixel-demos";
 import { PIXEL_FRAMES, drawPixel } from "@/lib/pixel-drawing";
 import { drawVectorscope, drawWaveform, ink, labelled, type Size } from "@/lib/scope-drawing";
@@ -163,31 +172,20 @@ function diagramFrames(drawing: HomeDrawing) {
   return null;
 }
 
-export function HomeDiagram() {
-  const settings = useHomeDiagram();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const stillRef = useRef<{ seconds: number; redraw?: () => void }>({ seconds: STILL_SECONDS });
-  const captionId = useId();
-  const frameId = useId();
-  // Outlives a change of gamut or model, so the solid stays where it was left.
-  const viewRef = useRef({ turn: START_TURN, tilt: START_TILT });
-  // Chosen once per visit; the server never renders the diagram, so it cannot disagree.
-  const [chance] = useState(() => randomDrawing());
-  const [manual, setManual] = useState<{ key: string; index: number } | null>(null);
-  const drawing = settings && homeDrawing(settings, chance);
-  // The serialized drawing keeps the painter stable while the manual stage changes.
-  const key = drawing ? JSON.stringify(drawing) : "";
-  const pinned = settings !== null && settings.diagram !== "random";
-  const frames = drawing && pinned ? diagramFrames(drawing) : null;
-  const frameIndex = manual?.key === key ? manual.index : 0;
-  const selectedFrame = frames?.[frameIndex];
-  const stillSeconds = selectedFrame?.seconds ?? STILL_SECONDS;
+type View = { turn: number; tilt: number };
+type Still = { seconds: number; redraw?: () => void };
 
-  useEffect(() => {
-    stillRef.current.seconds = stillSeconds;
-    stillRef.current.redraw?.();
-  }, [stillSeconds]);
-
+/**
+ * Paints the serialized drawing `key` and plays it unless motion is reduced.
+ * With `byHand`, a turnable drawing can also be dragged and flicked.
+ */
+function useDiagramPainter(
+  canvasRef: RefObject<HTMLCanvasElement | null>,
+  key: string,
+  viewRef: RefObject<View>,
+  stillRef: RefObject<Still>,
+  byHand: boolean,
+) {
   useEffect(() => {
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
@@ -283,10 +281,12 @@ export function HomeDiagram() {
     observer.observe(surface);
     still.redraw = () => { if (motion.matches) paint(); };
     motion.addEventListener("change", start);
-    surface.addEventListener("pointerdown", grab);
-    surface.addEventListener("pointermove", drag);
-    surface.addEventListener("pointerup", release);
-    surface.addEventListener("pointercancel", release);
+    if (byHand) {
+      surface.addEventListener("pointerdown", grab);
+      surface.addEventListener("pointermove", drag);
+      surface.addEventListener("pointerup", release);
+      surface.addEventListener("pointercancel", release);
+    }
     start();
     return () => {
       still.redraw = undefined;
@@ -298,7 +298,37 @@ export function HomeDiagram() {
       surface.removeEventListener("pointerup", release);
       surface.removeEventListener("pointercancel", release);
     };
-  }, [key]);
+  }, [canvasRef, key, viewRef, stillRef, byHand]);
+}
+
+export function HomeDiagram() {
+  const settings = useHomeDiagram();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stillRef = useRef<Still>({ seconds: STILL_SECONDS });
+  const captionId = useId();
+  const frameId = useId();
+  // Outlives a change of gamut or model, so the solid stays where it was left.
+  const viewRef = useRef<View>({ turn: START_TURN, tilt: START_TILT });
+  // Chosen once per visit; the server never renders the diagram, so it cannot disagree.
+  const [chance] = useState(() => randomDrawing());
+  const [manual, setManual] = useState<{ key: string; index: number } | null>(null);
+  const drawing = settings && homeDrawing(settings, chance);
+  // The serialized drawing keeps the painter stable while the manual stage changes.
+  const key = drawing ? JSON.stringify(drawing) : "";
+  const pinned = settings !== null && settings.diagram !== "random";
+  const frames = drawing && pinned ? diagramFrames(drawing) : null;
+  const frameIndex = manual?.key === key ? manual.index : 0;
+  const selectedFrame = frames?.[frameIndex];
+  const stillSeconds = selectedFrame?.seconds ?? STILL_SECONDS;
+
+  useEffect(() => shareVisitChance(chance), [chance]);
+
+  useEffect(() => {
+    stillRef.current.seconds = stillSeconds;
+    stillRef.current.redraw?.();
+  }, [stillSeconds]);
+
+  useDiagramPainter(canvasRef, key, viewRef, stillRef, true);
 
   if (!drawing) return null;
   return (
@@ -327,6 +357,33 @@ export function HomeDiagram() {
           />
         </div>
       ) : null}
+    </figure>
+  );
+}
+
+/**
+ * The appearance panel's own copy of the chosen diagram. The panel opens over
+ * the page's diagram on desktop, the page's sits below the fold on narrow
+ * screens, and other pages have none, so each choice shows here as it is made.
+ * Under "random" it shows the draw the home page made for this visit.
+ */
+export function HomeDiagramPreview({ settings }: { settings: HomeDiagramPreferences }) {
+  const chance = useVisitChance();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const viewRef = useRef<View>({ turn: START_TURN, tilt: START_TILT });
+  const stillRef = useRef<Still>({ seconds: STILL_SECONDS });
+  const drawing = homeDrawing(settings, chance);
+  const key = drawing ? JSON.stringify(drawing) : "";
+
+  useDiagramPainter(canvasRef, key, viewRef, stillRef, false);
+
+  if (!drawing) return null;
+  // Random shows this visit's draw, marked so it does not read as a fixed choice.
+  const text = settings.diagram === "random" ? `随机 · ${caption(drawing)}` : caption(drawing);
+  return (
+    <figure className="home-diagram-preview" data-diagram={drawing.diagram}>
+      <canvas ref={canvasRef} aria-hidden="true" />
+      <figcaption>{text}</figcaption>
     </figure>
   );
 }

@@ -3,7 +3,8 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import type { ProjectLayout } from "../../../../shared/project-layouts.cjs";
-import { groupWebsiteProjects, WEBSITE_PREVIEW_LIMIT, WEBSITE_PREVIEW_MOBILE_QUERY, type WebsiteProject } from "@/lib/external-projects";
+import { groupWebsiteProjects, WEBSITE_PREVIEW_MOBILE_QUERY, type WebsiteProject } from "@/lib/external-projects";
+import { useWebsitePreviews } from "@/lib/use-website-previews";
 import { MediaCard } from "./MediaCard";
 import { ProjectPreview } from "./ProjectPreview";
 import { SortableGrid } from "./SortableGrid";
@@ -17,47 +18,32 @@ export function ProjectCollection({ projects, layout, blocked, linkedProject, pe
 }) {
   const [selectedId, setSelectedId] = useState(linkedProject);
   const selected = projects.find(project => project.id === selectedId) ?? projects[0];
-  const [live, setLive] = useState<number[]>([]);
+  const [live, observeBudget] = useWebsitePreviews<number>();
 
   useEffect(() => {
-    const reduced = matchMedia("(prefers-reduced-motion: reduce)");
-    const mobile = matchMedia(WEBSITE_PREVIEW_MOBILE_QUERY);
     const visible = new Set<number>();
-    let settle: ReturnType<typeof setTimeout>;
-    function selectPreviews() {
-      if (blocked || reduced.matches || document.hidden) return [];
-      // Stable author order prevents unrelated frames restarting on observer delivery.
-      return projects.filter(project => visible.has(project.id))
-        .slice(0, mobile.matches ? 1 : WEBSITE_PREVIEW_LIMIT).map(project => project.id);
-    }
-    function update() {
-      clearTimeout(settle);
-      if (blocked || reduced.matches || document.hidden) { setLive([]); return; }
-      settle = setTimeout(() => setLive(selectPreviews()), 250);
-    }
-    function resize() { clearTimeout(settle); setLive(selectPreviews()); }
+    // Stable author order prevents unrelated frames restarting on observer delivery.
+    const budget = observeBudget(limit => projects.filter(project => visible.has(project.id))
+      .slice(0, limit).map(project => project.id), blocked);
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
         const id = Number((entry.target as HTMLElement).dataset.previewId);
         if (entry.isIntersecting) visible.add(id); else visible.delete(id);
       }
-      update();
+      budget.update();
     });
     collectionRef.current?.querySelectorAll<HTMLElement>("[data-preview-id]").forEach(card => {
       observer.observe(card);
       const box = card.getBoundingClientRect();
       if (box.bottom > 0 && box.top < innerHeight) visible.add(Number(card.dataset.previewId));
     });
-    document.addEventListener("visibilitychange", update); reduced.addEventListener("change", update);
-    mobile.addEventListener("change", resize);
     // A route wipe pauses observers: prime visible frames from their current geometry.
-    setLive(selectPreviews());
+    budget.apply();
     return () => {
-      clearTimeout(settle); observer.disconnect();
-      document.removeEventListener("visibilitychange", update); reduced.removeEventListener("change", update);
-      mobile.removeEventListener("change", resize);
+      observer.disconnect();
+      budget.disconnect();
     };
-  }, [blocked, projects, layout, selected?.id, collectionRef]);
+  }, [blocked, projects, layout, selected?.id, collectionRef, observeBudget]);
 
   useLayoutEffect(() => {
     if (layout !== "masonry") return;

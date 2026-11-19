@@ -149,9 +149,12 @@ browser's first paint with its fallback underneath. It can finish loading after
 uses 800px height; mosaic/masonry ratios adjust the frame height rather than stretch
 the webpage. Cards waiting for a slot
 keep their cover/placeholder and never hold the route wipe. A heavy site can set
-a lighter `preview_url`. Leaving the
-viewport, hiding the page or opening a dialog unmounts the frames rather than
-pretending a hidden frame is paused. On arrival, on-screen frames start at once,
+a lighter `preview_url`. The home contact strip and laboratory keep mounted previews
+for 30 seconds after the page becomes hidden. A quick return reuses the same
+iframes. While hidden, the page starts no new previews and releases the retained
+ones when the timer expires. Scrolling cards out of view releases their slots
+after scrolling settles. Opening the laboratory viewer or editor releases card
+previews immediately. On arrival in the laboratory, on-screen frames start at once,
 without the scroll settle. A route wipe holds up to 300ms for a coverless card,
 then proceeds while the frame can continue loading.
 

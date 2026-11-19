@@ -268,6 +268,11 @@ readout controls and the em-relative station signs use the `support*` radii.
   slider on pinned timed diagrams keeps the comparison frames available by
   keyboard and touch. Each visit samples a diagram and its options unless pinned.
   The Appearance background tab stores the browser's choices, including off.
+  Because the panel covers the desktop diagram and the pinned one sits below the
+  fold on narrow screens, the chosen diagram also plays as a view-only 240px
+  preview between the "首页图示" label and its options, filled with the page's own
+  random choices for the visit. Random previews this visit's draw and off shows a
+  note; every state keeps one height so picking never moves the options.
   Storage events synchronize resets across tabs and an in-memory override keeps
   local choices and resets working while persistence fails.
 
