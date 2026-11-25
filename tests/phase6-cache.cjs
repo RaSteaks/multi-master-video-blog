@@ -73,7 +73,7 @@ async function main() {
     pass("metadata and page share the same request-scoped album load");
 
     await verifyStreamedStrip(fixture, read => { observeRead = read; });
-    pass("the home stage stays still for populated, empty and failed strips; a script-free visitor can open each kind of work");
+    pass("the home stage stays still for populated, empty and failed strips; category links are available without JavaScript");
 
     const build = await run("npm", ["run", "build:web"], "build.log");
     assert.equal(await new Promise(resolve => build.on("exit", resolve)), 0);
@@ -123,11 +123,6 @@ async function main() {
 }
 
 async function verifyStreamedStrip(fixture, observe) {
-  // Compile the new route before opening a dev browser so Fast Refresh cannot replace
-  // the document halfway through a measurement.
-  const warmIndex = await fetch(`${fixture.url}/works`);
-  assert.equal(warmIndex.status, 200);
-  await warmIndex.text();
   const browser = await webkit.launch({ headless: true });
   const collections = fixture.collections;
   const originals = { posts: collections.posts, video_projects: collections.video_projects,
@@ -145,34 +140,26 @@ async function verifyStreamedStrip(fixture, observe) {
       if (scenario === "failed") fixture.unavailableCollections.add("external_projects");
       const page = await browser.newPage({ javaScriptEnabled: scenario !== "no-script", reducedMotion: "reduce",
         viewport: { width: 1440, height: 1000 }, extraHTTPHeaders: { "cache-control": "no-cache" } });
-      const indexRequests = [];
-      page.on("request", request => { if (new URL(request.url()).pathname === "/works") indexRequests.push(request.url()); });
       try {
         await page.goto(fixture.url, { waitUntil: "commit" });
-        const index = page.getByRole("link", { name: "查看作品目录" });
-        await index.waitFor({ state: "visible" });
+        const categories = page.locator(".collection-links");
+        await categories.waitFor({ state: "visible" });
         const positions = () => page.locator(".profile-hub, .home-action-row").evaluateAll(nodes =>
           nodes.map(node => node.getBoundingClientRect().top));
         const before = await positions();
+        assert.equal(await page.locator(".home-contact-slot a:visible").count(), 0, "The timeline has no navigation placeholder.");
+        if (scenario === "no-script") {
+          const hrefs = await categories.locator("a:visible").evaluateAll(links => links.map(link => link.getAttribute("href")));
+          for (const href of ["/posts", "/videos", "/albums", "/project"]) assert.ok(hrefs.includes(href));
+        }
         gate.resolve();
         await page.waitForLoadState("load");
+        if (scenario === "populated") await page.locator(".contact-frame").first().waitFor();
+        assert.deepEqual(await positions(), before, `${scenario}: profile and actions stay in place`);
+        if (scenario !== "no-script") assert.equal(await page.locator(".contact-frame").count(), scenario === "populated" ? 5 : 0);
         if (scenario === "no-script") {
-          await index.click();
-          await page.waitForURL(`${fixture.url}/works`);
-          const hrefs = await page.locator("main li a:visible").evaluateAll(links => links.map(link => link.getAttribute("href")).sort());
-          assert.deepEqual(hrefs, ["/albums/fixture-album", "/posts/fixture-post", "/videos/sample-film",
-            "https://example.invalid/work-1", "https://example.invalid/work-2"]);
-        } else {
-          await index.waitFor({ state: "hidden" });
-          assert.deepEqual(await positions(), before, `${scenario}: profile and actions stay in place`);
-          assert.equal(await page.locator(".contact-frame").count(), scenario === "populated" ? 5 : 0);
-          assert.equal(indexRequests.length, 0, "The normal home does not prefetch the script-free index.");
-          if (scenario !== "populated") {
-            const response = await page.request.get(`${fixture.url}/works`);
-            assert.equal(response.status(), 200);
-            const message = scenario === "empty" ? "暂无作品。" : "作品目录暂时无法加载，请稍后刷新页面。";
-            assert.ok((await response.text()).includes(`<p class="empty-state">${message}</p>`));
-          }
+          await categories.locator('a[href="/posts"]').click();
+          await page.waitForURL(`${fixture.url}/posts`);
         }
       } finally {
         gate.resolve();

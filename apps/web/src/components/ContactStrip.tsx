@@ -94,7 +94,7 @@ export function ContactStrip({ frames }: { frames: ContactFrame[] }) {
 
   if (!frames.length) return null;
   return (
-    <section className="contact-strip" aria-label="全部作品，从左到右由旧到新">
+    <section className="contact-strip" aria-label="开发历程，从左到右由旧到新">
       <ol ref={trackRef} className="contact-strip-track"
         onPointerOver={event => { if (event.pointerType === "mouse") aimLamp(event.currentTarget, event.target); }}
         onPointerLeave={event => douseLamp(event.currentTarget)}

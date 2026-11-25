@@ -738,7 +738,7 @@ async function getFrameRows<T>(
 }
 
 /** Every published video, article, album and laboratory site, oldest first, capped per collection. */
-export async function getContactSheet(projectLinks: "viewer" | "direct" = "viewer") {
+export async function getContactSheet() {
   try {
     const [videos, posts, albums, projects] = await Promise.all([
       getFrameRows<WorkFrame>("video_projects", FRAME_FIELDS, ["videos:list"]),
@@ -754,8 +754,7 @@ export async function getContactSheet(projectLinks: "viewer" | "direct" = "viewe
       ...albums.map(album => ({ key: `album-${album.id}`, title: album.title, href: `/albums/${album.slug}`, external: false,
         cover: assetUrl(album.cover_image || album.photos?.[0]?.sdr_image || null, "contact-frame"), addedAt: album.created_at })),
       ...projects.filter(project => isWebsiteUrl(project.url)).map(project => {
-        // The native works index can open the site even when the laboratory viewer cannot run.
-        const external = projectLinks === "direct" || project.open_mode === "external";
+        const external = project.open_mode === "external";
         const preview = {
           title: project.title, url: project.url, cover_image: null, published: isPublished(project),
           preview_url: project.preview_url && isWebsiteUrl(project.preview_url) ? project.preview_url : null,
@@ -770,8 +769,8 @@ export async function getContactSheet(projectLinks: "viewer" | "direct" = "viewe
     return contactFrames(works);
   } catch (error) {
     unstable_rethrow(error);
-    // The home can omit the strip; the standalone index distinguishes an outage from an empty collection.
-    return null;
+    // The timeline is optional; the homepage keeps its own navigation when the CMS is unavailable.
+    return [];
   }
 }
 

@@ -9554,13 +9554,6 @@ object {
   justify-items: center;
 }
 
-.home-works-link {
-  display: inline-block;
-  padding: 12px;
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
-}
-
 .contact-strip {
   --strip-film: #090a0b;
   --strip-fade-width: 30%;

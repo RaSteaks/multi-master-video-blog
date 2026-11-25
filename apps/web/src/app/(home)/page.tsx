@@ -48,7 +48,7 @@ export default async function Home() {
         </div>
         <HomeDiagram />
         <div className="home-contact-slot">
-          <Suspense fallback={<WorksIndexLink />}>
+          <Suspense fallback={null}>
             <HomeContactStrip frames={frames} />
           </Suspense>
         </div>
@@ -58,17 +58,8 @@ export default async function Home() {
 }
 
 async function HomeContactStrip({ frames }: { frames: ReturnType<typeof getContactSheet> }) {
-  const works = await frames;
-  if (!works?.length) return null;
-  return <>
-    <ContactStrip frames={works} />
-    <noscript><WorksIndexLink /></noscript>
-  </>;
-}
-
-// The browser can follow this link even when it cannot reveal a streamed React segment.
-function WorksIndexLink() {
-  return <Link href="/works" prefetch={false} className="home-works-link">查看作品目录</Link>;
+  const entries = await frames;
+  return entries.length ? <ContactStrip frames={entries} /> : null;
 }
 
 function ProfileHub({
