@@ -13,7 +13,7 @@ const root = path.resolve(__dirname, "../..");
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Real Next rewrites/API with a disposable CMS, ports and media tree. */
-async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 18062, webPort = 13002, production = false, oss = false } = {}) {
+async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 18062, webPort = 13002, production = false, oss = false, beforeCmsRead } = {}) {
   const output = path.join(root, "test-results", name);
   const cmsUrl = `http://127.0.0.1:${cmsPort}`;
   const apiUrl = `http://127.0.0.1:${apiPort}`;
@@ -43,6 +43,7 @@ async function startFixture({ name = "create-menu", cmsPort = 18057, apiPort = 1
   const cms = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://fixture");
+      if (beforeCmsRead && req.method === "GET") await beforeCmsRead(url);
       if (url.pathname === "/auth/login") return json(res, { data: { access_token: "fixture-cms", expires: 3600000 } });
       if (url.pathname === "/files" && req.method === "POST") {
         const fields = {}; let bytes = Buffer.alloc(0); let info;

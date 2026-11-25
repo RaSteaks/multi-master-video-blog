@@ -27,6 +27,33 @@
     "format": "webp"
   },
   {
+    "key": "contact-frame",
+    "fit": "cover",
+    "width": 93,
+    "height": 62,
+    "quality": 80,
+    "withoutEnlargement": true,
+    "format": "webp"
+  },
+  {
+    "key": "contact-frame-2x",
+    "fit": "cover",
+    "width": 186,
+    "height": 124,
+    "quality": 80,
+    "withoutEnlargement": true,
+    "format": "webp"
+  },
+  {
+    "key": "contact-frame-3x",
+    "fit": "cover",
+    "width": 279,
+    "height": 186,
+    "quality": 80,
+    "withoutEnlargement": true,
+    "format": "webp"
+  },
+  {
     "key": "content-card",
     "fit": "cover",
     "width": 960,

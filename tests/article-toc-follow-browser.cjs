@@ -326,6 +326,25 @@ let base;
     assert.ok(Math.abs(arrived.top - arrived.e20) <= 1, "arrives as the heading crosses the reading line");
     pass("Indicator is scroll-linked: rests in a section, slides in step across the handoff zone, stays centred", { zone, shares: samples });
 
+    // The reader stays still while a late header resize moves every heading down the page.
+    const header = p.locator(".site-header");
+    const noAnchoring = await p.addStyleTag({ content: "html, body { overflow-anchor: none; }" });
+    await p.waitForFunction(() => document.querySelector('a[aria-current="location"]')?.dataset.tocId === "section-20");
+    const beforeGrowth = await p.evaluate(() => ({
+      scroll: window.scrollY, heading: document.getElementById("section-20").getBoundingClientRect().top,
+    }));
+    await header.evaluate(node => { node.style.paddingBottom = `${parseFloat(getComputedStyle(node).paddingBottom) + 48}px`; });
+    const afterGrowth = await p.evaluate(() => ({
+      scroll: window.scrollY, heading: document.getElementById("section-20").getBoundingClientRect().top,
+    }));
+    assert.equal(afterGrowth.scroll, beforeGrowth.scroll);
+    assert.equal(afterGrowth.heading - beforeGrowth.heading, 48);
+    await p.waitForFunction(() => document.querySelector('a[aria-current="location"]')?.dataset.tocId === "section-19");
+    await header.evaluate(node => node.style.removeProperty("padding-bottom"));
+    await p.waitForFunction(() => document.querySelector('a[aria-current="location"]')?.dataset.tocId === "section-20");
+    await noAnchoring.evaluate(node => node.remove());
+    pass("A header growing above an unchanged article updates its active section at rest", { beforeGrowth, afterGrowth });
+
     // No timed animation: once scrolling stops, nothing keeps moving.
     const settledA = await probe("section-20", zone * 0.5);
     await p.waitForTimeout(400);
@@ -358,13 +377,13 @@ let base;
     assert.ok(midway.e19 < atRest.e19 && midway.e20 > atRest.e20 && Math.abs(midway.e19 - midway.e20) <= 4, `both half lit midway: ${JSON.stringify(midway)}`);
     pass("Text emphasis brightens and dims with the sliding block (no switch)", { atRest, midway });
 
-    // Scroll frames do arithmetic and writes only: no layout reads on the TOC side.
+    // Scroll frames should use cached coordinates for the article and the TOC.
     const reads = await p.evaluate(async () => {
       const toc = document.querySelector(".article-toc");
       let count = 0;
       const rect = Element.prototype.getBoundingClientRect;
       Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
-        if (toc.contains(this)) count += 1;
+        if (toc.contains(this) || this.matches("article, article :is(h2, h3)")) count += 1;
         return rect.call(this);
       };
       const offsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetTop");
@@ -379,10 +398,10 @@ let base;
       const indicator = document.querySelector('.article-toc nav > [aria-hidden="true"][data-visible]');
       return { count, transform: indicator.style.transform, willChange: getComputedStyle(indicator).willChange };
     });
-    assert.equal(reads.count, 0, "no TOC layout reads during scroll frames");
+    assert.equal(reads.count, 0, "scroll frames do not remeasure headings or TOC entries");
     assert.match(reads.transform, /^translate3d\(/);
     assert.equal(reads.willChange, "transform");
-    pass("Scroll frames never read TOC layout; the indicator moves by transform on its own layer", reads);
+    pass("Scroll frames use cached heading and TOC layout; the indicator moves by transform", reads);
 
     // The reader's own wheel on the list stops the glide where it is, and section changes
     // during the grace period do not take the list back; after it, following resumes.

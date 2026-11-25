@@ -168,6 +168,7 @@ async function port() {
     assert.equal(detail.album.photos[0].width, 48); assert.equal(detail.album.photos[0].height, 64);
     checks.push("Album summaries use real CMS aggregation; selected detail retains image geometry");
     await request("/items/album_photos", "POST", { album_id: album.id, sdr_image: scanFile.id, published: true, sort_order: 1 });
+    const contactFrameSizes = {};
     const transforms = require("../config/directus-asset-presets.json").map(async preset => {
       const response = await fetch(api + `/assets/${scanFile.id}?key=${preset.key}`);
       const bytes = Buffer.from(await response.arrayBuffer());
@@ -175,13 +176,21 @@ async function port() {
       const metadata = await require("sharp")(bytes).metadata();
       assert.equal(metadata.format, "webp");
       assert.ok(metadata.width <= preset.width && metadata.height <= preset.height, preset.key);
+      if (preset.key.startsWith("contact-frame")) contactFrameSizes[preset.key] = [metadata.width, metadata.height];
     });
     assert.equal((await fetch(api + "/health")).status, 200);
     await Promise.all(transforms);
+    // This scan exceeds every crop size. Verify the delivered pixels even if a preset or cache key is misconfigured.
+    assert.deepEqual(contactFrameSizes, {
+      "contact-frame": [93, 62],
+      "contact-frame-2x": [186, 124],
+      "contact-frame-3x": [279, 186],
+    });
+    checks.push("Contact-strip WebP images measure 93×62, 186×124 and 279×186 through the asset proxy");
     const scanOriginal = await fetch(api + `/assets/${scanFile.id}`);
     assert.equal(scanOriginal.status, 200);
     assert.deepEqual(Buffer.from(await scanOriginal.arrayBuffer()), scan);
-    checks.push("Existing large originals survive CMS restart unchanged; all seven cold presets load concurrently through API admission and health remains available");
+    checks.push("Existing large originals survive CMS restart unchanged; all managed cold presets load concurrently through API admission and health remains available");
     assert.equal((await fetch(api + `/assets/${file.id}`)).status, 200);
     await request(`/items/albums/${album.id}`, "PATCH", { published: false });
     assert.equal((await fetch(api + `/assets/${file.id}`)).status, 404);

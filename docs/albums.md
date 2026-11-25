@@ -59,6 +59,8 @@ API 白名单及 schema setup/检查共同使用这份配置。照片按行排�
 同一组受管资源预设还包含 `content-card`、`content-hero`、
 `site-background` 与 `site-background-thumb`，分别避免列表、详情页和站点
 背景下载超出其显示尺寸的原图。
+首页胶片条使用 `contact-frame`、`contact-frame-2x`、`contact-frame-3x`，
+为 93×62 像素的画面提供与屏幕像素密度相应的 WebP 封面。
 
 相簿页面请求 `?key=album-cover`、`?key=album-thumb` 或
 `?key=album-thumb-sm`；灯箱原图不带转换参数。Directus 的命名预设和 `key`

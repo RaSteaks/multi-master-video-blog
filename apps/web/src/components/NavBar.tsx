@@ -135,14 +135,20 @@ export function NavBar() {
         ? nav.querySelector<HTMLAnchorElement>(`a[href="${targetHref}"]`)
         : null;
       // Hidden header (home page) measures 0; wait for the ResizeObserver.
-      if (!target || target.offsetWidth === 0) {
+      const width = target?.offsetWidth ?? 0;
+      if (!target || width === 0) {
         pill.dataset.visible = "false";
         return;
       }
-      pill.style.setProperty("--pill-x", `${target.offsetLeft}px`);
-      pill.style.setProperty("--pill-w", `${target.offsetWidth}px`);
+      // Only reveal the link inside the horizontal nav. Scrolling its ancestors
+      // would pull a phone reader back to the header after a resize or hash jump.
+      const left = target.offsetLeft;
+      const right = left + width;
+      if (left < nav.scrollLeft) nav.scrollLeft = left;
+      else if (right > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = right - nav.clientWidth;
+      pill.style.setProperty("--pill-x", `${left}px`);
+      pill.style.setProperty("--pill-w", `${width}px`);
       pill.dataset.visible = "true";
-      target.scrollIntoView?.({ block: "nearest", inline: "nearest" });
       if (!readyRef.current) {
         // Enable the slide only after the first placement, so the pill does
         // not fly in from x = 0 on load.

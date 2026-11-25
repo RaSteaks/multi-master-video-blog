@@ -511,8 +511,12 @@ function waitForRouteReady(
     // still flies there: it is the same work, and its poster counts as media.
     function watchCover() {
       const cover = main?.querySelector('[data-vt="cover"]');
+      if (!(cover instanceof HTMLElement) || !visibleOnFirstScreen(cover)) {
+        coverUnavailable = true;
+        return;
+      }
       if (!(cover instanceof HTMLImageElement)) {
-        if (cover && opensFrame) coverReady = true;
+        if (opensFrame) coverReady = true;
         else coverUnavailable = true;
         return;
       }
@@ -546,12 +550,13 @@ function waitForRouteReady(
         check();
       };
       main?.querySelectorAll("img").forEach((image) => {
-        if (image.getBoundingClientRect().top >= window.innerHeight) return;
+        if (!visibleOnFirstScreen(image)) return;
         image.loading = "eager";
         mediaPending++;
         image.decode().then(settle, settle);
       });
       main?.querySelectorAll<HTMLVideoElement>("video[poster]").forEach((video) => {
+        if (!visibleOnFirstScreen(video)) return;
         const poster = new Image();
         poster.src = video.poster;
         mediaPending++;
@@ -560,8 +565,8 @@ function waitForRouteReady(
     }
 
     function framesPending() {
-      return Array.from(main?.querySelectorAll("[data-media-pending]") ?? [])
-        .some((frame) => frame.getBoundingClientRect().top < window.innerHeight);
+      return Array.from(main?.querySelectorAll<HTMLElement>("[data-media-pending]") ?? [])
+        .some(visibleOnFirstScreen);
     }
 
     function check() {
@@ -598,6 +603,38 @@ function waitForRouteReady(
     };
     tick();
   });
+}
+
+// IntersectionObserver cannot deliver while a native transition holds its snapshot.
+// Clip the live rectangle synchronously, including scrollports inside the viewport.
+function visibleOnFirstScreen(element: HTMLElement) {
+  const box = element.getBoundingClientRect();
+  let left = Math.max(0, box.left);
+  let right = Math.min(document.documentElement.clientWidth, box.right);
+  let top = Math.max(0, box.top);
+  let bottom = Math.min(document.documentElement.clientHeight, box.bottom);
+  if (right <= left || bottom <= top || getComputedStyle(element).visibility !== "visible") return false;
+
+  for (let parent = element.parentElement; parent && parent !== document.documentElement; parent = parent.parentElement) {
+    const style = getComputedStyle(parent);
+    if (style.display === "contents" || (style.overflowX === "visible" && style.overflowY === "visible")) continue;
+    const bounds = parent.getBoundingClientRect();
+    // client metrics exclude borders and scrollbars; convert them to the transformed viewport coordinates.
+    if (style.overflowX !== "visible") {
+      const scale = parent.offsetWidth ? bounds.width / parent.offsetWidth : 1;
+      const start = bounds.left + parent.clientLeft * scale;
+      left = Math.max(left, start);
+      right = Math.min(right, start + parent.clientWidth * scale);
+    }
+    if (style.overflowY !== "visible") {
+      const scale = parent.offsetHeight ? bounds.height / parent.offsetHeight : 1;
+      const start = bounds.top + parent.clientTop * scale;
+      top = Math.max(top, start);
+      bottom = Math.min(bottom, start + parent.clientHeight * scale);
+    }
+    if (right <= left || bottom <= top) return false;
+  }
+  return true;
 }
 
 function routeAnimation(section: string, fromHistory: boolean): RouteAnimation {

@@ -308,7 +308,9 @@ readout controls and the em-relative station signs use the `support*` radii.
   runs the shared `ProjectPreview` instead: on-screen frames only, the newest three
   at most (one up to 700px), never under reduced motion, with its title beneath until
   the frame fires its unverified load event.
-  If the CMS fails the strip is omitted and the page still renders.
+  The profile and its actions keep their positions while the strip loads, including
+  when the CMS returns no works or fails. Visitors with JavaScript disabled can
+  reach the server-rendered list at `/works` and follow ordinary links to each work.
   A frame prefetches its full destination only when a pointer rests on it for 90 ms,
   is pressed or takes focus, so a low-memory host never fetches the whole strip. On
   a click it opens: the destination is revealed from the frame's own rectangle out

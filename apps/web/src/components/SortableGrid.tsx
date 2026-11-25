@@ -230,11 +230,19 @@ export function SortableGrid({ section, items, label, className, listRef, listPr
   });
 
   function step(event: KeyboardEvent<HTMLButtonElement>, id: number) {
+    const key = event.key;
+    const vertical = key === "ArrowUp" || key === "ArrowDown";
+    if (!vertical && key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return;
     const index = order.indexOf(id);
-    const firstRow = cards().filter(card => card.offsetTop === cards()[0]?.offsetTop).length || 1;
+    // Only vertical moves need row geometry. Read the live list once even in large albums.
+    let firstRow = 1;
+    if (vertical) {
+      const items = cards();
+      const top = items[0]?.offsetTop;
+      firstRow = items.filter(card => card.offsetTop === top).length || 1;
+    }
     const targets: Record<string, number> = { ArrowLeft: index - 1, ArrowRight: index + 1, ArrowUp: index - firstRow, ArrowDown: index + firstRow, Home: 0, End: order.length - 1 };
-    const target = targets[event.key];
-    if (target === undefined) return;
+    const target = targets[key];
     event.preventDefault();
     const clamped = Math.max(0, Math.min(target, order.length - 1));
     if (clamped === index || drag.current) return;

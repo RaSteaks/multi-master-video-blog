@@ -5,6 +5,7 @@ import {
   assetUrl,
   filterPublishedAlbums,
   getAlbum,
+  getSiteSettings,
   siteBackgroundImages,
   type Album,
   type AlbumPhoto,
@@ -99,6 +100,56 @@ describe("album asset URLs", () => {
         thumbnailUrl: "/api/assets/background-b?key=site-background-thumb",
       },
     ]);
+  });
+});
+
+describe("site settings for the root layout", () => {
+  function mockSettings() {
+    vi.stubEnv("DIRECTUS_EMAIL", "");
+    vi.stubEnv("DIRECTUS_PASSWORD", "");
+    const fetchSettings = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchSettings);
+    return fetchSettings;
+  }
+
+  it("keeps background settings when the CMS explicitly rejects the new accent field", async () => {
+    const fetchSettings = mockSettings();
+    const settings = { background_image: "background-a", background_blur: 8 };
+    fetchSettings.mockResolvedValueOnce(Response.json({
+      errors: [{ message: 'You don\'t have permission to access field "accent_color" in collection "site_settings" or it does not exist.' }],
+    }, { status: 403 })).mockResolvedValueOnce(Response.json({ data: settings }));
+
+    expect(await getSiteSettings()).toEqual(settings);
+    expect(fetchSettings).toHaveBeenCalledTimes(2);
+    const [modern, legacy] = fetchSettings.mock.calls;
+    expect(String(modern[0])).toContain("accent_color");
+    expect(String(legacy[0])).not.toContain("accent_color");
+    expect(legacy[1]?.signal).toBe(modern[1]?.signal);
+  });
+
+  it.each([403, 503])("uses defaults on an unrelated HTTP %s without repeating the read", async status => {
+    const fetchSettings = mockSettings();
+    fetchSettings.mockResolvedValue(Response.json({ errors: [{ message: "Collection unavailable." }] }, { status }));
+    expect(await getSiteSettings()).toBeNull();
+    expect(fetchSettings).toHaveBeenCalledOnce();
+  });
+
+  it.each(["settings", "legacy settings", "login"])("releases an unread %s error body", async source => {
+    const fetchSettings = mockSettings();
+    if (source === "login") {
+      vi.stubEnv("DIRECTUS_EMAIL", "fixture@example.invalid");
+      vi.stubEnv("DIRECTUS_PASSWORD", "fixture-only");
+    } else if (source === "legacy settings") {
+      fetchSettings.mockResolvedValueOnce(Response.json({
+        errors: [{ message: 'Field "accent_color" does not exist.' }],
+      }, { status: 403 }));
+    }
+    const cancel = vi.fn();
+    fetchSettings.mockResolvedValueOnce(new Response(new ReadableStream({ cancel }), { status: 503 }));
+
+    expect(await getSiteSettings()).toBeNull();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(fetchSettings).toHaveBeenCalledTimes(source === "legacy settings" ? 2 : 1);
   });
 });
 

@@ -244,7 +244,8 @@ inline images without provenance. Merely writing another file's ID into a draft
 does not grant access to it.
 The proxy accepts only
 the named presets in `config/directus-asset-presets.json`: `album-cover`,
-`album-thumb`, `album-thumb-sm`, `content-card`, `content-hero`,
+`album-thumb`, `album-thumb-sm`, `contact-frame`, `contact-frame-2x`,
+`contact-frame-3x`, `content-card`, `content-hero`,
 `site-background`, and `site-background-thumb`, requested with `?key=...`.
 Arbitrary width, height, quality, or Sharp transforms are rejected.
 

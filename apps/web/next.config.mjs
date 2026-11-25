@@ -74,13 +74,15 @@ const nextConfig = {
     proxyTimeout: 300_000
   },
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
-  // Dev stylesheets keep their URL across edits, so a browser must not reuse one on
-  // reload. Production files are content-hashed and keep Next's immutable caching.
-  ...(process.env.NODE_ENV === "development" ? {
-    async headers() {
-      return [{ source: "/_next/static/chunks/:file(.*\\.css)", headers: [{ key: "Cache-Control", value: "no-store" }] }];
+  async headers() {
+    // Let the self-hosted Nginx proxy forward the profile while the contact strip loads.
+    const rules = [{ source: "/", headers: [{ key: "X-Accel-Buffering", value: "no" }] }];
+    if (process.env.NODE_ENV === "development") {
+      // Dev stylesheets keep the same URL across edits.
+      rules.push({ source: "/_next/static/chunks/:file(.*\\.css)", headers: [{ key: "Cache-Control", value: "no-store" }] });
     }
-  } : {}),
+    return rules;
+  },
   async rewrites() {
     return [
       // Standalone documentation bypasses the App Router layout and CMS reads.

@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { Suspense, type CSSProperties } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { ContactStrip } from "@/components/ContactStrip";
@@ -13,11 +13,13 @@ import { siteConfig } from "@/lib/site-config";
 type HomeWidgetStyle = CSSProperties & Record<`--${string}`, string | number>;
 
 export default async function Home() {
-  const [{
+  // Start the optional strip alongside the counts; it can stream after the profile.
+  const frames = getContactSheet();
+  const {
     posts: postCount,
     videos: videoCount,
     albums: albumCount,
-  }, frames] = await Promise.all([getCounts(), getContactSheet()]);
+  } = await getCounts();
 
   return (
     <>
@@ -45,10 +47,28 @@ export default async function Home() {
           </div>
         </div>
         <HomeDiagram />
-        <ContactStrip frames={frames} />
+        <div className="home-contact-slot">
+          <Suspense fallback={<WorksIndexLink />}>
+            <HomeContactStrip frames={frames} />
+          </Suspense>
+        </div>
       </main>
     </>
   );
+}
+
+async function HomeContactStrip({ frames }: { frames: ReturnType<typeof getContactSheet> }) {
+  const works = await frames;
+  if (!works?.length) return null;
+  return <>
+    <ContactStrip frames={works} />
+    <noscript><WorksIndexLink /></noscript>
+  </>;
+}
+
+// The browser can follow this link even when it cannot reveal a streamed React segment.
+function WorksIndexLink() {
+  return <Link href="/works" prefetch={false} className="home-works-link">查看作品目录</Link>;
 }
 
 function ProfileHub({

@@ -129,6 +129,20 @@ async function main() {
 
     const keyed = handleOf("文章三");
     await keyed.focus();
+    const tabQueries = await keyed.evaluate(handle => {
+      const grid = handle.closest("ol");
+      const query = grid.querySelectorAll;
+      let queries = 0;
+      grid.querySelectorAll = function (...args) {
+        queries++;
+        return query.apply(this, args);
+      };
+      try {
+        handle.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+        return queries;
+      } finally { delete grid.querySelectorAll; }
+    });
+    assert.equal(tabQueries, 0, "Tab on a sorting handle must not scan the grid.");
     await page.keyboard.press("Enter");
     assert.match(await page.locator("main p.visually-hidden[role=status]").textContent(), /使用方向键移动/);
     await page.keyboard.press("ArrowRight");

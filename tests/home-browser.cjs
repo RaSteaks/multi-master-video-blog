@@ -108,6 +108,20 @@ async function main() {
     cover.append("file", new Blob([await sharp({ create: { width: 1280, height: 720, channels: 3, background: "#c0392b" } }).png().toBuffer()], { type: "image/png" }), "cover.png");
     fixture.collections.posts[0].cover_image = (await (await fetch(`${fixture.cmsUrl}/files`, { method: "POST", body: cover })).json()).data.id;
     await page.goto(fixture.url, { waitUntil: "networkidle" });
+    const coverFrame = '.contact-frame[href="/posts/fixture-post"] img';
+    assert.equal(await page.locator(coverFrame).evaluate(image => new URL(image.currentSrc).searchParams.get("key")), "contact-frame");
+    for (const density of [2, 3]) {
+      const retina = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: density });
+      try {
+        const retinaPage = await retina.newPage();
+        await retinaPage.goto(fixture.url, { waitUntil: "networkidle" });
+        const selected = await retinaPage.locator(coverFrame).evaluate(image => new URL(image.currentSrc).searchParams.get("key"));
+        assert.equal(selected, `contact-frame-${density}x`);
+      } finally {
+        await retina.close();
+      }
+    }
+    pass("home contact covers request the small Directus preset for each display density");
     await frames.nth(3).hover();
     await page.waitForTimeout(250);
     const opening = await frames.nth(3).locator(".contact-frame-picture").boundingBox();
@@ -211,6 +225,16 @@ async function main() {
     });
     assert.equal(await longStrip.evaluate(element => Math.abs(element.scrollLeft)), 0, "A long strip opens on its newest frame.");
     assert.ok(await pageCentre() < 1, "The newest frame stays centred on a long strip.");
+    await page.setViewportSize({ width: 390, height: 560 });
+    await page.evaluate(() => scrollTo({ top: 0, behavior: "instant" }));
+    await page.waitForFunction(() => document.querySelector(".home-diagram canvas").getBoundingClientRect().top > innerHeight);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const offscreen = await pixels();
+    await page.waitForTimeout(300);
+    assert.equal(await pixels(), offscreen, "The offscreen volume stays still.");
+    await solid.scrollIntoViewIfNeeded();
+    await page.waitForFunction(last => document.querySelector(".home-diagram canvas").toDataURL() !== last, offscreen);
+    pass("the pinned diagram stops offscreen and resumes when scrolled into view");
     await page.setViewportSize({ width: 1280, height: 900 });
 
     await page.setViewportSize({ width: 390, height: 844 });
@@ -626,6 +650,27 @@ async function main() {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.setViewportSize({ width: 1280, height: 900 });
     pass("a phone shows the strip on its first screen and keeps normal scrolling");
+
+    // Put a scrollport inside the viewport: the fourth card is partially visible,
+    // while the fifth sits inside the window but outside the scrollport.
+    fixture.collections.video_projects.splice(0, fixture.collections.video_projects.length,
+      ...Array.from({ length: 12 }, (_, i) => ({ ...video(i + 1), cover_image: fixture.collections.posts[0].cover_image })));
+    await page.goto(`${fixture.url}/posts/fixture-post`, { waitUntil: "networkidle" });
+    await page.addStyleTag({ content: `
+      main .content-grid { display:flex; gap:0; width:350px; padding:0; overflow:auto; }
+      main .content-grid > li { flex:0 0 100px; min-width:0; }
+    ` });
+    await page.getByRole("navigation", { name: "主要导航" }).getByRole("link", { name: "视频", exact: true }).click();
+    await page.waitForURL(`${fixture.url}/videos`);
+    const pictures = page.locator("main .content-grid img");
+    await page.waitForFunction(() => document.querySelectorAll("main .content-grid img")[3]?.loading === "eager");
+    const clip = await page.locator("main .content-grid").boundingBox();
+    const fourth = await pictures.nth(3).boundingBox();
+    const fifth = await pictures.nth(4).boundingBox();
+    assert.ok(fourth.x < clip.x + clip.width && fourth.x + fourth.width > clip.x + clip.width);
+    assert.ok(fifth.x >= clip.x + clip.width && fifth.x < 1280);
+    assert.equal(await pictures.nth(4).getAttribute("loading"), "lazy");
+    pass("the native transition promotes a partially visible image and leaves its clipped neighbor lazy");
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

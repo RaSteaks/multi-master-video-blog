@@ -62,66 +62,6 @@ export function ArticleToc({ label, items, collapsible }: { label: string; items
   const followerRef = useRef<TocFollower | null>(null);
   const indicatorRef = useRef<HTMLSpanElement>(null);
 
-  useEffect(() => {
-    const headings = items
-      .map((item) => document.getElementById(item.id))
-      .filter((heading): heading is HTMLElement => heading !== null);
-    const article = headings[0]?.closest("article");
-    if (!headings.length || !article) return;
-
-    let frame = 0;
-    let disposed = false;
-    let previousId: string | null = null;
-
-    function reconcile() {
-      frame = 0;
-      // Read the live CSS offset so mobile, zoom and resized text use the same
-      // reading line as native anchor navigation; never depend on visible headings only.
-      const readingLine = Number.parseFloat(getComputedStyle(headings[0]).scrollMarginTop) || 0;
-      const bounds = article!.getBoundingClientRect();
-      const nextId = currentArticleHeading(
-        headings.map((heading) => ({ id: heading.id, top: heading.getBoundingClientRect().top })),
-        readingLine,
-        bounds.top <= readingLine && bounds.bottom <= window.innerHeight + 1,
-      );
-      if (previousId !== nextId) {
-        previousId = nextId;
-        setActiveId(nextId);
-      }
-    }
-
-    function schedule() {
-      if (!disposed && !frame) frame = requestAnimationFrame(reconcile);
-    }
-
-    // IO handles entry/exit and layout shifts; the passive scroll reconciliation
-    // also catches fast jumps across several sections and upward scrolling.
-    const observer = new IntersectionObserver(schedule, { threshold: [0, 1] });
-    headings.forEach((heading) => observer.observe(heading));
-    const resizeObserver = new ResizeObserver(schedule);
-    resizeObserver.observe(article);
-    const main = article.closest("main");
-    if (main) resizeObserver.observe(main);
-    headings.forEach((heading) => resizeObserver.observe(heading));
-    window.addEventListener("scroll", schedule, { passive: true });
-    window.addEventListener("resize", schedule);
-    window.addEventListener("hashchange", schedule);
-    window.addEventListener("pageshow", schedule);
-    document.fonts.ready.then(schedule);
-    schedule();
-
-    return () => {
-      disposed = true;
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      resizeObserver.disconnect();
-      window.removeEventListener("scroll", schedule);
-      window.removeEventListener("resize", schedule);
-      window.removeEventListener("hashchange", schedule);
-      window.removeEventListener("pageshow", schedule);
-    };
-  }, [items]);
-
   /**
    * Scroll-linked indicator and list. Every scroll frame writes the indicator's position
    * directly (no React render, no timed animation): it rests on the current entry and, over
@@ -153,14 +93,18 @@ export function ArticleToc({ label, items, collapsible }: { label: string; items
     type Layout = {
       readingLine: number;
       /** Document offsets, so scrolling never needs a fresh measurement. */
-      headingTops: number[];
+      headings: { id: string; top: number }[];
+      articleTop: number;
       articleBottom: number;
+      crossings: number[];
       links: Box[];
       visible: boolean;
       list: { container: HTMLElement; navTop: number; viewportHeight: number; scrollHeight: number } | null;
     };
     let layout: Layout | null = null;
     let frame = 0;
+    let disposed = false;
+    let previousId: string | null = null;
     let placed = false;
     let drawn = { x: NaN, y: NaN, w: NaN, h: NaN };
     let emphasised: HTMLElement[] = [];
@@ -183,10 +127,14 @@ export function ArticleToc({ label, items, collapsible }: { label: string; items
           scrollHeight: container.scrollHeight,
         };
       }
+      const readingLine = Number.parseFloat(getComputedStyle(entries[0].heading).scrollMarginTop) || 0;
+      const headings = entries.map(({ heading }) => ({ id: heading.id, top: heading.getBoundingClientRect().top + scroll }));
+      const bounds = article!.getBoundingClientRect();
+      const articleBottom = bounds.bottom + scroll;
+      const endScroll = articleBottom - window.innerHeight;
       return {
-        readingLine: Number.parseFloat(getComputedStyle(entries[0].heading).scrollMarginTop) || 0,
-        headingTops: entries.map(({ heading }) => heading.getBoundingClientRect().top + scroll),
-        articleBottom: article!.getBoundingClientRect().bottom + scroll,
+        readingLine, headings, articleTop: bounds.top + scroll, articleBottom,
+        crossings: headings.map(({ top }) => Math.min(endScroll, top - readingLine)),
         links: entries.map(({ link }) => ({ x: link.offsetLeft, y: link.offsetTop, w: link.offsetWidth, h: link.offsetHeight })),
         visible: entries[0].link.offsetWidth > 0,
         list,
@@ -207,16 +155,23 @@ export function ArticleToc({ label, items, collapsible }: { label: string; items
       layout ??= measure();
       // Reads first (scroll offsets only), then writes: no forced layout in a scroll frame.
       const scroll = window.scrollY;
-      const listScroll = layout.list?.container.scrollTop ?? 0;
+      // Keep aria-current available when the mobile disclosure reopens. Both the semantic
+      // selection and the indicator use document coordinates from the same measurement.
+      const line = scroll + layout.readingLine;
+      const nextId = currentArticleHeading(layout.headings, line,
+        layout.articleTop <= line && layout.articleBottom <= scroll + window.innerHeight + 1);
+      if (nextId !== previousId) {
+        previousId = nextId;
+        setActiveId(nextId);
+      }
       if (!layout.visible) {
         indicator!.dataset.visible = "false";
         return;
       }
       // Same end rule as the highlighted text: once the article end is visible the last
       // heading counts as reached, so headings that cannot reach the line are clamped there.
-      const endScroll = layout.articleBottom - window.innerHeight;
-      const crossings = layout.headingTops.map((top) => Math.min(endScroll, top - layout!.readingLine));
-      const handoff = readingHandoff(crossings, scroll, handoffZone());
+      const listScroll = layout.list?.container.scrollTop ?? 0;
+      const handoff = readingHandoff(layout.crossings, scroll, handoffZone());
       if (!handoff) return;
       const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const from = layout.links[handoff.index];
@@ -282,7 +237,7 @@ export function ArticleToc({ label, items, collapsible }: { label: string; items
     }
 
     function schedule() {
-      if (!frame) frame = requestAnimationFrame(sync);
+      if (!disposed && !frame) frame = requestAnimationFrame(sync);
     }
     function invalidate() {
       layout = null;
@@ -292,15 +247,24 @@ export function ArticleToc({ label, items, collapsible }: { label: string; items
     const observer = new ResizeObserver(invalidate);
     observer.observe(nav);
     observer.observe(article);
+    const main = article.closest("main");
+    if (main) observer.observe(main);
+    // The site header can push the entire main down while the article and its headings keep their sizes.
+    const siteHeader = document.querySelector(".site-header");
+    if (siteHeader) observer.observe(siteHeader, { box: "border-box" });
+    entries.forEach(({ heading }) => observer.observe(heading));
     window.addEventListener("scroll", schedule, { passive: true });
     window.addEventListener("resize", invalidate);
+    window.addEventListener("pageshow", invalidate);
     document.fonts.ready.then(invalidate);
     schedule();
     return () => {
+      disposed = true;
       cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", invalidate);
+      window.removeEventListener("pageshow", invalidate);
       for (const link of emphasised) link.style.removeProperty("--toc-on");
     };
   }, [items, open]);

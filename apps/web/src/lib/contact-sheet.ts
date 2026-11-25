@@ -6,6 +6,7 @@ export type ContactFrame = {
   title: string;
   href: string;
   external: boolean;
+  /** The 1× contact-frame preset URL, including the site's public or draft-preview path. */
   cover: string | null;
   addedOn: string | null;
   // A laboratory site with no cover may show itself live instead.

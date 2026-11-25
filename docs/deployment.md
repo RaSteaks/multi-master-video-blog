@@ -372,7 +372,9 @@ npm run health
 ```
 
 `setup:cms-schema` installs named WebP presets for album thumbnails, content
-cards, article/video hero images, and full-size/thumbnail site backgrounds. It
+cards, home contact-strip frames, article/video hero images, and site backgrounds.
+When upgrading, install and verify the `contact-frame`, `contact-frame-2x`, and
+`contact-frame-3x` presets before serving the updated web and API. The setup
 changes asset transforms to preset-only unless the instance was already
 intentionally configured as `all`. The Node asset proxy independently rejects
 arbitrary transform parameters and only accepts these managed preset keys.

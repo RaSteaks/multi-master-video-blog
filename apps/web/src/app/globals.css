@@ -9359,7 +9359,7 @@ object {
     gap: clamp(10px, 1.6svh, 16px);
   }
 
-  .orbital-home .contact-strip {
+  .orbital-home .home-contact-slot {
     margin-top: 12px;
   }
 }
@@ -9539,6 +9539,28 @@ object {
   initial-value: 0;
 }
 
+/* Keep the stage and its controls still while the strip streams, including when it
+   resolves empty. The reserved height follows the same dimensions as the film. */
+.home-contact-slot {
+  --strip-frame-height: 62px;
+  --strip-rail-height: 15px;
+  --strip-bottom-padding: 12px;
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: calc(var(--strip-frame-height) + 2 * var(--strip-rail-height) + var(--strip-bottom-padding));
+  margin-top: 20px;
+  place-content: center stretch;
+  justify-items: center;
+}
+
+.home-works-link {
+  display: inline-block;
+  padding: 12px;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
 .contact-strip {
   --strip-film: #090a0b;
   --strip-fade-width: 30%;
@@ -9549,8 +9571,8 @@ object {
   flex-direction: row-reverse;
   width: 100vw;
   min-width: 0;
-  margin: 20px calc(50% - 50vw) 0;
-  padding-bottom: 12px;
+  margin: 0 calc(50% - 50vw);
+  padding-bottom: var(--strip-bottom-padding);
   overflow: auto hidden;
   scrollbar-color: var(--line-light) transparent;
   scrollbar-width: thin;
@@ -9570,7 +9592,7 @@ object {
   min-width: 100%;
   margin: 0;
   /* The oldest frame can scroll clear of the left fade. */
-  padding: 15px calc(50% - 46.5px) 15px var(--strip-fade-width);
+  padding: var(--strip-rail-height) calc(50% - 46.5px) var(--strip-rail-height) var(--strip-fade-width);
   justify-content: flex-end;
   gap: 8px;
   --lamp-reach: linear-gradient(to right,
@@ -9641,7 +9663,7 @@ object {
 .contact-frame-picture {
   display: flex;
   width: 100%;
-  height: 62px;
+  height: var(--strip-frame-height);
   align-items: center;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.11);

@@ -1,7 +1,5 @@
 "use client";
 
-import Image from "next/image";
-
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -18,7 +16,10 @@ function FrameContent({ frame, live }: { frame: ContactFrame; live: boolean }) {
     <>
       <div className="contact-frame-picture" data-vt={frame.morphsCover ? "cover" : "frame"}>
         {frame.cover
-          ? <Image src={frame.cover} alt="" width={93} height={62} unoptimized loading="lazy" decoding="async" />
+          // Directus owns the fixed-density variants; preserve the server-selected preview path.
+          // eslint-disable-next-line @next/next/no-img-element
+          ? <img src={frame.cover} srcSet={`${frame.cover} 1x, ${frame.cover}-2x 2x, ${frame.cover}-3x 3x`}
+              alt="" width={93} height={62} loading="lazy" decoding="async" />
           : frame.preview ? <ProjectPreview project={frame.preview} active={live} fallback={title} /> : title}
       </div>
       <span className="contact-frame-label">

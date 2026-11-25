@@ -1,4 +1,6 @@
 import { connection } from "next/server";
+import { unstable_rethrow } from "next/navigation";
+import { cache } from "react";
 import { contactFrames, type ContactWork } from "./contact-sheet";
 import { isWebsiteUrl, readWebsiteProject } from "./external-projects";
 import { readProjectLayout } from "../../../../shared/project-layouts.cjs";
@@ -299,6 +301,7 @@ async function login() {
   });
 
   if (!response.ok) {
+    await response.body?.cancel();
     throw new Error(`Directus login failed: ${response.status}`);
   }
 
@@ -334,15 +337,15 @@ export async function fetchDirectusPreview(pathname: string, retried = false): P
   return response;
 }
 
-async function directusFetch<T>(
+async function directusResponse(
   pathname: string,
+  tags: string[],
+  signal?: AbortSignal,
   retried = false,
-  tags: string[] = [],
-): Promise<T> {
-  // Container builds must never freeze CMS-offline fallback data into public pages.
-  // connection() defers rendering while explicit fetch revalidation remains enabled.
-  if (process.env.CMS_RUNTIME_ONLY === "true") await connection();
+): Promise<Response> {
   const token = await getToken();
+  // Settings may already have timed out while another caller's shared login was pending.
+  signal?.throwIfAborted();
   const cacheOptions =
     REVALIDATE_SECONDS > 0
       ? { next: { revalidate: REVALIDATE_SECONDS, tags } }
@@ -351,7 +354,7 @@ async function directusFetch<T>(
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     ...cacheOptions,
     // Apply a page-sized deadline independently of CMS/cache revalidation timing.
-    signal: AbortSignal.timeout(10_000),
+    signal: signal ?? AbortSignal.timeout(10_000),
     redirect: "error",
   });
 
@@ -361,9 +364,17 @@ async function directusFetch<T>(
     if (cachedToken === token) {
       cachedToken = null;
     }
-    return directusFetch<T>(pathname, true, tags);
+    return directusResponse(pathname, tags, signal, true);
   }
 
+  return response;
+}
+
+async function directusFetch<T>(pathname: string, tags: string[] = []): Promise<T> {
+  // Container builds must never freeze CMS-offline fallback data into public pages.
+  // connection() defers rendering while explicit fetch revalidation remains enabled.
+  if (process.env.CMS_RUNTIME_ONLY === "true") await connection();
+  const response = await directusResponse(pathname, tags);
   if (!response.ok) {
     throw new Error(`Directus request failed: ${pathname} ${response.status}`);
   }
@@ -406,7 +417,7 @@ async function attachSdrDimensions(albums: Album[]) {
     try {
       const { data } = await directusFetch<{
         data: Array<{ id: string; width: number | null; height: number | null }>;
-      }>(`/files?${params.toString()}`, false, ["albums:list"]);
+      }>(`/files?${params.toString()}`, ["albums:list"]);
       for (const file of data) {
         if (file.width && file.width > 0 && file.height && file.height > 0) {
           byId.set(file.id, { width: file.width, height: file.height });
@@ -464,7 +475,6 @@ export async function getPosts(limit = 24, sort = "sort_order,-id") {
     addPublishedFilter(params);
     const response = await directusFetch<DirectusListResponse<Post>>(
       `/items/posts?${params.toString()}`,
-      false,
       ["posts:list"],
     );
     return response.data;
@@ -480,7 +490,6 @@ export async function getPost(slug: string) {
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<Post>>(
     `/items/posts?${params.toString()}`,
-    false,
     ["posts:list", `posts:slug:${slug}`],
   );
   return response.data[0] ?? null;
@@ -495,7 +504,6 @@ export async function getVideoProjects(limit = 24, sort = "sort_order,-id") {
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<VideoProject>>(
     `/items/video_projects?${params.toString()}`,
-    false,
     ["videos:list"],
   );
   return response.data.map(sortMasters);
@@ -510,7 +518,6 @@ export async function getVideoProject(slug: string) {
   addPublishedFilter(params);
   const response = await directusFetch<DirectusListResponse<VideoProject>>(
     `/items/video_projects?${params.toString()}`,
-    false,
     ["videos:list", `videos:slug:${slug}`],
   );
   const project = response.data[0] ?? null;
@@ -555,7 +562,7 @@ export async function getAlbums(limit = 100, sort = "sort_order,-created_at,-id"
     // The list needs one fallback cover; counts come from a grouped query, not full galleries.
     params.set("deep[photos][_limit]", "1");
     const response = await directusFetch<DirectusListResponse<Album>>(
-      `/items/albums?${params}`, false, ["albums:list"],
+      `/items/albums?${params}`, ["albums:list"],
     );
     return filterPublishedAlbums(response.data);
   }, sort, "-created_at,-id");
@@ -564,7 +571,7 @@ export async function getAlbums(limit = 100, sort = "sort_order,-created_at,-id"
     "filter[published][_eq]": "true", "filter[album_id][published][_eq]": "true",
     "aggregate[count]": "id,hdr_image", "groupBy[]": "album_id", limit: String(albums.length) });
   const groups = await directusFetch<{ data: Array<{ album_id: number; count: { id: string; hdr_image: string } }> }>(
-    `/items/album_photos?${counts}`, false, ["albums:list"],
+    `/items/album_photos?${counts}`, ["albums:list"],
   );
   return albums.map(album => {
     const count = groups.data.find(g => Number(g.album_id) === Number(album.id))?.count;
@@ -572,7 +579,8 @@ export async function getAlbums(limit = 100, sort = "sort_order,-created_at,-id"
   });
 }
 
-export async function getAlbum(slug: string) {
+// The metadata and gallery share all photo pages and dimensions within one server render.
+export const getAlbum = cache(async (slug: string) => {
   const params = new URLSearchParams({
     fields: ALBUM_DETAIL_FIELDS.split(",").filter(f => !f.startsWith("photos.")).join(","),
     "filter[slug][_eq]": slug,
@@ -581,7 +589,6 @@ export async function getAlbum(slug: string) {
   addPublicAlbumFilters(params);
   const response = await directusFetch<DirectusListResponse<Album>>(
     `/items/albums?${params.toString()}`,
-    false,
     ["albums:list", `albums:slug:${slug}`],
   );
   const records = filterPublishedAlbums(response.data);
@@ -594,14 +601,14 @@ export async function getAlbum(slug: string) {
     sort: "sort_order,id", limit: "100" });
   for (let offset = 0; ; offset += 100) {
     photoParams.set("offset", String(offset));
-    const batch = await directusFetch<DirectusListResponse<AlbumPhoto>>(`/items/album_photos?${photoParams}`, false,
+    const batch = await directusFetch<DirectusListResponse<AlbumPhoto>>(`/items/album_photos?${photoParams}`,
       ["albums:list", `albums:slug:${slug}`]);
     photos.push(...batch.data);
     if (batch.data.length < 100) break;
   }
   const [album] = await attachSdrDimensions([{ ...records[0], photos }]);
   return album ?? null;
-}
+});
 
 export type SiteSettings = {
   background_image: DirectusFileId;
@@ -611,26 +618,49 @@ export type SiteSettings = {
 };
 
 export async function getSiteSettings(): Promise<SiteSettings | null> {
+  // A runtime-only build should defer before starting the layout's deadline.
+  if (process.env.CMS_RUNTIME_ONLY === "true") await connection();
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // The root layout also needs a bound when waiting for a login shared with other routes.
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, 1500);
+  });
   try {
-    const response = await directusFetch<{ data: SiteSettings }>(
-      "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id,accent_color",
-      false,
-      ["site-settings"],
-    );
-    return response.data ?? null;
-  } catch {
-    // Preserve background settings while accent_color is rolling out.
-    try {
-      const response = await directusFetch<{ data: SiteSettings }>(
-        "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id",
-        false,
-        ["site-settings"],
-      );
-      return response.data ?? null;
-    } catch {
-      return null;
+    return await Promise.race([readSiteSettings(controller.signal), deadline]);
+  } catch (error) {
+    unstable_rethrow(error);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readSiteSettings(signal: AbortSignal): Promise<SiteSettings | null> {
+  const baseQuery = "/items/site_settings?fields=background_image,background_blur,background_images.directus_files_id";
+  const tags = ["site-settings"];
+  let response = await directusResponse(`${baseQuery},accent_color`, tags, signal);
+  // Directus names the unavailable field during schema rollout. A general permission
+  // error or an outage cannot be fixed by querying the same collection again.
+  if (response.status === 403 || response.status === 400) {
+    const body: unknown = await response.json();
+    if (body && typeof body === "object" && "errors" in body && Array.isArray(body.errors)
+      && body.errors.some(error => typeof error?.message === "string"
+        && /\bfield(?:\(s\))?\s+["'`]?accent_color\b|\baccent_color\b["'`]?\s+does not exist/i.test(error.message))) {
+      response = await directusResponse(baseQuery, tags, signal);
     }
   }
+  if (!response.ok) {
+    // The layout clears its deadline on return. Release any unread error stream first,
+    // including a failed legacy lookup; a parsed field error is already consumed.
+    if (!response.bodyUsed) await response.body?.cancel();
+    return null;
+  }
+  const result = await response.json() as { data: SiteSettings | null };
+  return result.data ?? null;
 }
 
 export type SiteBackgroundImage = {
@@ -661,15 +691,14 @@ export async function getCounts() {
   const qs = params.toString();
 
   const [postsRes, videosRes, albumsRes] = await Promise.all([
-    directusFetch<DirectusAggregateResponse>(`/items/posts?${qs}`, false, [
+    directusFetch<DirectusAggregateResponse>(`/items/posts?${qs}`, [
       "posts:list",
     ]),
     directusFetch<DirectusAggregateResponse>(
       `/items/video_projects?${qs}`,
-      false,
       ["videos:list"],
     ),
-    directusFetch<DirectusAggregateResponse>(`/items/albums?${qs}`, false, [
+    directusFetch<DirectusAggregateResponse>(`/items/albums?${qs}`, [
       "albums:list",
     ]),
   ]);
@@ -681,52 +710,68 @@ export async function getCounts() {
   };
 }
 
+const FRAME_FIELDS = "id,title,slug,cover_image,created_at";
+type WorkFrame = Pick<Post, "id" | "title" | "slug" | "cover_image" | "created_at">;
+type AlbumFrame = WorkFrame & { photos?: Pick<AlbumPhoto, "sdr_image">[] };
 type ProjectFrame = {
   id: number; title: string; url: string; preview_url: string | null; preview_enabled: boolean | number;
   open_mode: string; cover_image: DirectusFileId; published: boolean | number; created_at: string | null;
 };
 
-async function getProjectFrames() {
+async function getFrameRows<T>(
+  collection: "posts" | "video_projects" | "albums" | "external_projects",
+  fields: string,
+  tags: string[] = [],
+) {
   const params = new URLSearchParams({
-    fields: "id,title,url,preview_url,preview_enabled,open_mode,cover_image,published,created_at",
-    sort: CONTACT_SHEET_SORT, limit: String(CONTACT_SHEET_LIMIT),
+    fields, sort: CONTACT_SHEET_SORT, limit: String(CONTACT_SHEET_LIMIT),
   });
-  addPublishedFilter(params);
-  const response = await directusFetch<DirectusListResponse<ProjectFrame>>(`/items/external_projects?${params}`);
-  return response.data.filter(project => isWebsiteUrl(project.url));
+  if (collection === "albums") {
+    // Albums stay public-only in preview mode, including the fallback cover photo.
+    addPublicAlbumFilters(params);
+    params.set("deep[photos][_limit]", "1");
+  } else {
+    addPublishedFilter(params);
+  }
+  const response = await directusFetch<DirectusListResponse<T>>(`/items/${collection}?${params}`, tags);
+  return response.data;
 }
 
 /** Every published video, article, album and laboratory site, oldest first, capped per collection. */
-export async function getContactSheet() {
+export async function getContactSheet(projectLinks: "viewer" | "direct" = "viewer") {
   try {
     const [videos, posts, albums, projects] = await Promise.all([
-      getVideoProjects(CONTACT_SHEET_LIMIT, CONTACT_SHEET_SORT), getPosts(CONTACT_SHEET_LIMIT, CONTACT_SHEET_SORT),
-      getAlbums(CONTACT_SHEET_LIMIT, CONTACT_SHEET_SORT), getProjectFrames(),
+      getFrameRows<WorkFrame>("video_projects", FRAME_FIELDS, ["videos:list"]),
+      getFrameRows<WorkFrame>("posts", FRAME_FIELDS, ["posts:list"]),
+      getFrameRows<AlbumFrame>("albums", `${FRAME_FIELDS},photos.sdr_image`, ["albums:list"]),
+      getFrameRows<ProjectFrame>("external_projects", "id,title,url,preview_url,preview_enabled,open_mode,cover_image,published,created_at"),
     ]);
     const works: ContactWork[] = [
       ...posts.map(post => ({ key: `post-${post.id}`, title: post.title, href: `/posts/${post.slug}`, external: false,
-        cover: assetUrl(post.cover_image, "content-card"), addedAt: post.created_at, morphsCover: Boolean(post.cover_image) })),
+        cover: assetUrl(post.cover_image, "contact-frame"), addedAt: post.created_at, morphsCover: Boolean(post.cover_image) })),
       ...videos.map(video => ({ key: `video-${video.id}`, title: video.title, href: `/videos/${video.slug}`, external: false,
-        cover: assetUrl(video.cover_image, "content-card"), addedAt: video.created_at, morphsCover: Boolean(video.cover_image) })),
+        cover: assetUrl(video.cover_image, "contact-frame"), addedAt: video.created_at, morphsCover: Boolean(video.cover_image) })),
       ...albums.map(album => ({ key: `album-${album.id}`, title: album.title, href: `/albums/${album.slug}`, external: false,
-        cover: assetUrl(album.cover_image || album.photos?.[0]?.sdr_image || null, "album-cover"), addedAt: album.created_at })),
-      ...projects.map(project => {
-        const external = project.open_mode === "external";
+        cover: assetUrl(album.cover_image || album.photos?.[0]?.sdr_image || null, "contact-frame"), addedAt: album.created_at })),
+      ...projects.filter(project => isWebsiteUrl(project.url)).map(project => {
+        // The native works index can open the site even when the laboratory viewer cannot run.
+        const external = projectLinks === "direct" || project.open_mode === "external";
         const preview = {
           title: project.title, url: project.url, cover_image: null, published: isPublished(project),
           preview_url: project.preview_url && isWebsiteUrl(project.preview_url) ? project.preview_url : null,
           preview_enabled: boolValue(project.preview_enabled),
         };
         return { key: `project-${project.id}`, title: project.title, href: external ? project.url : `/project?project=${project.id}`, external,
-          cover: assetUrl(project.cover_image, "content-card"), addedAt: project.created_at,
+          cover: assetUrl(project.cover_image, "contact-frame"), addedAt: project.created_at,
           // A cover is already a picture, and costs the visitor far less than a running page.
           preview: !project.cover_image && preview.preview_enabled ? preview : undefined };
       }),
     ];
     return contactFrames(works);
-  } catch {
-    // The strip is a bonus on this page; the profile and index must still load.
-    return [];
+  } catch (error) {
+    unstable_rethrow(error);
+    // The home can omit the strip; the standalone index distinguishes an outage from an empty collection.
+    return null;
   }
 }
 

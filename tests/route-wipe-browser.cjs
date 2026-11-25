@@ -140,6 +140,21 @@ async function main() {
     assert.equal(await page.evaluate(() => document.getAnimations().some(animation => /^vt-wipe-line/.test(animation.animationName || ""))), false);
     pass("narrow native wipe aligns below the header; reduced motion cancels it without replay");
 
+    await page.goto(`${fixture.url}/posts/fixture-post#${encodeURIComponent("第二节")}`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => document.querySelector(".nav-pill")?.dataset.ready === "true");
+    const headingTop = await page.locator("article h2").last().evaluate(heading => heading.getBoundingClientRect().top);
+    assert.ok(headingTop >= 0 && headingTop < 844, `Deep link scrolled away from its heading at ${headingTop}`);
+    const beforeResize = await page.evaluate(() => {
+      scrollTo({ top: 1300, behavior: "instant" });
+      return scrollY;
+    });
+    assert.ok(Math.abs(beforeResize - 1300) <= 2, `Expected to start at the selected reading position, got ${beforeResize}`);
+    await page.setViewportSize({ width: 420, height: 844 });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const afterResize = await page.evaluate(() => scrollY);
+    assert.ok(Math.abs(afterResize - beforeResize) <= 2, `Resizing the mobile navigation moved the page from ${beforeResize} to ${afterResize}`);
+    pass("mobile navigation preserves direct section links and reading position on resize");
+
     const slowContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     page = await slowContext.newPage();
     page.on("pageerror", error => report.errors.push(error.message));

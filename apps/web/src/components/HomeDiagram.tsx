@@ -206,12 +206,14 @@ function useDiagramPainter(
     const still = stillRef.current;
     const motion = matchMedia("(prefers-reduced-motion: reduce)");
     const began = performance.now();
+    let inView = false;
     let frame = 0;
     let lastPaint = 0;
     let spin = TURN_PER_SECOND;
     let held: { pointer: number; x: number; y: number; at: number } | null = null;
 
     function paint() {
+      if (!inView || document.hidden) return;
       const side = surface.clientWidth;
       if (!side || !context) return;
       const ratio = Math.min(devicePixelRatio || 1, MAX_PIXEL_RATIO);
@@ -247,6 +249,7 @@ function useDiagramPainter(
 
     function start() {
       cancelAnimationFrame(frame);
+      if (!inView || document.hidden) return;
       paint();
       lastPaint = performance.now();
       if ((turnable || timed) && !motion.matches) frame = requestAnimationFrame(tick);
@@ -279,20 +282,29 @@ function useDiagramPainter(
 
     const observer = new ResizeObserver(paint);
     observer.observe(surface);
+    // A pinned diagram can sit below the first screen, and a settings preview
+    // can scroll out of its panel. Resume with a fresh frame when either returns.
+    const visibility = new IntersectionObserver(([entry]) => {
+      inView = entry.isIntersecting;
+      start();
+    });
+    visibility.observe(surface);
     still.redraw = () => { if (motion.matches) paint(); };
     motion.addEventListener("change", start);
+    document.addEventListener("visibilitychange", start);
     if (byHand) {
       surface.addEventListener("pointerdown", grab);
       surface.addEventListener("pointermove", drag);
       surface.addEventListener("pointerup", release);
       surface.addEventListener("pointercancel", release);
     }
-    start();
     return () => {
       still.redraw = undefined;
       cancelAnimationFrame(frame);
       observer.disconnect();
+      visibility.disconnect();
       motion.removeEventListener("change", start);
+      document.removeEventListener("visibilitychange", start);
       surface.removeEventListener("pointerdown", grab);
       surface.removeEventListener("pointermove", drag);
       surface.removeEventListener("pointerup", release);
